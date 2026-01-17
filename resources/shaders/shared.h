@@ -153,53 +153,27 @@ struct GroupCombinationState {
     uint _padding;
 };
 
-/*
-    This contains a crop rectangle of a sprite
-    in a spritesheet.
-struct SpriteCrop {
-    *
-        For both of the following members, the
-        lower 16-bit contains the minimum value
-        and the higher 16-bit contains the maximum
-        value of the crop.
-    *
-    uint xCrop;
-    uint yCrop;
-};
-
-// This is for decoding the aSpriteCrop vertex attribute
-#define A_SPRITE_CROP_MASK             0x1fffffff
-#define A_SPRITE_CROP_IS_SHADER_SPRITE 0x20000000
-#define A_SPRITE_CROP_IS_RIGHT         0x40000000
-#define A_SPRITE_CROP_IS_TOP           0x80000000
-*/
-
 ////////////////////////////////////////////////////
 //// UNIFORM BUFFERS AND SHADER STORAGE BUFFERS ////
 ////////////////////////////////////////////////////
 
-#define DYNAMIC_RENDERING_BUFFER_BINDING 0
-#define STATIC_RENDERING_BUFFER_BINDING  1
-#define RENDERER_UNIFORM_BUFFER_BINDING  2
-//#define SPRITE_CROP_BUFFER_BINDING       3
+#define COLOR_CHANNEL_BUFFER_BINDING     0
+#define GROUP_STATE_BUFFER_BINDING       1
+#define STATIC_RENDERING_BUFFER_BINDING  2
+#define RENDERER_UNIFORM_BUFFER_BINDING  3
 
-/*
-    This is the dynamic rendering buffer. This
-    is the buffer that contains the required
-    rendering information that has to change
-    almost every frame. Stuff like the color
-    channel colors and group transforms.
-*/
-STORAGE_BUFFER(DYNAMIC_RENDERING_BUFFER_BINDING) DynamicRenderingBuffer {
-    RGBA channelColors[COLOR_CHANNEL_COUNT];
+STORAGE_BUFFER(COLOR_CHANNEL_BUFFER_BINDING) ColorChannelBuffer {
+    RGBA u_channelColors[COLOR_CHANNEL_COUNT];
     /*
         Bitmap for whether the color channels
         have blending enabled.
     */
-    uint colorChannelBlendingBitmap[COLOR_CHANNEL_COUNT / 32 + 1];
+    uint u_colorChannelBlendingBitmap[COLOR_CHANNEL_COUNT / 32 + 1];
+};
 
-    GroupCombinationState groupCombinationStates[CPP_ONLY(0)];
-} GLSL_ONLY(drb);
+STORAGE_BUFFER(GROUP_STATE_BUFFER_BINDING) GroupStateBuffer {
+    GroupCombinationState u_groupCombinationStates[CPP_ONLY(0)];
+};
 
 /*
     This is the static rendering buffer. This is the
@@ -210,17 +184,6 @@ STORAGE_BUFFER(DYNAMIC_RENDERING_BUFFER_BINDING) DynamicRenderingBuffer {
 STORAGE_BUFFER(STATIC_RENDERING_BUFFER_BINDING) StaticRenderingBuffer {
     StaticObjectInfo objects[CPP_ONLY(0)];
 } GLSL_ONLY(srb);
-
-/*
-    This contains a list of all sprite crops needed in
-    rendering. Every sprite to be drawn is passed with
-    a spriteCropIndex which indexes into the array in
-    here. If index is negative, it is a shader sprite
-    instead.
-STORAGE_BUFFER(SPRITE_CROP_BUFFER_BINDING) SpriteCropBuffer {
-    SpriteCrop spriteCrops[];
-};
-*/
 
 /*
     This is the uniform buffer used to store

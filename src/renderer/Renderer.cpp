@@ -13,7 +13,9 @@
 #include "math/Line.hpp"
 #include <Geode/Enums.hpp>
 #include <Geode/binding/GJBaseGameLayer.hpp>
+#include <Geode/binding/GameObject.hpp>
 #include <Geode/binding/RingObject.hpp>
+#include <SectionSet.hpp>
 
 using namespace geode::prelude;
 
@@ -52,6 +54,8 @@ bool Renderer::init(PlayLayer* layer) {
     spriteSheets[(i32)SpriteSheet::PIXEL]    = tcache->addImage("PixelSheet_01.png", false);
 
     SpriteMeshDictionary::loadFromFile("spriteMeshes.json");
+
+    groupManager.initWithObjects(layer->m_objects);
 
     ObjectSorter sorter;
 
@@ -104,30 +108,20 @@ bool Renderer::init(PlayLayer* layer) {
 
     std::map<std::string, std::string> shaderMacroVariables;
 
-    usize drbBufferSize = sizeof(DynamicRenderingBuffer) + sizeof(GroupCombinationState) * groupCombCount;
-
-    i32 maxUniformBufferSize;
-    glGetIntegerv(GL_MAX_UNIFORM_BLOCK_SIZE, &maxUniformBufferSize);
-    isDrbStorageBuffer = true;//drbBufferSize > maxUniformBufferSize;
-
     shaderMacroVariables["TOTAL_OBJECT_COUNT"] = std::to_string(renderedGameObjectCount == 0 ? 1 : renderedGameObjectCount);
     shaderMacroVariables["GROUP_ID_LIMIT"]     = std::to_string(groupCombCount);
-    if (isDrbStorageBuffer)
-        shaderMacroVariables["IS_DRB_STORAGE_BUFFER"] = "";
 
     shader = Shader::create("object.vert", "object.frag", shaderMacroVariables);
     if (!shader)
         return false;
 
-    drbBuffer = Buffer::createDynamicDraw(drbBufferSize);
-    if (!drbBuffer)
+    colorChannelBufferObject = Buffer::createDynamicDraw(sizeof(ColorChannelBuffer));
+    if (!colorChannelBufferObject)
         return false;
 
     uniformBuffer = Buffer::createDynamicDraw(sizeof(RendererUniformBuffer));
     if (!uniformBuffer)
         return false;
-
-    drb = (DynamicRenderingBuffer*)malloc(drbBuffer->getSize());
 
     debugText = CCLabelBMFont::create("", "chatFont.fnt");
     debugTextOutline1 = CCLabelBMFont::create("", "chatFont.fnt");
@@ -207,10 +201,8 @@ void Renderer::terminate() {
         Shader::destroy(basicShader);
     basicShader = nullptr;
 
-    if (drbBuffer)
-        Buffer::destroy(drbBuffer);
-    if (drb)
-        free(drb);
+    if (colorChannelBufferObject)
+        Buffer::destroy(colorChannelBufferObject);
 
     if (srbBuffer)
         Buffer::destroy(srbBuffer);
@@ -261,7 +253,7 @@ void Renderer::prepareShaderUniforms() {
     uniformBuffer->bindAsUniformBuffer(RENDERER_UNIFORM_BUFFER_BINDING);
 }
 
-void Renderer::prepareDynamicRenderingBuffer() {
+void Renderer::prepareColorChannelBuffer() {
     auto prevTime = getTime();
     auto effectManager = layer->m_effectManager;
 
@@ -272,10 +264,11 @@ void Renderer::prepareDynamicRenderingBuffer() {
 
         auto id = sprite->m_colorID;
 
-        drb->channelColors[id].r = sprite->m_color.r;
-        drb->channelColors[id].g = sprite->m_color.g;
-        drb->channelColors[id].b = sprite->m_color.b;
-        drb->channelColors[id].a = (u8)sprite->m_opacity;
+        auto& channelColor = colorChannelBuffer.u_channelColors[id];
+        channelColor.r = sprite->m_color.r;
+        channelColor.g = sprite->m_color.g;
+        channelColor.b = sprite->m_color.b;
+        channelColor.a = (u8)sprite->m_opacity;
 
         bool shouldBlend = layer->shouldBlend(id);
         if (
@@ -287,21 +280,14 @@ void Renderer::prepareDynamicRenderingBuffer() {
         }
 
         if (shouldBlend)
-            drb->colorChannelBlendingBitmap[id >> 5] |= 1 << (id & 0x1f);
+            colorChannelBuffer.u_colorChannelBlendingBitmap[id >> 5] |= 1 << (id & 0x1f);
         else
-            drb->colorChannelBlendingBitmap[id >> 5] &= ~(1 << (id & 0x1f));
+            colorChannelBuffer.u_colorChannelBlendingBitmap[id >> 5] &= ~(1 << (id & 0x1f));
     }
 
-    drb->channelColors[COLOR_CHANNEL_BLACK] = { 0, 0, 0, 255 };
+    colorChannelBuffer.u_channelColors[COLOR_CHANNEL_BLACK] = { 0, 0, 0, 255 };
 
-    groupManager.updateOpacities();
-
-    drbBuffer->write(drb, drbBuffer->getSize());
-    if (isDrbStorageBuffer)
-        drbBuffer->bindAsStorageBuffer(DYNAMIC_RENDERING_BUFFER_BINDING);
-    else
-        drbBuffer->bindAsUniformBuffer(DYNAMIC_RENDERING_BUFFER_BINDING);
-
+    colorChannelBufferObject->write(&colorChannelBuffer, sizeof(ColorChannelBuffer));
     drbGenerationTime = getTime() - prevTime;
 }
 
@@ -370,8 +356,6 @@ void Renderer::generateStaticRenderingBuffer(ObjectSorter& sorter) {
         objectInfo->fadeMargin = object->m_fadeMargin;
 
         objectSRBIndicies[object] = index;
-        groupCombIndexPerObjectSRBIndex.push_back(objectInfo->groupCombinationIndex);
-        startPositionPerObjectSRBIndex.push_back(objectInfo->startPosition);
         index++;
     }
 
@@ -402,8 +386,10 @@ static void drawCross(Renderer* ren, const glm::vec2& point, const glm::vec4& co
 void Renderer::draw() {
     storeGLStates();
     prepareShaderUniforms();
-    if (!isPaused())
-        prepareDynamicRenderingBuffer();
+    if (!isPaused()) {
+        prepareColorChannelBuffer();
+        groupManager.prepareGroupStateBuffer();
+    }
 
     /*
     glm::vec2 normal { glm::cos(glm::radians(lineAngle)), glm::sin(glm::radians(lineAngle)) };
@@ -498,7 +484,7 @@ void Renderer::updateDebugText() {
             text += fmt::format("Vertex buffer size: {}\n", byteSizeToString(objectBatch.getQuadCount() * sizeof(ObjectQuad)));
             text += fmt::format("Sprites on screen: {}\n", spritesOnScreen);
             text += fmt::format("Static rendering buffer size: {}\n", byteSizeToString(srbBuffer->getSize()));
-            text += fmt::format("Dynamic rendering buffer size: {}\n", byteSizeToString(drbBuffer->getSize()));
+            text += fmt::format("Group state buffer size: {}\n", byteSizeToString(groupManager.getGroupStateBufferSize()));
             text += "\n";
             text += "Press F3 to hide this screen";
         } else if (differenceModeEnabled)
@@ -515,13 +501,13 @@ Shader* Renderer::prepareDraw() {
 
     shader->use();
 
-    srbBuffer->bindAsStorageBuffer(STATIC_RENDERING_BUFFER_BINDING);
-    drbBuffer->bindAsStorageBuffer(DYNAMIC_RENDERING_BUFFER_BINDING);
     uniformBuffer->bindAsUniformBuffer(RENDERER_UNIFORM_BUFFER_BINDING);
+    srbBuffer->bindAsStorageBuffer(STATIC_RENDERING_BUFFER_BINDING);
+    colorChannelBufferObject->bindAsStorageBuffer(COLOR_CHANNEL_BUFFER_BINDING);
+    groupManager.bindGroupStateBuffer();
 
     glEnable(GL_BLEND);
     glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
-
     return shader;
 }
 
@@ -546,15 +532,6 @@ void Renderer::update(float dt) {
 
     auto& gstate = layer->m_gameState;
     cameraCenterPos = ccPointToGLM(gstate.m_cameraPosition2 + CCPoint(layer->m_cameraWidth * 0.5, layer->m_cameraHeight * 0.5));
-}
-
-bool Renderer::isObjectInView(usize srbIndex) {
-    GroupCombinationIndex groupCombIndex = groupCombIndexPerObjectSRBIndex[srbIndex];
-
-    auto& state = drb->groupCombinationStates[groupCombIndex];
-    glm::vec2 diff = glm::abs((state.positionalTransform * startPositionPerObjectSRBIndex[srbIndex] + state.offset) - cameraCenterPos);
-
-    return (diff.x * diff.x + diff.y * diff.y) <= (350 * 350);
 }
 
 Ref<Renderer> Renderer::create(PlayLayer* layer) {

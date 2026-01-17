@@ -6,6 +6,7 @@
 #include "ObjectSorter.hpp"
 #include "OverdrawView.hpp"
 #include "Shader.hpp"
+#include <memory>
 #include <unordered_map>
 #include <set>
 
@@ -32,7 +33,7 @@ private:
 
     void prepareShaderUniforms();
 
-    void prepareDynamicRenderingBuffer();
+    void prepareColorChannelBuffer();
 
     void generateStaticRenderingBuffer(ObjectSorter& sorter);
 
@@ -45,18 +46,11 @@ protected:
 
     void finishDraw();
 
-    inline GroupCombinationState* getGroupCombinationStates() {
-        if (drb == nullptr) return nullptr;
-        return drb->groupCombinationStates;
-    }
-
     friend class GroupManager;
     friend class ObjectBatchNode;
 
 public:
     void update(float dt) override;
-
-    bool isObjectInView(usize srbIndex);
 
     inline cocos2d::CCTexture2D* getSpriteSheetTexture(SpriteSheet sheet) {
         if ((i32)sheet < 0 || (i32)sheet >= (i32)SpriteSheet::COUNT)
@@ -80,7 +74,6 @@ public:
     }
 
     inline void toggleDebugText() {
-        geode::log::info("syjdstu");
         debugTextEnabled = !debugTextEnabled;
     }
 
@@ -140,9 +133,6 @@ private:
 
     std::unordered_map<GameObject*, usize> objectSRBIndicies;
 
-    // Used by the isObjectInView() function
-    std::vector<GroupCombinationIndex> groupCombIndexPerObjectSRBIndex;
-    std::vector<glm::vec2> startPositionPerObjectSRBIndex;
     glm::vec2 cameraCenterPos;
 
     std::vector<ObjectBatchNode*> batchNodes;
@@ -153,9 +143,6 @@ private:
     Ref<cocos2d::CCLabelBMFont> debugTextOutline1;
     Ref<cocos2d::CCLabelBMFont> debugTextOutline2;
 
-    std::set<i16> usedGroupIds;
-    std::set<i16> disabledGroups;
-
     GroupManager groupManager;
 
     ShaderSpriteManager shaderSpriteManager;
@@ -164,9 +151,8 @@ private:
     Shader* shader = nullptr;
     Shader* basicShader = nullptr;
 
-    DynamicRenderingBuffer* drb = nullptr;
-    Buffer* drbBuffer = nullptr;
-    bool isDrbStorageBuffer;
+    ColorChannelBuffer colorChannelBuffer;
+    Buffer* colorChannelBufferObject = nullptr;
 
     Buffer* srbBuffer = nullptr;
 

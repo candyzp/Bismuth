@@ -37,7 +37,7 @@ void main() {
     objectPosition = SRB_OBJECT.startPosition;
 
     // APPLY GROUP COMBINATION STATE
-    GroupCombinationState state = drb.groupCombinationStates[SRB_OBJECT.groupCombinationIndex];
+    GroupCombinationState state = u_groupCombinationStates[SRB_OBJECT.groupCombinationIndex];
     objectPosition = state.positionalTransform * objectPosition + state.offset;
     
     vertexOffset = a_positionOffset;
@@ -62,14 +62,14 @@ void main() {
     uint colorChannel = a_colorChannel & 0xfff;
 
     t_spriteSheet  = a_spriteSheet;
-    t_color        = RGBA_TO_VEC4(drb.channelColors[colorChannel]);
+    t_color        = RGBA_TO_VEC4(u_channelColors[colorChannel]);
     t_shaderSprite = a_shaderSprite;
     t_texCoord     = a_texCoord;
 
     if (a_spriteSheet == SPRITE_SHEET_GLOW && (objectFlags & OBJECT_FLAG_SPECIAL_GLOW_COLOR) != 0)
         t_color = vec4(u_specialLightBGColor, 1.0);
 
-    t_blending = BITMAP_GET(drb.colorChannelBlendingBitmap, colorChannel);
+    t_blending = BITMAP_GET(u_colorChannelBlendingBitmap, colorChannel);
     if (a_spriteSheet == SPRITE_SHEET_GLOW)
         t_blending = 1;
     
@@ -167,8 +167,8 @@ vec4 calculateInvisibleBlockColorAndOpacity(vec4 color) {
         color.a *= opacity.x;
     } else {
         // Might have to do some of these calculations on the cpu instead
-        vec3 colorBG  = RGBA_TO_VEC4(drb.channelColors[COLOR_CHANNEL_BG]).rgb;
-        vec3 colorLBG = RGBA_TO_VEC4(drb.channelColors[COLOR_CHANNEL_LBG]).rgb;
+        vec3 colorBG  = RGBA_TO_VEC4(u_channelColors[COLOR_CHANNEL_BG]).rgb;
+        vec3 colorLBG = RGBA_TO_VEC4(u_channelColors[COLOR_CHANNEL_LBG]).rgb;
 
         vec3 colorB;
         if ((colorBG.r + colorBG.g + colorBG.b) >= (150.0 / 255.0))

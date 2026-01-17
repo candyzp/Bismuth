@@ -1,7 +1,24 @@
 #include "GroupManager.hpp"
 #include "Renderer.hpp"
+#include <Geode/binding/EffectGameObject.hpp>
+#include <Geode/binding/GameObject.hpp>
+#include <optional>
 
 using namespace geode::prelude;
+
+#define MOVE_TRIGGER_ID   901
+#define ROTATE_TRIGGER_ID 1346
+#define FOLLOW_TRIGGER_ID 1347
+
+static std::optional<GroupID> getTargetGroupIdOfTransformingTrigger(GameObject* object) {
+    switch (object->m_objectID) {
+    case MOVE_TRIGGER_ID:
+    case ROTATE_TRIGGER_ID:
+    case FOLLOW_TRIGGER_ID:
+        return ((EffectGameObject*)object)->m_targetGroupID;
+    }
+    return std::nullopt;
+}
 
 GroupCombination::GroupCombination(std::array<GroupID, 10>* groupIds, i32 count) {
     i32 i = 0;
@@ -15,6 +32,33 @@ GroupCombination::GroupCombination(std::array<GroupID, 10>* groupIds, i32 count)
     std::sort(ids.data(), &ids[count]);
 }
 
+GroupCombination::GroupCombination(std::vector<GroupID> groupIds) {
+    count = groupIds.size();
+    std::copy(groupIds.begin(), groupIds.end(), ids.begin());
+    std::fill(ids.begin() + count, ids.end(), 0);
+    std::sort(ids.begin(), ids.begin() + count);
+}
+
+void GroupCombination::removeGroupIdsNotInSet(const std::set<GroupID> maskSet) {
+    for (i32 i = 0; i < count; i++) {
+        if (!maskSet.contains(ids[i]))
+            ids[i] = 0;
+    }
+
+    i32 newCount = 0;
+    i32 srcI = 0, dstI = 0;
+    for (; srcI < count; srcI++) {
+        if (ids[srcI] != 0) {
+            ids[dstI] = ids[srcI];
+            dstI++;
+            newCount++;
+        }
+    }
+    for (; dstI < 10; dstI++)
+        ids[dstI] = 0;
+    count = newCount;
+}
+
 GroupCombination::operator std::string() const {
     std::string ret = "[";
     for (u32 i = 0; i < count; i++) {
@@ -23,19 +67,92 @@ GroupCombination::operator std::string() const {
     }
     return ret + "]";
 }
+
+GroupManager::~GroupManager() {
+    if (groupStateBuffer)
+        Buffer::destroy(groupStateBuffer);
+}
+
+static std::set<GameObject*> dobjects;
+
+void GroupManager::initWithObjects(cocos2d::CCArray* objects) {
+    GroupCombinationIndex groupCombIndex = 0;
+
+    for (auto object : CCArrayExt<GameObject*>(objects)) {
+        std::optional<GroupID> targetGroupId = getTargetGroupIdOfTransformingTrigger(object);
+        if (targetGroupId.has_value())
+            transformGroupIds.insert(targetGroupId.value());
+
+        dobjects.insert(object);
+        
+        GroupCombination comb = GroupCombination(object);
+
+        if (groupCombinationIndicies.find(comb) == groupCombinationIndicies.end()) {
+            addGroupCombination(comb, groupCombIndex);
+            groupCombIndex++;
+        }
+    }
+
+    groupCombinationCount = groupCombIndex;
+
+    GroupCombinationIndex transformCombIndex = 0;
+
+    for (auto object : CCArrayExt<GameObject*>(objects)) {
+        GroupCombination comb = GroupCombination(object);
+        comb.removeGroupIdsNotInSet(transformGroupIds);
+
+        if (transformCombinationIndicies.find(comb) == transformCombinationIndicies.end()) {
+            transformCombinationIndicies[comb] = transformCombIndex;
+            transformCombIndex++;
+        }
+    }
+
+    transformCombinationCount = transformCombIndex;
+    log::info("Number of unique group transformations: {}", transformCombinationCount);
+
+    groupStates.reserve(groupCombinationCount);
+    groupStateBuffer = Buffer::createDynamicDraw(getGroupStateBufferSize());
+}
     
 GroupCombinationIndex GroupManager::getGroupCombinationIndexForObject(GameObject* object) {
     auto comb = GroupCombination(object);
 
     auto it = groupCombinationIndicies.find(comb);
-    if (it != groupCombinationIndicies.end())
-        return it->second;
+    assert(it != groupCombinationIndicies.end());
 
-    GroupCombinationIndex index = currentGroupCombinationIndex;
-    currentGroupCombinationIndex++;
+    return it->second;
+}
 
-    addGroupCombination(comb, index);
-    return index;
+GroupCombinationIndex GroupManager::getTransformCombinationIndexForObject(GameObject* object) {
+    auto comb = GroupCombination(object);
+    comb.removeGroupIdsNotInSet(transformGroupIds);
+
+    auto it = transformCombinationIndicies.find(comb);
+    assert(it != transformCombinationIndicies.end());
+
+    return it->second;
+}
+
+void GroupManager::prepareGroupStateBuffer() {
+    for (u32 i = 0; i < getGroupCombinationCount(); i++)
+        groupStates[i].opacity = 1.f;
+
+    for (auto groupId : usedGroupIds) {
+        auto it = groupCombinationIndiciesPerGroupId.find(groupId);
+        if (it == groupCombinationIndiciesPerGroupId.end())
+            continue;
+
+        bool isDisabled = disabledGroups.contains(groupId);
+
+        for (auto combIndex : it->second) {
+            if (isDisabled)
+                groupStates[combIndex].opacity = 0.0;
+            else
+                groupStates[combIndex].opacity *= renderer.getPlayLayer()->m_effectManager->opacityModForGroup(groupId);
+        }
+    }
+
+    groupStateBuffer->write(groupStates.data(), getGroupStateBufferSize());
 }
 
 void GroupManager::moveGroup(GroupID groupId, float deltaX, float deltaY) {
@@ -43,9 +160,8 @@ void GroupManager::moveGroup(GroupID groupId, float deltaX, float deltaY) {
     if (it == groupCombinationIndiciesPerGroupId.end())
         return;
 
-    GroupCombinationState* groupCombStates = renderer.getGroupCombinationStates();
     for (auto combIndex : it->second)
-        groupCombStates[combIndex].offset += glm::vec2(deltaX, deltaY);
+        groupStates[combIndex].offset += glm::vec2(deltaX, deltaY);
 }
 
 void GroupManager::rotateGroup(
@@ -65,11 +181,12 @@ void GroupManager::rotateGroup(
         { sin,  cos }
     };
 
-    GroupCombinationState* groupCombStates = renderer.getGroupCombinationStates();
     for (auto combIndex : it->second) {
-        auto& groupState = groupCombStates[combIndex];
+        auto& groupState = groupStates[combIndex];
 
-        groupState.localTransform *= matrix;
+        if (!lockObjectRotation)
+            groupState.localTransform *= matrix;
+
         if (!centerPoint.has_value())
             return;
 
@@ -86,32 +203,9 @@ void GroupManager::toggleGroup(GroupID groupId, bool visible) {
         disabledGroups.insert(groupId);
 }
 
-void GroupManager::updateOpacities() {
-    GroupCombinationState* groupCombStates = renderer.getGroupCombinationStates();
-
-    for (u32 i = 0; i < getGroupCombinationCount(); i++)
-        groupCombStates[i].opacity = 1.f;
-
-    for (auto groupId : usedGroupIds) {
-        auto it = groupCombinationIndiciesPerGroupId.find(groupId);
-        if (it == groupCombinationIndiciesPerGroupId.end())
-            continue;
-
-        bool isDisabled = disabledGroups.contains(groupId);
-
-        for (auto combIndex : it->second) {
-            if (isDisabled)
-                groupCombStates[combIndex].opacity = 0.0;
-            else
-                groupCombStates[combIndex].opacity *= renderer.getPlayLayer()->m_effectManager->opacityModForGroup(groupId);
-        }
-    }
-}
-
 void GroupManager::resetGroupStates() {
-    auto groupCombStates = renderer.getGroupCombinationStates();
     for (i32 i = 0; i < getGroupCombinationCount(); i++) {
-        auto& groupState = groupCombStates[i];
+        auto& groupState = groupStates[i];
         groupState.positionalTransform = glm::mat4(1.0);
         groupState.localTransform = glm::mat4(1.0);
         groupState.offset = glm::vec2(0, 0);
