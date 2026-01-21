@@ -4,6 +4,7 @@
 #include "Geode/cocos/CCDirector.h"
 #include "common.hpp"
 #include "profiler.hpp"
+#include "HotKey.hpp"
 
 #include <Geode/modify/CCKeyboardDispatcher.hpp>
 #include <Geode/modify/CCDisplayLinkDirector.hpp>
@@ -11,6 +12,8 @@
 #include <Geode/modify/PlayLayer.hpp>
 #include <Geode/modify/LevelEditorLayer.hpp>
 #include <Geode/modify/CCSprite.hpp>
+
+using namespace geode::prelude;
 
 bool takeSnapshotNextFrame = false;
 bool isTakingSnapshot      = false;
@@ -20,17 +23,9 @@ std::unordered_map<void*, i64> timeSpentInFunction;
 i64 lastFunctionTime;
 std::vector<void*> functionCallStack;
 
-class $modify(MyCCKeyboardDispatcher, cocos2d::CCKeyboardDispatcher) {
-    bool dispatchKeyboardMSG(cocos2d::enumKeyCodes key, bool keyDown, bool p3) {
-        if (keyDown && key == cocos2d::KEY_P)
-            takeSnapshotNextFrame = true;
-        if (keyDown && key == cocos2d::KEY_F10) {
-            cocos2d::CCDirector::get()->getRunningScene()->setVisible(!cocos2d::CCDirector::get()->getRunningScene()->isVisible());
-        }
-
-        return cocos2d::CCKeyboardDispatcher::dispatchKeyboardMSG(key, keyDown, p3);
-    }
-};
+DECLARE_HOTKEY(KEY_P, {
+    takeSnapshotNextFrame = true;
+});
 
 class $modify(MyCCDisplayLinkDirector, cocos2d::CCDisplayLinkDirector) {
     void mainLoop() {
@@ -97,7 +92,7 @@ void functionPush(const char* name) {
     lastFunctionTime = getTime();
 }
 
-void functionPop(const char* name) {
+void functionPop() {
     auto time = getTime();
     if (!isTakingSnapshot)
         return;
@@ -137,3 +132,7 @@ _PROFILER_HOOK_VOID(cocos2d::CCEGLView, swapBuffers);
 
 #include <Geode/modify/CCSpriteBatchNode.hpp>
 _PROFILER_HOOK_VOID(cocos2d::CCSpriteBatchNode, draw);
+
+#include <Geode/modify/GJBaseGameLayer.hpp>
+_PROFILER_HOOK_VOID(GJBaseGameLayer, update, float);
+_PROFILER_HOOK_VOID(GJBaseGameLayer, visit);

@@ -193,25 +193,6 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
     }
 };
 
-#include <Geode/modify/CCKeyboardDispatcher.hpp>
-class $modify(RendererCCKeyboardDispatcher, cocos2d::CCKeyboardDispatcher) {
-    bool dispatchKeyboardMSG(cocos2d::enumKeyCodes key, bool keyDown, bool isKeyRepeat) {
-        auto renderer = Renderer::get();
-        if (renderer) {
-            if (keyDown && key == cocos2d::KEY_F3 && !isKeyRepeat)
-                renderer->toggleDebugText();
-            if (renderer->canEnableDisableIngame()) {
-                if (keyDown && key == cocos2d::KEY_F8 && !isKeyRepeat)
-                    renderer->setEnabled(!renderer->isEnabled());
-                if (keyDown && key == cocos2d::KEY_F9 && !isKeyRepeat)
-                    renderer->setDifferenceModeEnabled(!renderer->isDifferenceModeEnabled());
-            }
-        }
-
-        return cocos2d::CCKeyboardDispatcher::dispatchKeyboardMSG(key, keyDown, isKeyRepeat);
-    }
-};
-
 #include <Geode/modify/CCDisplayLinkDirector.hpp>
 class $modify(RendererCCDisplayLinkDirector, CCDisplayLinkDirector) {
     void mainLoop() {

@@ -5,7 +5,7 @@ namespace profiler {
 
 void functionPush(const char* name);
 
-void functionPop(const char* name);
+void functionPop();
 
 };
 
@@ -14,10 +14,9 @@ void functionPop(const char* name);
 #define PROFILER_HOOK(Ret_, Class_, Name_, InArgs_, PassArgs_) \
     class GEODE_CRTP2(GEODE_CONCAT(profilerHook, __LINE__), Class_) { \
             Ret_ Name_(InArgs_) { \
-            const char* name = #Class_ "::" #Name_; \
-            profiler::functionPush(name); \
+            profiler::functionPush(#Class_ "::" #Name_); \
             Ret_ ret = Class_::Name_(PassArgs_); \
-            profiler::functionPop(name); \
+            profiler::functionPop(); \
             return ret; \
         } \
     };
@@ -25,10 +24,9 @@ void functionPop(const char* name);
 #define PROFILER_HOOK_VOID(Class_, Name_, InArgs_, PassArgs_) \
     class GEODE_CRTP2(GEODE_CONCAT(profilerHook, __LINE__), Class_) { \
             void Name_(InArgs_) { \
-            const char* name = #Class_ "::" #Name_; \
-            profiler::functionPush(name); \
+            profiler::functionPush(#Class_ "::" #Name_); \
             Class_::Name_(PassArgs_); \
-            profiler::functionPop(name); \
+            profiler::functionPop(); \
         } \
     };
 

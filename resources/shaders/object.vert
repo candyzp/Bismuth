@@ -92,10 +92,6 @@ void main() {
     }
 
     t_color.rgb *= t_color.a;
-    if (t_blending != 0) {
-        t_color.rgb *= t_color.a;
-        t_color.a = 0.0;
-    }
 }
 
 //// HELPER FUNCTIONS ////

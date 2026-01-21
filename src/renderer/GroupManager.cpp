@@ -1,8 +1,10 @@
 #include "GroupManager.hpp"
 #include "Renderer.hpp"
+#include "glm/ext/matrix_transform.hpp"
 #include <Geode/binding/EffectGameObject.hpp>
 #include <Geode/binding/GameObject.hpp>
 #include <optional>
+#include <string>
 
 using namespace geode::prelude;
 
@@ -99,10 +101,19 @@ void GroupManager::initWithObjects(cocos2d::CCArray* objects) {
 
     for (auto object : CCArrayExt<GameObject*>(objects)) {
         GroupCombination comb = GroupCombination(object);
+        GroupCombination rawComb = comb;
+
         comb.removeGroupIdsNotInSet(transformGroupIds);
 
         if (transformCombinationIndicies.find(comb) == transformCombinationIndicies.end()) {
             transformCombinationIndicies[comb] = transformCombIndex;
+            std::string s = "";
+            for (i32 a : rawComb.getSpan()) {
+                if (s != "") s += ", ";
+                s += std::to_string(a);
+            }
+            // log::info("Transform Id {} = ({})", transformCombIndex, s);
+            firstGroupIndexPerTransformIndex.push_back(groupCombinationIndicies[rawComb]);
             transformCombIndex++;
         }
     }
@@ -110,8 +121,8 @@ void GroupManager::initWithObjects(cocos2d::CCArray* objects) {
     transformCombinationCount = transformCombIndex;
     log::info("Number of unique group transformations: {}", transformCombinationCount);
 
-    groupStates.reserve(groupCombinationCount);
-    groupStateBuffer = Buffer::createDynamicDraw(getGroupStateBufferSize());
+    groupStates.resize(groupCombinationCount);
+    groupStateBuffer = Buffer::createDynamicDraw("Group state buffer", getGroupStateBufferSize());
 }
     
 GroupCombinationIndex GroupManager::getGroupCombinationIndexForObject(GameObject* object) {
@@ -204,10 +215,9 @@ void GroupManager::toggleGroup(GroupID groupId, bool visible) {
 }
 
 void GroupManager::resetGroupStates() {
-    for (i32 i = 0; i < getGroupCombinationCount(); i++) {
-        auto& groupState = groupStates[i];
-        groupState.positionalTransform = glm::mat4(1.0);
-        groupState.localTransform = glm::mat4(1.0);
+    for (auto& groupState : groupStates) {
+        groupState.positionalTransform = glm::identity<glm::mat2>();
+        groupState.localTransform = glm::identity<glm::mat2>();
         groupState.offset = glm::vec2(0, 0);
     }
     disabledGroups.clear();

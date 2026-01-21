@@ -98,6 +98,10 @@ public:
     */
     GroupCombinationIndex getTransformCombinationIndexForObject(GameObject* object);
 
+    inline GroupCombinationIndex getFirstGroupIndexOfTransformIndex(GroupCombinationIndex transformIndex) const {
+        return firstGroupIndexPerTransformIndex[transformIndex];
+    }
+
     inline GroupID getMaxGroupId() const { return maxGroupId; }
 
     inline u32 getGroupCombinationCount() const { return groupCombinationCount; }
@@ -109,6 +113,10 @@ public:
 
     inline isize getGroupStateBufferSize() {
         return groupCombinationCount * sizeof(GroupCombinationState);
+    }
+
+    inline std::span<GroupCombinationState> getGroupStates() {
+        return groupStates;
     }
 
     void prepareGroupStateBuffer();
@@ -145,6 +153,8 @@ private:
 
     u32 transformCombinationCount;
     std::map<GroupCombination, GroupCombinationIndex> transformCombinationIndicies;
+
+    std::vector<GroupCombinationIndex> firstGroupIndexPerTransformIndex;
 
     /*
         This is a map with the key being a group id and the value being

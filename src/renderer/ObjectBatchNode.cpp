@@ -1,21 +1,32 @@
 #include "ObjectBatchNode.hpp"
+#include "Geode/cocos/platform/win32/CCGL.h"
 #include "Renderer.hpp"
+#include <profiler.hpp>
 
 using namespace geode::prelude;
 
-bool ObjectBatchNode::init(SpriteSheet spriteSheet) {
-    this->spriteSheet = spriteSheet;
-    batch.setSpriteSheetFilter(spriteSheet);
-    spriteSheetTexture = renderer.getSpriteSheetTexture(spriteSheet);
-    return spriteSheetTexture != nullptr;
+bool ObjectBatchNode::init() {
+    auto renderer = Renderer::get();
+    spriteSheetTexture = renderer->getSpriteSheetTexture(layerId.spriteSheet);
+    drawCall = renderer->getObjectBatch().getDrawCall(layerId);
+    return true;
 }
 
 void ObjectBatchNode::draw() {
-    auto shader = renderer.prepareDraw();
+    profiler::functionPush("ObjectBatchNode::draw");
+    auto renderer = Renderer::get();
 
+    auto shader = renderer->prepareDraw();
     shader->setTexture("u_spriteSheet", 0, spriteSheetTexture);
 
-    batch.draw();
+    glEnable(GL_BLEND);
+    if (layerId.blending)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+    else
+        glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
 
-    renderer.finishDraw();
+    renderer->getObjectBatch().draw(drawCall);
+
+    renderer->finishDraw();
+    profiler::functionPop();
 }

@@ -2,12 +2,15 @@
 #include "Geode/cocos/CCDirector.h"
 #include "Geode/cocos/kazmath/include/kazmath/mat4.h"
 #include "Geode/cocos/platform/win32/CCGL.h"
+#include "Geode/cocos/robtop/keyboard_dispatcher/CCKeyboardDelegate.h"
+#include "Geode/cocos/sprite_nodes/CCSpriteBatchNode.h"
 #include "GroupManager.hpp"
+#include "HotKey.hpp"
 #include "ObjectBatchNode.hpp"
 #include "SpriteMeshDictionary.hpp"
+#include "VisibilityManager.hpp"
 #include "ccTypes.h"
 #include "common.hpp"
-#include "glm/common.hpp"
 #include "glm/fwd.hpp"
 #include "math/ConvexPolygon.hpp"
 #include "math/Line.hpp"
@@ -16,6 +19,8 @@
 #include <Geode/binding/GameObject.hpp>
 #include <Geode/binding/RingObject.hpp>
 #include <SectionSet.hpp>
+#include <BProfiler.hpp>
+#include "profiler.hpp"
 
 using namespace geode::prelude;
 
@@ -32,6 +37,10 @@ static std::string byteSizeToString(usize size) {
 }
 
 bool Renderer::init(PlayLayer* layer) {
+    if (currentRenderer)
+        return false;
+    currentRenderer = this;
+
     this->layer = layer;
     
     auto size = CCDirector::get()->getWinSize();
@@ -102,7 +111,11 @@ bool Renderer::init(PlayLayer* layer) {
     log::info("{} group combinations detected", groupCombCount);
 
     log::info("Generating vertex buffer...");
-    generateBatchNodes(sorter);
+
+    for (auto it = sorter.iterator(); !it.isEnd(); it.next())
+        objectBatch.writeGameObject(it.get());
+    objectBatch.finishWriting();
+    generateBatchNodes();
 
     log::info("Compiling shaders...");
 
@@ -115,11 +128,11 @@ bool Renderer::init(PlayLayer* layer) {
     if (!shader)
         return false;
 
-    colorChannelBufferObject = Buffer::createDynamicDraw(sizeof(ColorChannelBuffer));
+    colorChannelBufferObject = Buffer::createDynamicDraw("Color channel buffer", sizeof(ColorChannelBuffer));
     if (!colorChannelBufferObject)
         return false;
 
-    uniformBuffer = Buffer::createDynamicDraw(sizeof(RendererUniformBuffer));
+    uniformBuffer = Buffer::createDynamicDraw("Uniform buffer", sizeof(RendererUniformBuffer));
     if (!uniformBuffer)
         return false;
 
@@ -158,38 +171,16 @@ bool Renderer::init(PlayLayer* layer) {
     return true;
 }
 
-void Renderer::generateBatchNodes(ObjectSorter& sorter) {
-    // objectBatch.allocateReservations();
-    // std::vector<GameObject*> objests;
-    // for (auto it = sorter.iterator(); !it.isEnd(); it.next())
-    //     objectBatch.writeGameObject(it.get());
-    // objectBatch.finishWriting();
+void Renderer::generateBatchNodes() {
+    for (const auto& id : objectBatch.getUsedLayerIds()) {
+        auto batchNode = ObjectBatchNode::create(id);
+        if (batchNode) {
+            auto node = getSpriteBatchNodeWithLayerId(id);
 
-    ZLayer      prevZLayer;
-    SpriteSheet prevSpriteSheet;
-
-    ObjectBatchNode* currentBatchNode = nullptr;
-
-    for (auto it = sorter.iterator(); !it.isEnd(); it.next()) {
-        auto& olayer = it.getLayer();
-        if (!currentBatchNode || prevZLayer != olayer.zLayer || prevSpriteSheet != olayer.sheet) {
-            auto batchNode = ObjectBatchNode::create(*this, olayer.sheet);
-            if (batchNode) {
-                layer->m_objectLayer->addChild(batchNode, olayer.node->getZOrder());
-                batchNodes.push_back(batchNode);
-            }
-
-            prevZLayer       = olayer.zLayer;
-            prevSpriteSheet  = olayer.sheet;
-            currentBatchNode = batchNode;
+            layer->m_objectLayer->addChild(batchNode, node->getZOrder());
+            batchNodes.push_back(batchNode);
         }
-
-        if (currentBatchNode)
-            currentBatchNode->addGameObject(it.get());
     }
-
-    for (auto node : batchNodes)
-        node->generateBatch();
 }
 
 void Renderer::terminate() {
@@ -224,7 +215,7 @@ void Renderer::prepareShaderUniforms() {
 	
 	kmMat4Multiply(&matrixMVP, &matrixP, &matrixMV);
 
-    shader->setTextureArray("u_spriteSheets", (i32)SpriteSheet::COUNT, spriteSheets);
+    // shader->setTextureArray("u_spriteSheets", (i32)SpriteSheet::COUNT, spriteSheets);
 
     (kmMat4&)uniforms.u_mvp = matrixMVP;
     uniforms.u_timer = gameTimer;
@@ -270,16 +261,7 @@ void Renderer::prepareColorChannelBuffer() {
         channelColor.b = sprite->m_color.b;
         channelColor.a = (u8)sprite->m_opacity;
 
-        bool shouldBlend = layer->shouldBlend(id);
-        if (
-            id == COLOR_CHANNEL_P1 ||
-            id == COLOR_CHANNEL_P2 ||
-            id == COLOR_CHANNEL_LBG
-        ) {
-            shouldBlend = true;
-        }
-
-        if (shouldBlend)
+        if (isColorChannelBlending(id))
             colorChannelBuffer.u_colorChannelBlendingBitmap[id >> 5] |= 1 << (id & 0x1f);
         else
             colorChannelBuffer.u_colorChannelBlendingBitmap[id >> 5] &= ~(1 << (id & 0x1f));
@@ -359,7 +341,7 @@ void Renderer::generateStaticRenderingBuffer(ObjectSorter& sorter) {
         index++;
     }
 
-    srbBuffer = Buffer::createStaticDraw(objectInfos.data(), objectInfos.size() * sizeof(StaticObjectInfo));
+    srbBuffer = Buffer::createStaticDraw("Static rendering buffer", objectInfos.data(), objectInfos.size() * sizeof(StaticObjectInfo));
 };
 
 static glm::vec2 linePoint = { 100, 200 };
@@ -383,12 +365,45 @@ static void drawCross(Renderer* ren, const glm::vec2& point, const glm::vec4& co
     ren->drawLine(point + glm::vec2(-5,  5), point + glm::vec2( 5, -5), color);
 }
 
+BProfilerCategory GEN_BUFFERS = "Generate dynamic buffers";
+
+float CAMERA_CULL_RECT_SCALE = 1.3;
+
 void Renderer::draw() {
+    profiler::functionPush("Renderer::draw");
+    BProfiler::start();
+
+    u64 prevTime = getTime();
     storeGLStates();
     prepareShaderUniforms();
     if (!isPaused()) {
+        BProfiler::category(GEN_BUFFERS);
         prepareColorChannelBuffer();
         groupManager.prepareGroupStateBuffer();
+        BProfiler::end();
+
+        CameraView view = {
+            ccPointToGLM(layer->m_gameState.m_cameraPosition2),
+            glm::vec2(layer->m_cameraWidth, 0),
+            glm::vec2(0, layer->m_cameraHeight)
+        };
+
+        view.bottomLeft  += (view.rightVector + view.upVector) * 0.5f;
+        view.rightVector *= CAMERA_CULL_RECT_SCALE;
+        view.upVector    *= CAMERA_CULL_RECT_SCALE;
+        view.bottomLeft  -= (view.rightVector + view.upVector) * 0.5f;
+
+        glm::vec2 bl = view.bottomLeft;
+        glm::vec2 br = view.bottomLeft + view.rightVector;
+        glm::vec2 tl = view.bottomLeft + view.upVector;
+        glm::vec2 tr = view.bottomLeft + view.rightVector + view.upVector;
+
+        // drawLine(bl, br, glm::vec4(1, 1, 0, 1));
+        // drawLine(br, tr, glm::vec4(1, 1, 0, 1));
+        // drawLine(tr, tl, glm::vec4(1, 1, 0, 1));
+        // drawLine(tl, bl, glm::vec4(1, 1, 0, 1));
+
+        objectBatch.predraw(view);
     }
 
     /*
@@ -433,7 +448,6 @@ void Renderer::draw() {
     restoreGLStates();
 
     /*
-    u64 prevTime = getTime();
     
     if (debugTextEnabled) {
         // glBeginQuery(GL_TIME_ELAPSED, 50);
@@ -452,11 +466,13 @@ void Renderer::draw() {
         // glEndQuery(GL_TIME_ELAPSED);
         // glGetQueryObjecti64v(50, GL_QUERY_RESULT, &renderTime);
     }
-    drawFuncTime = getTime() - prevTime;
     */
+    drawFuncTime = getTime() - prevTime;
 
     if (debugText->isVisible())
         updateDebugText();
+
+    profiler::functionPop();
 }
 
 void Renderer::updateDebugText() {
@@ -481,14 +497,15 @@ void Renderer::updateDebugText() {
             text += fmt::format("Renderer::draw() time: {}ms\n", (double)drawFuncTime / 1000000.0);
             text += fmt::format("GJBaseGameLayer::update() time: {}ms\n", (double)gjbglUpdateTime / 1000000.0);
             text += fmt::format("Total frame time: {}ms\n", (double)totalFrameTime / 1000000.0);
-            text += fmt::format("Vertex buffer size: {}\n", byteSizeToString(objectBatch.getQuadCount() * sizeof(ObjectQuad)));
+            text += fmt::format("Vertex buffer size: {}\n", byteSizeToString(objectBatch.getVertexBufferSize()));
             text += fmt::format("Sprites on screen: {}\n", spritesOnScreen);
             text += fmt::format("Static rendering buffer size: {}\n", byteSizeToString(srbBuffer->getSize()));
             text += fmt::format("Group state buffer size: {}\n", byteSizeToString(groupManager.getGroupStateBufferSize()));
+            text += BProfiler::toString();
             text += "\n";
-            text += "Press F3 to hide this screen";
+            text += "Press F3 to hide this screen\n";
         } else if (differenceModeEnabled)
-            text += "_";
+            text += "_\n";
     }
 
     debugText->setString(text.c_str());
@@ -506,8 +523,6 @@ Shader* Renderer::prepareDraw() {
     colorChannelBufferObject->bindAsStorageBuffer(COLOR_CHANNEL_BUFFER_BINDING);
     groupManager.bindGroupStateBuffer();
 
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
     return shader;
 }
 
@@ -534,12 +549,32 @@ void Renderer::update(float dt) {
     cameraCenterPos = ccPointToGLM(gstate.m_cameraPosition2 + CCPoint(layer->m_cameraWidth * 0.5, layer->m_cameraHeight * 0.5));
 }
 
+bool Renderer::isColorChannelBlending(i32 channel) {
+    if (
+        channel == COLOR_CHANNEL_P1 ||
+        channel == COLOR_CHANNEL_P2 ||
+        channel == COLOR_CHANNEL_LBG
+    ) {
+        return true;
+    }
+
+    return layer->shouldBlend(channel);
+}
+
+CCSpriteBatchNode* Renderer::getSpriteBatchNodeWithLayerId(LayerIdentifier id) {
+    CCNode* node = layer->parentForZLayer((i32)id.zlayer, id.blending, (i32)id.spriteSheet, false);
+    
+    if (!node || layer->m_batchNodes->indexOfObject(node) == UINT_MAX)
+        return nullptr;
+
+    return (CCSpriteBatchNode*)node;
+}
+
 Ref<Renderer> Renderer::create(PlayLayer* layer) {
     auto ren = new Renderer;
 
     if (ren->init(layer)) {
         ren->autorelease();
-        currentRenderer = ren;
         return ren;
     }
     
@@ -579,7 +614,7 @@ void Renderer::drawLine(const glm::vec2& p1, const glm::vec2& p2, const glm::vec
         return;
 
     glm::vec2 data[2] = { p1, p2 };
-    Buffer* buffer = Buffer::createStaticDraw(&data, sizeof(data));
+    Buffer* buffer = Buffer::createStaticDraw("Line buffer", &data, sizeof(data));
     if (!buffer) return;
     buffer->bindAs(GL_ARRAY_BUFFER);
 
@@ -606,56 +641,24 @@ void Renderer::drawLine(const glm::vec2& p1, const glm::vec2& p2, const glm::vec
     Buffer::destroy(buffer);
 }
 
-/*
-#include <Geode/modify/CCKeyboardDispatcher.hpp>
-class $modify(RendererCCKeyboardDispatcher, CCKeyboardDispatcher) {
-    bool dispatchKeyboardMSG(enumKeyCodes key, bool keyDown, bool isKeyRepeat) {
-        auto renderer = Renderer::get();
-        if (!renderer || !keyDown)
-            return CCKeyboardDispatcher::dispatchKeyboardMSG(key, keyDown, isKeyRepeat);
-        
-        Line line { linePoint, { glm::cos(glm::radians(lineAngle)), glm::sin(glm::radians(lineAngle)) } };
-        switch (key) {
-        case KEY_J: linePoint.x -= 10; break;
-        case KEY_L: linePoint.x += 10; break;
-        case KEY_K: linePoint.y -= 10; break;
-        case KEY_I: linePoint.y += 10; break;
-        case KEY_Y: lineAngle -= 10; break;
-        case KEY_H: lineAngle += 10; break;
-        case KEY_M: if (triangleIndex != 0) triangleIndex--; break;
-        case KEY_P: triangleIndex++; break;
-        case KEY_G:
-            log::info("polygon.addLine(Line({}, glm::vec2({}, {})));", line.distance, line.normal.x, line.normal.y);
-            polygon.addLine(line);
-            break;
-        case KEY_B:
-            polygon.addLine(Line(64.45121, glm::vec2(0.76604456, -0.64278764)));
-            polygon.addLine(Line(257.2875, glm::vec2(0.76604456, 0.64278764)));
-            polygon.addLine(Line(-201.65384, glm::vec2(-0.9396926, -0.34202015)));
-            polygon.addLine(Line(-72.54986, glm::vec2(-0.9396926, 0.34202015)));
-            polygon.addLine(Line(-52.22432, glm::vec2(-0.8660254, 0.5)));
-            polygon.addLine(Line(-2.0276413, glm::vec2(-0.6427875, 0.76604456)));
-            polygon.addLine(Line(62.224335, glm::vec2(-0.4999999, 0.86602545)));
-            break;
-        case KEY_One:
-            polygon.addLine(Line(64.45121, glm::vec2(0.76604456, -0.64278764)));
-            break;
-        case KEY_Two:
-            polygon.addLine(Line(257.2875, glm::vec2(0.76604456, 0.64278764)));
-            break;
-        case KEY_Three:
-            polygon.addLine(Line(-201.65384, glm::vec2(-0.9396926, -0.34202015)));
-            break;
-        case KEY_Four:
-            polygon = ConvexPolygon();
-            break;
-        default:
-        }
+DECLARE_HOTKEY(KEY_F3, {
+    if (currentRenderer)
+        currentRenderer->toggleDebugText();
+})
 
-        return CCKeyboardDispatcher::dispatchKeyboardMSG(key, keyDown, isKeyRepeat);
-    }
-};
-*/
+DECLARE_HOTKEY(KEY_F8, {
+    if (currentRenderer)
+        currentRenderer->setEnabled(!currentRenderer->isEnabled());
+})
+
+DECLARE_HOTKEY(KEY_F9, {
+    if (currentRenderer)
+        currentRenderer->setDifferenceModeEnabled(!currentRenderer->isDifferenceModeEnabled());
+})
+
+DECLARE_HOTKEY(KEY_F6, {
+    BProfiler::useAverages(!BProfiler::isUsingAverages()); 
+});
 
 static i32 storedVAO, storedVBO, storedIBO, storedProgram;
 static i32 storedBlendSrcAlpha, storedBlendSrcRGB;

@@ -30,9 +30,11 @@ void Buffer::write(void* data, usize size, usize offset) {
     glBindBuffer(GL_ARRAY_BUFFER, previouslyBoundBuffer);
 }
 
-Buffer* Buffer::create(usize size, GLenum usage) {
+Buffer* Buffer::create(const char* name, usize size, GLenum usage) {
     u32 buffer;
     glGenBuffers(1, &buffer);
+
+    glObjectLabel(GL_BUFFER, buffer, strlen(name), name);
 
     i32 previouslyBoundBuffer;
     glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &previouslyBoundBuffer);

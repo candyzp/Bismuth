@@ -6,10 +6,10 @@
 #include <vector>
 
 #include "Buffer.hpp"
-#include "Geode/cocos/textures/CCTexture2D.h"
-#include "ObjectSpriteUnpacker.hpp"
+#include "VisibilityManager.hpp"
 #include "glm/fwd.hpp"
 #include "math/ConvexList.hpp"
+#include "ObjectUtils.hpp"
 
 using namespace geode;
 
@@ -74,10 +74,18 @@ struct SpriteVertexTransforms {
     glm::vec2 texCoordUp;
 };
 
-class ObjectBatch : public ObjectSpriteUnpackerDelegate {
+class ObjectBatch {
+public:
+    struct LayerDrawCall {
+        LayerIdentifier id;
+        VisibilityManager::Layer layer;
+        u32 startIndex;
+        u32 indexCount;
+    };
+
 public:
     inline ObjectBatch(Renderer& renderer)
-        : renderer(renderer), unpacker(*this) {}
+        : renderer(renderer) {}
     ~ObjectBatch();
 
     SpriteVertexTransforms getSpriteVertexTransform(
@@ -98,12 +106,12 @@ public:
 
     void writeSpriteMeshFromConvexList(const ConvexList& list);
 
-    void receiveUnpackedSprite(
+    void addSprite(
         GameObject* parentObject,
         cocos2d::CCSprite* sprite,
         SpriteType type,
         const cocos2d::CCAffineTransform& transform
-    ) override;
+    );
 
     void writeGameObject(GameObject* object);
 
@@ -118,45 +126,50 @@ public:
     //     return quadCount * 6;
     // }
 
-    inline usize getQuadCount() {
-        return quadCount;
+    inline usize getVertexBufferSize() {
+        return vertexCount * sizeof(ObjectVertex);
     }
 
     inline void setSpriteSheetFilter(SpriteSheet sheet) {
         spriteSheetFilter = sheet;
     }
 
-    usize generateCulledIndicies();
+    inline std::vector<LayerIdentifier> getUsedLayerIds() {
+        return visibilityManager.getUsedLayerIds();
+    }
 
-    usize draw();
+    void predraw(const CameraView& view);
+
+    LayerDrawCall* getDrawCall(const LayerIdentifier& id);
+
+    void draw(LayerDrawCall* drawCall);
 
 private:
     void prepareVAO();
 
 private:
     Renderer& renderer;
-    ObjectSpriteUnpacker unpacker;
+
+    // Manages which objects are visible
+    VisibilityManager visibilityManager;
 
     SpriteSheet spriteSheetFilter = (SpriteSheet)-1;
 
-    // This is only used when writing. After writing, it is cleared.
-    std::vector<ObjectQuad> quads;
-    usize currentQuadIndex = 0;
-    usize prevCulledIndiciesCount = 0;
-
     Buffer* vertexBuffer = nullptr;
-    Buffer* indexBuffer = nullptr;
-
-    std::vector<u32> quadsSrbIndicies;
-    std::vector<ObjectIndicies> culledIndicies;
+    Buffer* indexBuffer  = nullptr;
 
     u32 vao = 0;
-    u32 quadCount = 0;
 
-    std::vector<u32> indicies;
     std::vector<ObjectVertex> verticies;
     u32 vertexCount = 0;
-    u32 indexCount  = 0;
+
+    std::vector<u32> indicies;
+    u32 indexCount = 0;
+    
+    std::vector<u32> culledIndicies;
+    u32 culledIndexCount = 0;
+
+    std::vector<LayerDrawCall> layerDrawCalls;
 
     SpriteVertexTransforms currentSpriteVertexTransforms;
     glm::vec2 currentSpriteObjectStartPosition;

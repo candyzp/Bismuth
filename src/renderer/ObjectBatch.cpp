@@ -1,7 +1,7 @@
 #include "ObjectBatch.hpp"
+#include "BProfiler.hpp"
 #include "Geode/cocos/cocoa/CCAffineTransform.h"
 #include "Geode/cocos/sprite_nodes/CCSpriteFrame.h"
-#include "ObjectSpriteUnpacker.hpp"
 #include "Renderer.hpp"
 #include "SpriteMeshDictionary.hpp"
 #include "common.hpp"
@@ -85,17 +85,11 @@ void ObjectBatch::prepareSpriteMeshWrite(
     SpriteType type,
     const cocos2d::CCAffineTransform& transform
 ) {
-    SpriteSheet spriteSheet = unpacker.getSpritesheetOfObject(object, type);
+    SpriteSheet spriteSheet = ObjectUtils::getSpritesheetOfObject(object, type);
     if (spriteSheetFilter != (SpriteSheet)-1 && spriteSheet != spriteSheetFilter)
         return;
 
-    u32 colorChannel = type == SpriteType::DETAIL ? object->m_activeDetailColorID : object->m_activeMainColorID;
-
-    bool isSpriteBlack = (sprite == object) ? object->m_isObjectBlack : object->m_isColorSpriteBlack;
-    if (isSpriteBlack)
-        colorChannel = COLOR_CHANNEL_BLACK;
-    if (type == SpriteType::GLOW && object->m_glowColorIsLBG)
-        colorChannel = COLOR_CHANNEL_LBG;
+    u32 colorChannel = ObjectUtils::getSpriteColorChannel(type, object, sprite);
     if (type == SpriteType::DETAIL)
         colorChannel |= A_COLOR_CHANNEL_IS_SPRITE_DETAIL;
 
@@ -145,13 +139,15 @@ void ObjectBatch::writeSpriteMeshFromConvexList(const ConvexList& list) {
     });
 }
 
-void ObjectBatch::receiveUnpackedSprite(
+void ObjectBatch::addSprite(
     GameObject* object,
     cocos2d::CCSprite* sprite,
     SpriteType type,
     const cocos2d::CCAffineTransform& transform
 ) {
     prepareSpriteMeshWrite(object, sprite, type, transform);
+
+    usize indiciesBegin = indicies.size();
 
     ConvexList* spriteMesh = SpriteMeshDictionary::getSpriteMeshForSprite(sprite);
 
@@ -170,6 +166,8 @@ void ObjectBatch::receiveUnpackedSprite(
         writeSpriteIndex(QUAD_TR);
         writeSpriteIndex(QUAD_BR);
     }
+
+    visibilityManager.addObjectSprite(sprite, type, indiciesBegin, indicies.size());
 }
 
 void ObjectBatch::writeGameObject(GameObject* object) {
@@ -181,37 +179,22 @@ void ObjectBatch::writeGameObject(GameObject* object) {
         object->setScaleY(object->m_scaleY);
     }
 
-    unpacker.unpackObject(object);
+    visibilityManager.prepareForObject(object);
+
+    ObjectUtils::unpackObjectIntoSprites(object, [&](const UnpackedSprite& sprite) {
+        addSprite(sprite.parentObject, sprite.sprite, sprite.type, sprite.transform);
+    });
 
     object->setScaleX(originalScaleX);
     object->setScaleY(originalScaleY);
 }
 
 void ObjectBatch::finishWriting() {
-    /*
-    quadCount = currentQuadIndex;
-
-    indicies.resize(quadCount);
-
-    usize vertexIndex = 0;
-    for (usize i = 0; i < quadCount; i++) {
-        ObjectIndicies& objIndicies = indicies[i];
-        objIndicies.indicies[0] = vertexIndex + QUAD_BL;
-        objIndicies.indicies[1] = vertexIndex + QUAD_TL;
-        objIndicies.indicies[2] = vertexIndex + QUAD_TR;
-        objIndicies.indicies[3] = vertexIndex + QUAD_BL;
-        objIndicies.indicies[4] = vertexIndex + QUAD_TR;
-        objIndicies.indicies[5] = vertexIndex + QUAD_BR;
-        vertexIndex += 4;
-    }
-    
-    quadsSrbIndicies.resize(quadCount);
-
-    for (usize i = 0; i < quadCount; i++)
-        quadsSrbIndicies[i] = quads[i].verticies[0].srbIndex;
-    */
-
     storeGLStates();
+
+    auto layers = visibilityManager.getUsedLayerIds();
+    for (auto& layerId : layers)
+        layerDrawCalls.push_back({ layerId, visibilityManager.getLayer(layerId), 0, 0 });
 
     if (vertexBuffer) {
         Buffer::destroy(vertexBuffer);
@@ -226,55 +209,63 @@ void ObjectBatch::finishWriting() {
     vertexCount = verticies.size();
     indexCount  = indicies.size();
 
+    vertexBuffer = Buffer::createStaticDraw("Object vertex buffer", verticies.data(), vertexCount * sizeof(ObjectVertex));
+    culledIndicies.resize(indexCount);
+    indexBuffer = Buffer::createDynamicDraw("Object index buffer", indexCount * sizeof(u32));
 
-
-    vertexBuffer = Buffer::createStaticDraw(verticies.data(), vertexCount * sizeof(ObjectVertex));
-    // if (renderer.isUseIndexCulling()) {
-    //     culledIndicies.resize(quadCount);
-        indexBuffer = Buffer::createStaticDraw(indicies.data(), indexCount * sizeof(u32));
-    // } else {
-    //     indexBuffer = Buffer::createStaticDraw(indicies.data(), indicies.size() * sizeof(ObjectIndicies));
-    //     indicies.clear();
-    // }
-
-    indicies.clear();
     verticies.clear();
     
     prepareVAO();
     restoreGLStates();
 }
 
-usize ObjectBatch::generateCulledIndicies() {
-//    if (renderer.isPaused())
-//        return prevCulledIndiciesCount;
-//
-//    usize outIndex = 0;
-//
-//    for (usize i = 0; i < quadCount; i++) {
-//        if (!renderer.isObjectInView(quadsSrbIndicies[i]))
-//            continue;
-//
-//        culledIndicies[outIndex] = indicies[i];
-//        outIndex++;
-//    }
-//
-//    indexBuffer->write(culledIndicies.data(), outIndex * sizeof(ObjectIndicies));
-//    prevCulledIndiciesCount = outIndex * INDICIES_PER_QUAD;
-//    return outIndex * INDICIES_PER_QUAD;
-    return 0;
+static BProfilerCategory CALC_VISIBS   = "Calculate visibilities";
+static BProfilerCategory CALC_INDICIES = "Calculate indicies";
+
+void ObjectBatch::predraw(const CameraView& view) {
+    BProfiler::category(CALC_VISIBS);
+    visibilityManager.calculateVisibilitiesForCameraView(view);
+
+    BProfiler::category(CALC_INDICIES);
+
+    usize index = 0;
+
+    for (auto& drawCall : layerDrawCalls) {
+        drawCall.startIndex = index;
+        
+        visibilityManager.forEachVisibleSpriteIndexRangeInLayer(drawCall.layer, [&](usize begin, usize end) {
+            // Maybe use std::copy?
+            memcpy(culledIndicies.data() + index, indicies.data() + begin, (end - begin) * sizeof(u32));
+            index += end - begin;
+        });
+
+        drawCall.indexCount = index - drawCall.startIndex;
+    }
+
+    // log::info("INDICIES COUNT {}", index);
+    // for (i32 i = 0; i < index; i++)
+    //     log::info("INDEX {}", culledIndicies[i]);
+
+    culledIndexCount = index;
+    indexBuffer->write(culledIndicies.data(), culledIndexCount * sizeof(u32));
+
+    BProfiler::end();
 }
 
-usize ObjectBatch::draw() {
-    bind();
-//    usize indiciesCount = indexCount();
-//    if (renderer.isUseIndexCulling())
-//        indiciesCount = generateCulledIndicies();
-//
-//    if (indiciesCount == 0)
-//        return 0;
+ObjectBatch::LayerDrawCall* ObjectBatch::getDrawCall(const LayerIdentifier& id) {
+    for (auto& drawCall : layerDrawCalls) {
+        if (drawCall.id == id)
+            return &drawCall;
+    }
+    return nullptr;
+}
 
-    glDrawElements(GL_TRIANGLES, indexCount, GL_UNSIGNED_INT, nullptr);
-    return indexCount / INDICIES_PER_QUAD;
+void ObjectBatch::draw(LayerDrawCall* drawCall) {
+    if (drawCall == nullptr)
+        return;
+
+    bind();
+    glDrawElements(GL_TRIANGLES, drawCall->indexCount, GL_UNSIGNED_INT, (void*)(drawCall->startIndex * sizeof(u32)));
 }
 
 struct AttribTypeInfo {

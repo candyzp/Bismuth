@@ -1,6 +1,5 @@
 #include "common.hpp"
 #include "Geode/cocos/CCDirector.h"
-#include "Geode/cocos/platform/win32/CCGL.h"
 #include "renderer/Buffer.hpp"
 
 using namespace geode::prelude;
@@ -9,6 +8,22 @@ std::chrono::steady_clock::time_point modStartTime;
 
 $on_mod(Loaded) {
     modStartTime = std::chrono::high_resolution_clock::now();
+}
+
+using ProcGlObjectLabel = void(*)(GLenum, GLuint, GLsizei, const char*);
+
+ProcGlObjectLabel glObjectLabelProc = nullptr;
+
+void glObjectLabel(GLenum id, GLuint name, GLsizei length, const char* label) {
+    #ifdef GEODE_WINDOWS
+    if (!glObjectLabelProc) {
+        HMODULE mod = LoadLibraryA("opengl32.dll");
+        if (mod)
+            glObjectLabelProc = (ProcGlObjectLabel)GetProcAddress(mod, "glObjectLabel");
+    }
+    if (glObjectLabelProc)
+        glObjectLabelProc(id, name, length, label);
+    #endif
 }
 
 static float fullscreenQuad[] = {
@@ -26,7 +41,7 @@ Buffer* fullscreenQuadVBO = nullptr;
 void drawFullscreenQuad() {
     if (!fullscreenQuadVAO) {
         if (!fullscreenQuadVBO)
-            fullscreenQuadVBO = Buffer::createStaticDraw(fullscreenQuad, sizeof(fullscreenQuad));
+            fullscreenQuadVBO = Buffer::createStaticDraw("Fullscreen quad buffer", fullscreenQuad, sizeof(fullscreenQuad));
 
         glGenVertexArrays(1, &fullscreenQuadVAO);
         glBindVertexArray(fullscreenQuadVAO);

@@ -2,8 +2,10 @@
 
 #include <Geode/binding/GameObject.hpp>
 #include <common.hpp>
+#include "Geode/cocos/sprite_nodes/CCSpriteBatchNode.h"
 #include "ObjectBatch.hpp"
 #include "ObjectSorter.hpp"
+#include "ObjectUtils.hpp"
 #include "OverdrawView.hpp"
 #include "Shader.hpp"
 #include <memory>
@@ -27,7 +29,7 @@ private:
 
     bool init(PlayLayer* layer);
 
-    void generateBatchNodes(ObjectSorter& sorter);
+    void generateBatchNodes();
 
     void terminate();
 
@@ -51,6 +53,10 @@ protected:
 
 public:
     void update(float dt) override;
+
+    bool isColorChannelBlending(i32 channel);
+
+    cocos2d::CCSpriteBatchNode* getSpriteBatchNodeWithLayerId(LayerIdentifier id);
 
     inline cocos2d::CCTexture2D* getSpriteSheetTexture(SpriteSheet sheet) {
         if ((i32)sheet < 0 || (i32)sheet >= (i32)SpriteSheet::COUNT)
@@ -92,6 +98,8 @@ public:
     }
 
     inline bool isUseIndexCulling() const { return useIndexCulling; }
+
+    inline ObjectBatch& getObjectBatch() { return objectBatch; }
 
     bool useOptimizations();
 

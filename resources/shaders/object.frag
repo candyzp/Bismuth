@@ -38,11 +38,11 @@ void main() {
     // else
     //     texColor = vec4(1.0, 1.0, 1.0, 1.0);
 
-    if (t_blending == 0) {
-        FragColor = texture(SPRITESHEET_TEXTURE, t_texCoord) * t_color;
-    } else {
-        vec4 texColor = texture(SPRITESHEET_TEXTURE, t_texCoord);
-        FragColor = texColor * t_color;
-        FragColor.rgb *= texColor.a;
-    }
+    // if (t_blending == 0) {
+    FragColor = texture(SPRITESHEET_TEXTURE, t_texCoord) * t_color;
+    // } else {
+    //     vec4 texColor = texture(SPRITESHEET_TEXTURE, t_texCoord);
+    //     FragColor = texColor * t_color;
+    //     FragColor.rgb *= texColor.a;
+    // }
 }

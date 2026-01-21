@@ -1,3 +1,4 @@
+#include <Geode/Enums.hpp>
 #include <Geode/Geode.hpp>
 #include <Geode/binding/EffectGameObject.hpp>
 #include "PlayLayer.hpp"
@@ -28,7 +29,9 @@ void decomp_PlayLayer::virtual_updateVisibility(float delta) {
     float someValue = m_gameState.m_cameraPosition2.x + m_cameraWidth;
 
     // Windows only
+#ifdef GEODE_IS_WINDOWS
     *(float*)((char*)GetModuleHandle(NULL) + 0x6a304c) = someValue;
+#endif
 
     preUpdateVisibility(delta);
     m_effectManager->processColors();

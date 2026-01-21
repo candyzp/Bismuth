@@ -4,6 +4,7 @@
 #include "Geode/cocos/platform/win32/CCEGLView.h"
 #include "Geode/cocos/platform/win32/CCGL.h"
 #include "Geode/modify/Modify.hpp"
+#include "HotKey.hpp"
 #include "Renderer.hpp"
 
 using namespace geode::prelude;
@@ -149,14 +150,20 @@ class $modify(OverdrawViewCCDirector, CCDirector) {
     }
 };
 
-#include <Geode/modify/CCKeyboardDispatcher.hpp>
-class $modify(OverdrawViewCCKeyboardDispatcher, CCKeyboardDispatcher) {
-    bool dispatchKeyboardMSG(enumKeyCodes key, bool keyDown, bool isKeyRepeat) {
-        if (instance) {
-            if (keyDown && key == KEY_F4 && !isKeyRepeat)
-                instance->setEnabled(!instance->isEnabled());
-        }
+// #include <Geode/modify/CCKeyboardDispatcher.hpp>
+// class $modify(OverdrawViewCCKeyboardDispatcher, CCKeyboardDispatcher) {
+//     bool dispatchKeyboardMSG(enumKeyCodes key, bool keyDown, bool isKeyRepeat) {
+//         log::info("ofuck {} {} {}", (u32)key, keyDown, isKeyRepeat);
+//         if (instance) {
+//             if (keyDown && key == KEY_F4 && !isKeyRepeat)
+//                 instance->setEnabled(!instance->isEnabled());
+//         }
+// 
+//         return CCKeyboardDispatcher::dispatchKeyboardMSG(key, keyDown, isKeyRepeat);
+//     }
+// };
 
-        return CCKeyboardDispatcher::dispatchKeyboardMSG(key, keyDown, isKeyRepeat);
-    }
-};
+DECLARE_HOTKEY(KEY_F4, {
+    if (instance)
+        instance->setEnabled(!instance->isEnabled());
+})

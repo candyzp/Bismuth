@@ -4,7 +4,7 @@
 #include <algorithm>
 #include <common.hpp>
 
-#define DEFAULT_SECTION_SIZE { 200, 200 }
+#define DEFAULT_SECTION_SIZE { 50, 50 }
 
 template <typename _Object>
 using SectionSetFetchObjectPosition = std::function<glm::vec2(const _Object&)>;
@@ -46,7 +46,10 @@ public:
     using Section = std::vector<_Object>;
 
 public:
-    SectionSet(SectionSetFetchObjectPosition<_Object> func)
+    inline SectionSet()
+        : fetchPositionFunction(nullptr) {}
+
+    inline SectionSet(SectionSetFetchObjectPosition<_Object> func)
         : fetchPositionFunction(func) {}
 
     inline ~SectionSet() {
@@ -65,11 +68,12 @@ public:
             createCount--;
         }
 
-        geode::log::info("Section Set destroyed with {} left", createCount);
+        // geode::log::info("Section Set destroyed with {} left", createCount);
     }
 
     inline void add(_Object& object) {
         auto sectionPos = getSectionPosition(object);
+        // geode::log::info("Add object at section ({}, {})", sectionPos.x, sectionPos.y);
         auto& section = getOrCreateSectionAtPosition(sectionPos);
         section.push_back(object);
     }
@@ -93,6 +97,12 @@ public:
     inline void forEachSectionInRect(const Rect& rect, std::function<void(const Section&)> callback) {
         SectionPos min = glm::ivec2(rect.bottomLeft / _SectionSize);
         SectionPos max = glm::ivec2(rect.topRight   / _SectionSize);
+        
+        // min = (8, 1), max = (13, 4)
+        // if (fusk)
+        //     geode::log::info("min = ({}, {}), max = ({}, {})", min.x, min.y, max.x, max.y);
+
+        // geode::log::info("minX = {}, maxX = {}, minY = {}, maxY = {}", min.x, max.x, min.y, max.y);
 
         if (
             max.x < minPos.x || maxPos.x < min.x ||
@@ -102,20 +112,33 @@ public:
         }
 
         i32 minX = maxInt(min.x - sectionXOffset, 0);
-        i32 maxX = max.x - sectionXOffset;
+        i32 maxX = max.x - sectionXOffset + 1;
 
         i32 minY = maxInt(min.y - sectionYOffset, 0);
-        i32 maxY = minInt(max.y - sectionYOffset, map.size());
+        i32 maxY = minInt(max.y - sectionYOffset + 1, map.size());
 
-        for (i32 y = minY; y <= maxY; y++) {
+        // geode::log::info("smin = ({}, {}), smax = ({}, {})", minX, minY, maxX, maxY);
+
+        i32 stuff = 0;
+
+        // geode::log::info("Y {} -> {}", minY, maxY);
+
+        for (i32 y = minY; y < maxY; y++) {
+            // geode::log::info("Test Y: {}", y);
             auto column = map[y];
             if (column == nullptr) continue;
 
             i32 maxXClamped = minInt(maxX, column->size());
-            for (i32 x = minX; x <= maxXClamped; x++) {
+            // geode::log::info("{} => {}", minX, maxXClamped);
+            for (i32 x = minX; x < maxXClamped; x++) {
+                // geode::log::info("access column at {} size {}", x, column->size());
+                // geode::log::info("Checking section [{}, {}]", x + sectionXOffset, y + sectionYOffset);
                 auto section = column->at(x);
-                if (section)
+                if (section) {
+                    // geode::log::info("gottem!");
                     callback(*section);
+                    stuff += section->size();
+                }
             }
         }
     }
@@ -131,8 +154,12 @@ private:
         if (pos.x < minPos.x) minPos.x = pos.x;
         if (pos.y < minPos.y) minPos.y = pos.y;
 
-        if (map.size() == 0)
+        if (map.size() == 0) {
             sectionYOffset = pos.y;
+            sectionXOffset = pos.x;
+        }
+
+        // geode::log::info("sectionYOffset = {}", sectionYOffset);
 
         if (pos.y < sectionYOffset) {
             i32 increase = sectionYOffset - pos.y;
@@ -144,29 +171,32 @@ private:
         } else if (pos.y - sectionYOffset >= map.size()) {
             i32 oldSize = map.size();
             map.resize(pos.y - sectionYOffset + 1);
+            // geode::log::info("resize Y to {}", pos.y - sectionYOffset + 1);
             std::fill(map.begin() + oldSize, map.end(), nullptr);
         }
 
         auto& columnPtr = map[pos.y - sectionYOffset];
         if (columnPtr == nullptr) {
+            // geode::log::info("New column at {} ({} + {})", pos.y, pos.y - sectionYOffset, sectionYOffset);
             columnPtr = new std::vector<Section*>;
             createCount++;
         }
         auto& column = *columnPtr;
 
-        if (column.size() == 0)
-            sectionXOffset = pos.x;
+        // geode::log::info("sectionXOffset = {}", sectionXOffset);
 
         if (pos.x < sectionXOffset) {
             setSectionXOffset(pos.x);
         } else if (pos.x - sectionXOffset >= column.size()) {
             i32 oldSize = column.size();
+            // geode::log::info("resize X of {} to {}", pos.y, pos.x - sectionXOffset + 1);
             column.resize(pos.x - sectionXOffset + 1);
             std::fill(column.begin() + oldSize, column.end(), nullptr);
         }
 
-        auto& sectionPtr = column[pos.y - sectionXOffset];
+        auto& sectionPtr = column[pos.x - sectionXOffset];
         if (sectionPtr == nullptr) {
+            // geode::log::info("New section at Y={}, X={} ({} + {})", pos.y, pos.x, pos.x - sectionXOffset, sectionXOffset);
             sectionPtr = new Section;
             createCount++;
         }
@@ -174,6 +204,10 @@ private:
     }
 
     inline void setSectionXOffset(i32 newX) {
+        // geode::log::info("setSectionXOffset {} {}", newX, (void*)this);
+        if (newX >= sectionXOffset) {}
+            // geode::log::info("PROBLEM!");
+
         assert(newX < sectionXOffset);
         i32 increase = sectionXOffset - newX;
 

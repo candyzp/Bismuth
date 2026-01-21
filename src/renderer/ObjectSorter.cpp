@@ -1,5 +1,4 @@
 #include "ObjectSorter.hpp"
-#include "ObjectSpriteUnpacker.hpp"
 
 static std::array<ZLayer, 9> zlayers = {
     ZLayer::B5,

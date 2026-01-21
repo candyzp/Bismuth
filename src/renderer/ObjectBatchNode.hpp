@@ -3,28 +3,21 @@
 #include <common.hpp>
 
 #include "ObjectBatch.hpp"
+#include "ObjectUtils.hpp"
 
 class ObjectBatchNode : public cocos2d::CCNode {
 public:
-    inline ObjectBatchNode(Renderer& renderer)
-        : renderer(renderer), batch(renderer) {}
+    inline ObjectBatchNode(const LayerIdentifier& id)
+        : layerId(id) {}
 
-    bool init(SpriteSheet spriteSheet);
+    bool init() override;
 
     void draw() override;
 
-    inline void addGameObject(GameObject* object) {
-        batch.writeGameObject(object);
-    }
-
-    inline void generateBatch() {
-        batch.finishWriting();
-    }
-
 public:
-    static inline Ref<ObjectBatchNode> create(Renderer& renderer, SpriteSheet spriteSheet) {
-        auto ret = new ObjectBatchNode(renderer);
-        if (ret->init(spriteSheet)) {
+    static inline Ref<ObjectBatchNode> create(const LayerIdentifier& id) {
+        auto ret = new ObjectBatchNode(id);
+        if (ret->init()) {
             ret->autorelease();
             return ret;
         }
@@ -33,9 +26,7 @@ public:
     }
 
 private:
-    Renderer& renderer;
-    ObjectBatch batch;
-
-    SpriteSheet spriteSheet;
+    ObjectBatch::LayerDrawCall* drawCall;
+    LayerIdentifier layerId;
     cocos2d::CCTexture2D* spriteSheetTexture;
 };

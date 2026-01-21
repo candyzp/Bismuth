@@ -1,9 +1,9 @@
-#include "ObjectSpriteUnpacker.hpp"
+#include "ObjectUtils.hpp"
 #include "Geode/cocos/cocoa/CCAffineTransform.h"
 
 using namespace geode::prelude;
 
-void ObjectSpriteUnpacker::unpackObject(GameObject* object) {
+void ObjectUtils::unpackObjectIntoSprites(GameObject* object, ReceiveUnpackedSpriteFunc func) {
     CCSprite* colorSprite = object->m_colorSprite;
 
     bool shouldUnpackColorSprite = colorSprite && colorSprite->getParent() != object;
@@ -12,21 +12,22 @@ void ObjectSpriteUnpacker::unpackObject(GameObject* object) {
     auto transform = CCAffineTransformMakeIdentity();
 
     if (object->m_glowSprite)
-        unpackSpriteRecursively(object, object->m_glowSprite, transform);
+        unpackSpriteRecursively(object, object->m_glowSprite, transform, func);
 
     if (shouldUnpackColorSprite && !isColorSpriteInFront)
-        unpackSpriteRecursively(object, colorSprite, transform);
+        unpackSpriteRecursively(object, colorSprite, transform, func);
 
-    unpackSpriteRecursively(object, object, transform);
+    unpackSpriteRecursively(object, object, transform, func);
 
     if (shouldUnpackColorSprite && isColorSpriteInFront)
-        unpackSpriteRecursively(object, colorSprite, transform);
+        unpackSpriteRecursively(object, colorSprite, transform, func);
 }
 
-void ObjectSpriteUnpacker::unpackSpriteRecursively(
+void ObjectUtils::unpackSpriteRecursively(
     GameObject* object,
     cocos2d::CCSprite* sprite,
     cocos2d::CCAffineTransform transform,
+    ReceiveUnpackedSpriteFunc func,
     SpriteType type
 ) {
     transform = CCAffineTransformConcat(sprite->nodeToParentTransform(), transform);
@@ -38,14 +39,14 @@ void ObjectSpriteUnpacker::unpackSpriteRecursively(
 
     for (auto child : spriteChildren) {
         if (child->getZOrder() < 0)
-            unpackSpriteRecursively(object, child, transform, type);
+            unpackSpriteRecursively(object, child, transform, func, type);
     }
     
     if (!sprite->getDontDraw())
-        delegate.receiveUnpackedSprite(object, sprite, type, transform);
+        func({sprite, object, type, transform});
 
     for (auto child : spriteChildren) {
         if (child->getZOrder() >= 0)
-            unpackSpriteRecursively(object, child, transform, type);
+            unpackSpriteRecursively(object, child, transform, func, type);
     }
 }
