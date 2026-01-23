@@ -2,26 +2,36 @@
 
 #include "common.hpp"
 
-struct BProfilerCategory {
-    const char* name;
-
-    inline BProfilerCategory(const char* name)
-        : name(name) {}
-};
-
 class BProfiler {
 public:
-    static void start();
+    class Timer;
 
-    static void end();
-
-    static void category(BProfilerCategory* category);
+public:
+    static Timer start(const std::string& name);
 
     static bool isUsingAverages();
 
     static void useAverages(bool cond);
 
-    static inline void category(BProfilerCategory& cat) { category(&cat); }
-
     static std::string toString();
+
+    static void frameEnd();
+
+private:
+    static void end(std::string name, u64 time);
+
+public:
+    struct Timer {
+    private:
+        std::string name;
+        u64 lastTime;
+
+    public:
+        inline Timer(const std::string& name)
+            : name(name), lastTime(getTime()) {}
+
+        inline void end() {
+            BProfiler::end(name, getTime() - lastTime);
+        }
+    };
 };

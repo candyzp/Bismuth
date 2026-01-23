@@ -67,6 +67,8 @@ public:
         return std::span<const GroupID>(ids.data(), &ids[count]);
     }
 
+    inline i32 getCount() const { return count; }
+
     operator std::string() const;
 
 private:
@@ -116,7 +118,7 @@ public:
     }
 
     inline std::span<GroupCombinationState> getGroupStates() {
-        return groupStates;
+        return { groupStates, groupStates + getGroupCombinationCount() };
     }
 
     void prepareGroupStateBuffer();
@@ -145,25 +147,34 @@ private:
     Renderer& renderer;
 
     // GroupCombinationState struct can be found in resources/shaders/shared.h
-    std::vector<GroupCombinationState> groupStates;
+    // std::vector<GroupCombinationState> groupStates;
+    GroupCombinationState* groupStates;
     Buffer* groupStateBuffer = nullptr;
 
     u32 groupCombinationCount;
     std::map<GroupCombination, GroupCombinationIndex> groupCombinationIndicies;
 
     u32 transformCombinationCount;
-    std::map<GroupCombination, GroupCombinationIndex> transformCombinationIndicies;
+    std::map<GroupCombination, u32> transformCombinationIndicies;
+
+    u32 alphaIndiciesCount;
+    std::map<GroupCombination, u32> alphaIndicies;
+
+    std::vector<u32> alphaIndiciesPerGroupCombinationIndex;
+    std::vector<u32> alphaIndexGroupIdFastStructure;
+    std::vector<float> alphaValuesPerGroupId;
+    std::vector<float> alphaValuesPerAlphaIndex;
 
     std::vector<GroupCombinationIndex> firstGroupIndexPerTransformIndex;
 
     /*
-        This is a map with the key being a group id and the value being
+        This is a vector with the index being a group id and the value being
         an array of all group combination indicies it belongs to.
 
         This is used for fast lookup to see which group combinations
         need to be changed when a group id gets affected.
     */
-    std::unordered_map<GroupID, std::vector<GroupCombinationIndex>> groupCombinationIndiciesPerGroupId;
+    std::vector<std::vector<GroupCombinationIndex>> groupCombinationIndiciesPerGroupId;
 
     GroupID maxGroupId = 0;
 
@@ -175,6 +186,8 @@ private:
         of a transforming trigger like move, rotate and scale.
     */
     std::set<GroupID> transformGroupIds;
+
+    std::set<GroupID> alphaGroupIds;
 
     std::set<GroupID> disabledGroups;
 };

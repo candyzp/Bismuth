@@ -98,7 +98,6 @@ void ObjectBatch::prepareSpriteMeshWrite(
 
     currentSpriteSRBIndex     = renderer.getObjectSRBIndex(object);
     currentSpriteColorChannel = colorChannel;
-    currentSpriteSpriteSheet  = (u8)spriteSheet;
     currentSpriteVertexIndex  = verticies.size();
 }
 
@@ -119,7 +118,6 @@ void ObjectBatch::writeSpriteVertex(glm::vec2 pos) {
 
     vertex.srbIndex     = currentSpriteSRBIndex;
     vertex.colorChannel = currentSpriteColorChannel;
-    vertex.spriteSheet  = currentSpriteSpriteSheet;
 }
 
 void ObjectBatch::writeSpriteIndex(u32 index) {
@@ -219,14 +217,12 @@ void ObjectBatch::finishWriting() {
     restoreGLStates();
 }
 
-static BProfilerCategory CALC_VISIBS   = "Calculate visibilities";
-static BProfilerCategory CALC_INDICIES = "Calculate indicies";
-
 void ObjectBatch::predraw(const CameraView& view) {
-    BProfiler::category(CALC_VISIBS);
+    auto timer = BProfiler::start("Calculate visibilities");
     visibilityManager.calculateVisibilitiesForCameraView(view);
+    timer.end();
 
-    BProfiler::category(CALC_INDICIES);
+    timer = BProfiler::start("Generate indicies");
 
     usize index = 0;
 
@@ -249,7 +245,7 @@ void ObjectBatch::predraw(const CameraView& view) {
     culledIndexCount = index;
     indexBuffer->write(culledIndicies.data(), culledIndexCount * sizeof(u32));
 
-    BProfiler::end();
+    timer.end();
 }
 
 ObjectBatch::LayerDrawCall* ObjectBatch::getDrawCall(const LayerIdentifier& id) {

@@ -164,11 +164,6 @@ struct GroupCombinationState {
 
 STORAGE_BUFFER(COLOR_CHANNEL_BUFFER_BINDING) ColorChannelBuffer {
     RGBA u_channelColors[COLOR_CHANNEL_COUNT];
-    /*
-        Bitmap for whether the color channels
-        have blending enabled.
-    */
-    uint u_colorChannelBlendingBitmap[COLOR_CHANNEL_COUNT / 32 + 1];
 };
 
 STORAGE_BUFFER(GROUP_STATE_BUFFER_BINDING) GroupStateBuffer {

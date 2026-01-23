@@ -30,8 +30,6 @@ using namespace geode;
     ATTRIB(1, vec2, texCoord) \
     ATTRIB(2, u32,  srbIndex) \
     ATTRIB(3, u16,  colorChannel) \
-    ATTRIB(4, u8,   spriteSheet) \
-    ATTRIB(5, u8,   shaderSprite)
 
 ////////////////////////////////////////////////
 
@@ -176,5 +174,4 @@ private:
     u32 currentSpriteVertexIndex;
     u32 currentSpriteSRBIndex;
     u16 currentSpriteColorChannel;
-    u8  currentSpriteSpriteSheet;
 };

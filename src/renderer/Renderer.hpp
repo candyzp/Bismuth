@@ -8,13 +8,10 @@
 #include "ObjectUtils.hpp"
 #include "OverdrawView.hpp"
 #include "Shader.hpp"
-#include <memory>
 #include <unordered_map>
-#include <set>
 
 #include "DifferenceMode.hpp"
 #include "GroupManager.hpp"
-#include "ShaderSpriteManager.hpp"
 #include "ObjectBatchNode.hpp"
 #include "../../resources/shaders/shared.h"
 
@@ -24,7 +21,7 @@ class Renderer : public cocos2d::CCNode {
 private:
     inline Renderer()
         : objectBatch(*this), groupManager(*this), differenceMode(*this),
-          shaderSpriteManager(*this), overdrawView(*this) {}
+          overdrawView(*this) {}
     ~Renderer() override;
 
     bool init(PlayLayer* layer);
@@ -90,9 +87,6 @@ public:
 
     inline bool canEnableDisableIngame() const { return ingameEnableDisable; }
 
-    inline void setGJBGLUpdateTime(u64 time) {gjbglUpdateTime = time; }
-    inline void setTotalFrameTime(u64 time) { totalFrameTime = time; }
-
     inline bool isPaused() {
         return layer->m_isPaused;
     }
@@ -106,8 +100,7 @@ public:
     void setEnabled(bool enabled);
 
     inline GroupManager& getGroupManager() { return groupManager; }
-    inline ShaderSpriteManager& getShaderSpriteManager() { return shaderSpriteManager; }
-
+    
     void reset();
 
     void drawLine(const glm::vec2& p1, const glm::vec2& p2, const glm::vec4& color);
@@ -132,11 +125,6 @@ private:
 
     u64 rendererStartTime = 0;
 
-    u64 drbGenerationTime = 0;
-    u64 drawFuncTime = 0;
-    u64 gjbglUpdateTime = 0;
-    u64 totalFrameTime = 0;
-
     usize spritesOnScreen = 0;
 
     std::unordered_map<GameObject*, usize> objectSRBIndicies;
@@ -153,13 +141,11 @@ private:
 
     GroupManager groupManager;
 
-    ShaderSpriteManager shaderSpriteManager;
-
     ObjectBatch objectBatch;
     Shader* shader = nullptr;
     Shader* basicShader = nullptr;
 
-    ColorChannelBuffer colorChannelBuffer;
+    ColorChannelBuffer* colorChannelBuffer;
     Buffer* colorChannelBufferObject = nullptr;
 
     Buffer* srbBuffer = nullptr;

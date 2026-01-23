@@ -131,6 +131,7 @@ bool Renderer::init(PlayLayer* layer) {
     colorChannelBufferObject = Buffer::createDynamicDraw("Color channel buffer", sizeof(ColorChannelBuffer));
     if (!colorChannelBufferObject)
         return false;
+    colorChannelBuffer = (ColorChannelBuffer*)colorChannelBufferObject->mapWriteOnly();
 
     uniformBuffer = Buffer::createDynamicDraw("Uniform buffer", sizeof(RendererUniformBuffer));
     if (!uniformBuffer)
@@ -192,8 +193,10 @@ void Renderer::terminate() {
         Shader::destroy(basicShader);
     basicShader = nullptr;
 
-    if (colorChannelBufferObject)
+    if (colorChannelBufferObject) {
+        colorChannelBufferObject->unmap();
         Buffer::destroy(colorChannelBufferObject);
+    }
 
     if (srbBuffer)
         Buffer::destroy(srbBuffer);
@@ -245,7 +248,8 @@ void Renderer::prepareShaderUniforms() {
 }
 
 void Renderer::prepareColorChannelBuffer() {
-    auto prevTime = getTime();
+    auto timer = BProfiler::start("Generate color channel buffer");
+
     auto effectManager = layer->m_effectManager;
 
     for (usize i = 0; i < effectManager->m_colorActionSpriteVector.size(); i++) {
@@ -255,22 +259,16 @@ void Renderer::prepareColorChannelBuffer() {
 
         auto id = sprite->m_colorID;
 
-        auto& channelColor = colorChannelBuffer.u_channelColors[id];
+        auto& channelColor = colorChannelBuffer->u_channelColors[id];
         channelColor.r = sprite->m_color.r;
         channelColor.g = sprite->m_color.g;
         channelColor.b = sprite->m_color.b;
         channelColor.a = (u8)sprite->m_opacity;
-
-        if (isColorChannelBlending(id))
-            colorChannelBuffer.u_colorChannelBlendingBitmap[id >> 5] |= 1 << (id & 0x1f);
-        else
-            colorChannelBuffer.u_colorChannelBlendingBitmap[id >> 5] &= ~(1 << (id & 0x1f));
     }
 
-    colorChannelBuffer.u_channelColors[COLOR_CHANNEL_BLACK] = { 0, 0, 0, 255 };
+    colorChannelBuffer->u_channelColors[COLOR_CHANNEL_BLACK] = { 0, 0, 0, 255 };
 
-    colorChannelBufferObject->write(&colorChannelBuffer, sizeof(ColorChannelBuffer));
-    drbGenerationTime = getTime() - prevTime;
+    timer.end();
 }
 
 static u32 convertToShaderHSV(const ccHSVValue& hsv) {
@@ -365,22 +363,22 @@ static void drawCross(Renderer* ren, const glm::vec2& point, const glm::vec4& co
     ren->drawLine(point + glm::vec2(-5,  5), point + glm::vec2( 5, -5), color);
 }
 
-BProfilerCategory GEN_BUFFERS = "Generate dynamic buffers";
-
 float CAMERA_CULL_RECT_SCALE = 1.3;
 
 void Renderer::draw() {
     profiler::functionPush("Renderer::draw");
-    BProfiler::start();
+
+    auto timer = BProfiler::start("Renderer::draw");
 
     u64 prevTime = getTime();
     storeGLStates();
     prepareShaderUniforms();
     if (!isPaused()) {
-        BProfiler::category(GEN_BUFFERS);
         prepareColorChannelBuffer();
+    
+        auto timer = BProfiler::start("Generate group state buffer");
         groupManager.prepareGroupStateBuffer();
-        BProfiler::end();
+        timer.end();
 
         CameraView view = {
             ccPointToGLM(layer->m_gameState.m_cameraPosition2),
@@ -393,10 +391,10 @@ void Renderer::draw() {
         view.upVector    *= CAMERA_CULL_RECT_SCALE;
         view.bottomLeft  -= (view.rightVector + view.upVector) * 0.5f;
 
-        glm::vec2 bl = view.bottomLeft;
-        glm::vec2 br = view.bottomLeft + view.rightVector;
-        glm::vec2 tl = view.bottomLeft + view.upVector;
-        glm::vec2 tr = view.bottomLeft + view.rightVector + view.upVector;
+        // glm::vec2 bl = view.bottomLeft;
+        // glm::vec2 br = view.bottomLeft + view.rightVector;
+        // glm::vec2 tl = view.bottomLeft + view.upVector;
+        // glm::vec2 tr = view.bottomLeft + view.rightVector + view.upVector;
 
         // drawLine(bl, br, glm::vec4(1, 1, 0, 1));
         // drawLine(br, tr, glm::vec4(1, 1, 0, 1));
@@ -405,6 +403,8 @@ void Renderer::draw() {
 
         objectBatch.predraw(view);
     }
+
+    timer.end();
 
     /*
     glm::vec2 normal { glm::cos(glm::radians(lineAngle)), glm::sin(glm::radians(lineAngle)) };
@@ -467,7 +467,6 @@ void Renderer::draw() {
         // glGetQueryObjecti64v(50, GL_QUERY_RESULT, &renderTime);
     }
     */
-    drawFuncTime = getTime() - prevTime;
 
     if (debugText->isVisible())
         updateDebugText();
@@ -482,7 +481,6 @@ void Renderer::updateDebugText() {
 
     if (!enabled) {
         text += "Bismuth renderer is disabled\n";
-        text += fmt::format("Total frame time: {}ms\n", (double)totalFrameTime / 1000000.0);
         text += "Press F8 to enable\n";
     } else {
         if (debugTextEnabled) {
@@ -493,14 +491,12 @@ void Renderer::updateDebugText() {
             text += fmt::format("{}\n", (const char*)glGetString(GL_RENDERER));
             text += fmt::format("Window: {}x{}\n", screenSize.width, screenSize.height);
             text += fmt::format("Render time: {}ms\n", (double)renderTime / 1000000.0);
-            text += fmt::format("DRB generation time: {}ms\n", (double)drbGenerationTime / 1000000.0);
-            text += fmt::format("Renderer::draw() time: {}ms\n", (double)drawFuncTime / 1000000.0);
-            text += fmt::format("GJBaseGameLayer::update() time: {}ms\n", (double)gjbglUpdateTime / 1000000.0);
-            text += fmt::format("Total frame time: {}ms\n", (double)totalFrameTime / 1000000.0);
             text += fmt::format("Vertex buffer size: {}\n", byteSizeToString(objectBatch.getVertexBufferSize()));
             text += fmt::format("Sprites on screen: {}\n", spritesOnScreen);
             text += fmt::format("Static rendering buffer size: {}\n", byteSizeToString(srbBuffer->getSize()));
             text += fmt::format("Group state buffer size: {}\n", byteSizeToString(groupManager.getGroupStateBufferSize()));
+            text += fmt::format("Color channel buffer size: {}\n", byteSizeToString(sizeof(ColorChannelBuffer)));
+            text += "\n";
             text += BProfiler::toString();
             text += "\n";
             text += "Press F3 to hide this screen\n";

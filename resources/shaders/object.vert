@@ -7,15 +7,10 @@ layout (location = 0) in vec2 a_positionOffset;
 layout (location = 1) in vec2 a_texCoord;
 layout (location = 2) in int  a_srbIndex;
 layout (location = 3) in uint a_colorChannel;
-layout (location = 4) in int  a_spriteSheet;
-layout (location = 5) in uint a_shaderSprite;
 
 //// VARIABLES TO BE TRANSFERED TO THE FRAGMENT SHADER ////
-     out vec2 t_texCoord;
-     out vec4 t_color;
-flat out int  t_spriteSheet;
-flat out uint t_blending;
-flat out uint t_shaderSprite;
+out vec2 t_texCoord;
+out vec4 t_color;
 
 #define SRB_OBJECT (srb.objects[a_srbIndex])
 
@@ -29,6 +24,9 @@ vec2  vertexOffset;
 float calculateAudioScale();
 vec4 calculateInvisibleBlockColorAndOpacity(vec4 color);
 vec4 applyHSV(HSV hsvValue, vec4 color);
+
+//// UNIFORMS ////
+uint u_spriteSheet;
 
 //// MAIN FUNCTION ////
 void main() {
@@ -61,17 +59,11 @@ void main() {
 
     uint colorChannel = a_colorChannel & 0xfff;
 
-    t_spriteSheet  = a_spriteSheet;
-    t_color        = RGBA_TO_VEC4(u_channelColors[colorChannel]);
-    t_shaderSprite = a_shaderSprite;
-    t_texCoord     = a_texCoord;
+    t_color    = RGBA_TO_VEC4(u_channelColors[colorChannel]);
+    t_texCoord = a_texCoord;
 
-    if (a_spriteSheet == SPRITE_SHEET_GLOW && (objectFlags & OBJECT_FLAG_SPECIAL_GLOW_COLOR) != 0)
+    if (u_spriteSheet == SPRITE_SHEET_GLOW && (objectFlags & OBJECT_FLAG_SPECIAL_GLOW_COLOR) != 0)
         t_color = vec4(u_specialLightBGColor, 1.0);
-
-    t_blending = BITMAP_GET(u_colorChannelBlendingBitmap, colorChannel);
-    if (a_spriteSheet == SPRITE_SHEET_GLOW)
-        t_blending = 1;
     
     if ((objectFlags & OBJECT_FLAG_IS_INVISIBLE_BLOCK) != 0)
         t_color = calculateInvisibleBlockColorAndOpacity(t_color);
@@ -152,14 +144,14 @@ vec2 calculateInvisibleBlockOpacity() {
 
 vec4 calculateInvisibleBlockColorAndOpacity(vec4 color) {
     if ((u_gameStateFlags & GAME_STATE_IS_PLAYER_DEAD) != 0) {
-        if (a_spriteSheet == SPRITE_SHEET_GLOW)
+        if (u_spriteSheet == SPRITE_SHEET_GLOW)
             return vec4(u_specialLightBGColor, color.a);
         return color;
     }
 
     vec2 opacity = calculateInvisibleBlockOpacity();
 
-    if (a_spriteSheet != SPRITE_SHEET_GLOW) {
+    if (u_spriteSheet != SPRITE_SHEET_GLOW) {
         color.a *= opacity.x;
     } else {
         // Might have to do some of these calculations on the cpu instead

@@ -17,7 +17,8 @@ void ObjectBatchNode::draw() {
     auto renderer = Renderer::get();
 
     auto shader = renderer->prepareDraw();
-    shader->setTexture("u_spriteSheet", 0, spriteSheetTexture);
+    shader->setUInt("u_spriteSheet", (u32)layerId.spriteSheet);
+    shader->setTexture("u_spriteSheetTexture", 0, spriteSheetTexture);
 
     glEnable(GL_BLEND);
     if (layerId.blending)

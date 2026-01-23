@@ -1,6 +1,7 @@
 #include "Geode/cocos/CCDirector.h"
 #include "Renderer.hpp"
 #include <decomp/PlayLayer.hpp>
+#include <BProfiler.hpp>
 
 using namespace geode::prelude;
 
@@ -59,13 +60,13 @@ static void removeDecoObjects(CCArray* array) {
 #include <Geode/modify/GJBaseGameLayer.hpp>
 class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
     void update(float dt) {
-        u64 time = getTime();
+        auto timer = BProfiler::start("GJBaseGameLayer::update");
         GJBaseGameLayer::update(dt);
+        timer.end();
+
         auto renderer = Renderer::get();
-        if (renderer) {
+        if (renderer)
             renderer->update(dt);
-            renderer->setGJBGLUpdateTime(getTime() - time);
-        }
     }
 
     void processMoveActions() {
@@ -202,8 +203,10 @@ class $modify(RendererCCDisplayLinkDirector, CCDisplayLinkDirector) {
             return;
         }
 
-        u64 prevTime = getTime();
+        auto timer = BProfiler::start("Frame time");
         CCDisplayLinkDirector::mainLoop();
-        ren->setTotalFrameTime(getTime() - prevTime);
+        timer.end();
+
+        BProfiler::frameEnd();
     }
 };

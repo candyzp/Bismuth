@@ -2,37 +2,23 @@
 #include "common.hpp"
 #include <fmt/format.h>
 
-static std::map<BProfilerCategory*, u64> categoryTimes;
-static BProfilerCategory* currentCategory = nullptr;
-static u64 lastTime = 0;
-
 static bool shouldUseAverages = false;
-static usize averageCount = 0;
+static usize divideNumber = 0;
 
-void BProfiler::start() {
-    if (shouldUseAverages)
-        averageCount++;
+static std::map<std::string, u64> currentTimes;
+static std::map<std::string, u64> savedTimes;
+
+static inline void addToMap(std::map<std::string, u64>& map, std::string name, u64 num) {
+    auto it = map.find(name);
+    if (it != map.end())
+        it->second += num;
     else
-        categoryTimes.clear();
-    currentCategory = nullptr;
+        map[name] = num;
 }
 
-void BProfiler::end() {
-    u64 diff = getTime() - lastTime;
-    if (currentCategory == nullptr)
-        return;
-    auto it = categoryTimes.find(currentCategory);
-    if (it != categoryTimes.end())
-        it->second += diff;
-    else
-        categoryTimes[currentCategory] = diff;
-    currentCategory = nullptr;
-}
-
-void BProfiler::category(BProfilerCategory* category) {
-    end();
-    currentCategory = category;
-    lastTime = getTime();
+BProfiler::Timer BProfiler::start(const std::string& name) {
+    BProfiler::Timer timer { name };
+    return timer;
 }
 
 bool BProfiler::isUsingAverages() {
@@ -40,18 +26,28 @@ bool BProfiler::isUsingAverages() {
 }
 
 void BProfiler::useAverages(bool cond) {
-    categoryTimes.clear();
     shouldUseAverages = cond;
-    averageCount = 0;
 }
 
 std::string BProfiler::toString() {
     std::string ret = "";
-    for (auto& [cat, time] : categoryTimes) {
-        auto dtime = (double)time;
-        if (shouldUseAverages)
-            dtime /= averageCount;
-        ret += fmt::format("{}: {:.5f}ms\n", cat->name, dtime / 1000000.0);
-    }
+    for (auto& [name, time] : savedTimes)
+        ret += fmt::format("{}: {:.5f}ms\n", name, ((double)time / divideNumber) / 1000000.0);
     return ret;
+}
+
+void BProfiler::frameEnd() {
+    if (!shouldUseAverages) {
+        savedTimes = currentTimes;
+        divideNumber = 1;
+    } else {
+        for (auto& [name, time] : currentTimes)
+            addToMap(savedTimes, name, time);
+        divideNumber++;
+    }
+    currentTimes.clear();
+}
+
+void BProfiler::end(std::string name, u64 time) {
+    addToMap(currentTimes, name, time);
 }
