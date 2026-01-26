@@ -108,6 +108,7 @@ void GroupManager::initWithObjects(cocos2d::CCArray* objects) {
     u32 alphaCombIndex     = 0;
 
     alphaIndiciesPerGroupCombinationIndex.resize(groupCombinationCount);
+    haveGroupStatesScaled.resize(groupCombinationCount);
 
     for (auto object : CCArrayExt<GameObject*>(objects)) {
         GroupCombination comb = GroupCombination(object);
@@ -223,6 +224,8 @@ void GroupManager::rotateGroup(
         auto center = centerPoint.value();
         groupState.positionalTransform *= matrix;
         groupState.offset = matrix * (groupState.offset - center) + center;
+        
+        haveGroupStatesScaled[combIndex] = true;
     }
 }
 
@@ -240,6 +243,7 @@ void GroupManager::resetGroupStates() {
         groupState.offset = glm::vec2(0, 0);
     }
     disabledGroups.clear();
+    std::fill(haveGroupStatesScaled.begin(), haveGroupStatesScaled.end(), false);
 }
 
 void GroupManager::addGroupCombination(GroupCombination& comb, GroupCombinationIndex index) {

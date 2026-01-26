@@ -121,6 +121,8 @@ public:
         return { groupStates, groupStates + getGroupCombinationCount() };
     }
 
+    inline bool hasGroupStateScaled(i32 index) { return haveGroupStatesScaled[index]; }
+
     void prepareGroupStateBuffer();
 
     //// TRIGGER ACTIONS ////
@@ -150,6 +152,8 @@ private:
     // std::vector<GroupCombinationState> groupStates;
     GroupCombinationState* groupStates;
     Buffer* groupStateBuffer = nullptr;
+
+    std::vector<bool> haveGroupStatesScaled;
 
     u32 groupCombinationCount;
     std::map<GroupCombination, GroupCombinationIndex> groupCombinationIndicies;

@@ -163,7 +163,7 @@ private:
         transform with the objects so that we don't have to
         move the objects from section to section.
     */
-    std::map<i32, SectionSet> objectSectionSetPerTransformGroupId;
+    std::vector<SectionSet> objectSectionSetPerTransformGroupId;
 
     Object* currentObject = nullptr;
 };

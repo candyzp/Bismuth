@@ -50,7 +50,7 @@ void VisibilityManager::addObjectSprite(
 }
 
 void VisibilityManager::generateFastStructures() {
-    for (auto& [_, set] : objectSectionSetPerTransformGroupId)
+    for (auto& set : objectSectionSetPerTransformGroupId)
         set.generateFastStructure();
 }
 
@@ -72,29 +72,47 @@ void VisibilityManager::calculateVisibilitiesForCameraView(const CameraView& vie
     clearObjectVisibilities();
 
     GroupManager& groupManager = Renderer::get()->getGroupManager();
+
+    glm::vec2 cameraNormalMin = glm::vec2 {
+        minOf4(0, view.rightVector.x, view.upVector.x, view.rightVector.x + view.upVector.x),
+        minOf4(0, view.rightVector.y, view.upVector.y, view.rightVector.y + view.upVector.y)
+    } + view.bottomLeft;
+    glm::vec2 cameraNormalMax = glm::vec2 {
+        maxOf4(0, view.rightVector.x, view.upVector.x, view.rightVector.x + view.upVector.x),
+        maxOf4(0, view.rightVector.y, view.upVector.y, view.rightVector.y + view.upVector.y)
+    } + view.bottomLeft;
     
-    for (auto& [transformId, sectionSet] : objectSectionSetPerTransformGroupId) {
-        // log::info("TRANSFORM ID {}", transformId);
+    i32 transformId = 0;
+    for (auto& sectionSet : objectSectionSetPerTransformGroupId) {
+        i32 groupIndex = groupManager.getFirstGroupIndexOfTransformIndex(transformId);
 
+        GroupCombinationState& state = groupManager.getGroupStates()[groupIndex];
 
-        GroupCombinationState& state = groupManager.getGroupStates()[groupManager.getFirstGroupIndexOfTransformIndex(transformId)];
+        glm::vec2 min, max;
+        
+        if (groupManager.hasGroupStateScaled(groupIndex)) {
+            /*
+                If you multiply a matrix with a vector, if the matrix is on the left-hand side,
+                it does a transform. If it is on the right-hand side, it does an inverted transform.
+            */
 
-        glm::mat2 worldToGroupTransform = state.positionalTransform;
+            glm::vec2 camBottomLeft    = (view.bottomLeft - state.offset) * state.positionalTransform;
+            glm::vec2 camRightVector   = view.rightVector * state.positionalTransform;
+            glm::vec2 camUpVector      = view.upVector    * state.positionalTransform;
+            glm::vec2 camRightUpVector = camRightVector + camUpVector;
 
-        /*
-            If you multiply a matrix with a vector, if the matrix is on the left-hand side,
-            it does a transform. If it is on the right-hand side, it does an inverted transform.
-        */
-
-        glm::vec2 camBottomLeft  = (view.bottomLeft - state.offset) * state.positionalTransform;
-        glm::vec2 camRightVector = view.rightVector * state.positionalTransform;
-        glm::vec2 camUpVector    = view.upVector    * state.positionalTransform;
-        // glm::vec2 camTopRight    = (view.bottomLeft + view.rightVector + view.upVector - state.offset) * worldToGroupTransform;
-
-        float minX = minOf4(0, camRightVector.x, camUpVector.x, camRightVector.x + camUpVector.x) + camBottomLeft.x;
-        float maxX = maxOf4(0, camRightVector.x, camUpVector.x, camRightVector.x + camUpVector.x) + camBottomLeft.x;
-        float minY = minOf4(0, camRightVector.y, camUpVector.y, camRightVector.y + camUpVector.y) + camBottomLeft.y;
-        float maxY = maxOf4(0, camRightVector.y, camUpVector.y, camRightVector.y + camUpVector.y) + camBottomLeft.y;
+            min = glm::vec2 {
+                minOf4(0, camRightVector.x, camUpVector.x, camRightUpVector.x),
+                minOf4(0, camRightVector.y, camUpVector.y, camRightUpVector.x)
+            } + camBottomLeft;
+            max = glm::vec2 {
+                maxOf4(0, camRightVector.x, camUpVector.x, camRightUpVector.y),
+                maxOf4(0, camRightVector.y, camUpVector.y, camRightUpVector.y)
+            } + camBottomLeft;
+        } else {
+            min = cameraNormalMin - state.offset;
+            max = cameraNormalMax - state.offset;
+        }
 
         // auto ssize = glm::vec2 DEFAULT_SECTION_SIZE;
         
@@ -114,13 +132,15 @@ void VisibilityManager::calculateVisibilitiesForCameraView(const CameraView& vie
             // ren->drawLine(tl, bl, glm::vec4(1, 0, 1, 1));
         }
 
-        Rect rect = { { minX, minY }, { maxX, maxY } };
+        Rect rect = { min, max };
 
         sectionSet.forEachSectionInRect(rect, [&](const auto& section) {
             for (Object* object : section) {
                 markObjectAsVisible(object);
             }
         });
+
+        transformId++;
     }
 }
 
@@ -221,15 +241,8 @@ void VisibilityManager::addObjectToSectionStructure(Object* object) {
 
     SectionSet* sectionSet = nullptr;
 
-    auto it = objectSectionSetPerTransformGroupId.find(transformId);
-    if (it == objectSectionSetPerTransformGroupId.end()) {
-        objectSectionSetPerTransformGroupId[transformId] = SectionSet(returnObjectStartPosition);
-        sectionSet = &objectSectionSetPerTransformGroupId[transformId];
-    } else {
-        sectionSet = &it->second;
-    }
+    while (transformId >= objectSectionSetPerTransformGroupId.size())
+        objectSectionSetPerTransformGroupId.push_back(SectionSet(returnObjectStartPosition));
 
-    assert(sectionSet != nullptr);
-
-    sectionSet->add(object);
+    objectSectionSetPerTransformGroupId[transformId].add(object);
 }
