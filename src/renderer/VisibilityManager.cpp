@@ -3,7 +3,6 @@
 #include "GroupManager.hpp"
 #include "ObjectUtils.hpp"
 #include "Renderer.hpp"
-#include "SectionSet.hpp"
 #include "common.hpp"
 #include "glm/common.hpp"
 #include <Geode/binding/GameObject.hpp>
@@ -23,9 +22,9 @@ void VisibilityManager::prepareForObject(GameObject* gameObject) {
     // log::info("NEW GAMEOBJECT {}", (void*)gameObject);
     allObjects.push_back(new Object {
         .gameObject = gameObject,
-        .destinationLayerIfGlow        = getSpriteLayer(LayerIdentifier::getFromGlowSpriteObject(gameObject)),
-        .destinationLayerIfBlending    = getSpriteLayer(LayerIdentifier::getFromObject(gameObject, true)),
-        .destinationLayerIfNotBlending = getSpriteLayer(LayerIdentifier::getFromObject(gameObject, false))
+        .destinationLayerIfGlow        = getSpriteLayer(LayerKey::getFromGlowSpriteObject(gameObject)),
+        .destinationLayerIfBlending    = getSpriteLayer(LayerKey::getFromObject(gameObject, true)),
+        .destinationLayerIfNotBlending = getSpriteLayer(LayerKey::getFromObject(gameObject, false))
     });
     currentObject = allObjects.back();
     addObjectToSectionStructure(currentObject);
@@ -50,6 +49,11 @@ void VisibilityManager::addObjectSprite(
     });
 }
 
+void VisibilityManager::generateFastStructures() {
+    for (auto& [_, set] : objectSectionSetPerTransformGroupId)
+        set.generateFastStructure();
+}
+
 inline static float minOf4(float a, float b, float c, float d) {
     if (b < a) a = b;
     if (c < a) a = c;
@@ -63,10 +67,6 @@ inline static float maxOf4(float a, float b, float c, float d) {
     if (d > a) a = d;
     return a;
 }
-
-usize darg = 0;
-static usize dargz = 0;
-static usize dargu = 0;
 
 void VisibilityManager::calculateVisibilitiesForCameraView(const CameraView& view) {
     clearObjectVisibilities();
@@ -117,9 +117,7 @@ void VisibilityManager::calculateVisibilitiesForCameraView(const CameraView& vie
         Rect rect = { { minX, minY }, { maxX, maxY } };
 
         sectionSet.forEachSectionInRect(rect, [&](const auto& section) {
-            // log::info("KHOWWEDD!!");
             for (Object* object : section) {
-                // log::info("DARN IT! {}", (void*)object);
                 markObjectAsVisible(object);
             }
         });
@@ -133,7 +131,7 @@ void VisibilityManager::markAllObjectsVisible() {
         markObjectAsVisible(object);
 }
 
-VisibilityManager::Layer VisibilityManager::getLayer(const LayerIdentifier& id) {
+VisibilityManager::Layer VisibilityManager::getLayer(const LayerKey& id) {
     for (auto layer : visibleSpriteLayers) {
         if (layer->id == id)
             return layer;
@@ -158,8 +156,8 @@ void VisibilityManager::forEachVisibleSpriteIndexRangeInLayer(Layer layerRaw, st
     }
 }
 
-std::vector<LayerIdentifier> VisibilityManager::getUsedLayerIds() {
-    std::vector<LayerIdentifier> ids;
+std::vector<LayerKey> VisibilityManager::getUsedLayerIds() {
+    std::vector<LayerKey> ids;
     for (auto layer : visibleSpriteLayers)
         ids.push_back(layer->id);
     return ids;
@@ -210,7 +208,7 @@ void VisibilityManager::markObjectAsVisible(Object* object) {
     }
 }
 
-VisibilityManager::VisibleSpriteLayer* VisibilityManager::getSpriteLayer(LayerIdentifier layerId) {
+VisibilityManager::VisibleSpriteLayer* VisibilityManager::getSpriteLayer(LayerKey layerId) {
     for (auto layer : visibleSpriteLayers) {
         if (layer->id == layerId)
             return layer;
@@ -241,14 +239,11 @@ glm::vec2 VisibilityManager::returnObjectStartPosition(Object* object) {
 void VisibilityManager::addObjectToSectionStructure(Object* object) {
     i32 transformId = Renderer::get()->getGroupManager().getTransformCombinationIndexForObject(object->gameObject);
 
-    // log::info("OBJ TID {}", transformId);
-
     SectionSet* sectionSet = nullptr;
 
     auto it = objectSectionSetPerTransformGroupId.find(transformId);
     if (it == objectSectionSetPerTransformGroupId.end()) {
         objectSectionSetPerTransformGroupId[transformId] = SectionSet(returnObjectStartPosition);
-        // log::info("CREATE FOR {}", transformId);
         sectionSet = &objectSectionSetPerTransformGroupId[transformId];
     } else {
         sectionSet = &it->second;
@@ -256,6 +251,5 @@ void VisibilityManager::addObjectToSectionStructure(Object* object) {
 
     assert(sectionSet != nullptr);
 
-    // log::info("ADD!");
     sectionSet->add(object);
 }

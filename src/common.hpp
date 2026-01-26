@@ -38,6 +38,8 @@ using vec4 = glm::vec4;
 
 namespace fs = std::filesystem;
 
+#define BISMUTH_ASSERT(COND) { if (!(COND)) geode::log::error("{}:{}: Assertion failed: {}", fs::path(__FILE__).filename(), __LINE__, #COND); }
+
 // TODO: Figure out how to set usize to the pointer size of this machine's architecture
 using usize = u64;
 using isize = i64;

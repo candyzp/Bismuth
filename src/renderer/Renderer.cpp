@@ -18,7 +18,6 @@
 #include <Geode/binding/GJBaseGameLayer.hpp>
 #include <Geode/binding/GameObject.hpp>
 #include <Geode/binding/RingObject.hpp>
-#include <SectionSet.hpp>
 #include <BProfiler.hpp>
 #include "profiler.hpp"
 
@@ -557,7 +556,7 @@ bool Renderer::isColorChannelBlending(i32 channel) {
     return layer->shouldBlend(channel);
 }
 
-CCSpriteBatchNode* Renderer::getSpriteBatchNodeWithLayerId(LayerIdentifier id) {
+CCSpriteBatchNode* Renderer::getSpriteBatchNodeWithLayerId(LayerKey id) {
     CCNode* node = layer->parentForZLayer((i32)id.zlayer, id.blending, (i32)id.spriteSheet, false);
     
     if (!node || layer->m_batchNodes->indexOfObject(node) == UINT_MAX)

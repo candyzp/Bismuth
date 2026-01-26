@@ -1,13 +1,12 @@
 #include "ObjectBatch.hpp"
 #include "BProfiler.hpp"
-#include "Geode/cocos/cocoa/CCAffineTransform.h"
-#include "Geode/cocos/sprite_nodes/CCSpriteFrame.h"
 #include "Renderer.hpp"
 #include "SpriteMeshDictionary.hpp"
 #include "common.hpp"
 #include "glm/fwd.hpp"
 #include "math/ConvexList.hpp"
 #include "math/ConvexPolygon.hpp"
+#include <culling/SpriteDrawMap.hpp>
 #include <string>
 
 using namespace geode::prelude;
@@ -137,6 +136,8 @@ void ObjectBatch::writeSpriteMeshFromConvexList(const ConvexList& list) {
     });
 }
 
+static SpriteDrawMap drawMap;
+
 void ObjectBatch::addSprite(
     GameObject* object,
     cocos2d::CCSprite* sprite,
@@ -148,6 +149,8 @@ void ObjectBatch::addSprite(
     usize indiciesBegin = indicies.size();
 
     ConvexList* spriteMesh = SpriteMeshDictionary::getSpriteMeshForSprite(sprite);
+
+    drawMap.addSprite(object, sprite, type, {});
 
     if (spriteMesh) {
         writeSpriteMeshFromConvexList(*spriteMesh);
@@ -194,6 +197,8 @@ void ObjectBatch::finishWriting() {
     for (auto& layerId : layers)
         layerDrawCalls.push_back({ layerId, visibilityManager.getLayer(layerId), 0, 0 });
 
+    visibilityManager.generateFastStructures();
+
     if (vertexBuffer) {
         Buffer::destroy(vertexBuffer);
         vertexBuffer = nullptr;
@@ -203,6 +208,8 @@ void ObjectBatch::finishWriting() {
         Buffer::destroy(indexBuffer);
         indexBuffer = nullptr;
     }
+
+    // log::info("ORDER SET COUNT {}", drawMap.orderSetsCount());
 
     vertexCount = verticies.size();
     indexCount  = indicies.size();
@@ -248,7 +255,7 @@ void ObjectBatch::predraw(const CameraView& view) {
     timer.end();
 }
 
-ObjectBatch::LayerDrawCall* ObjectBatch::getDrawCall(const LayerIdentifier& id) {
+ObjectBatch::LayerDrawCall* ObjectBatch::getDrawCall(const LayerKey& id) {
     for (auto& drawCall : layerDrawCalls) {
         if (drawCall.id == id)
             return &drawCall;

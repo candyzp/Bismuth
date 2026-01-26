@@ -2,9 +2,7 @@
 
 #include "Geode/cocos/sprite_nodes/CCSprite.h"
 #include "ObjectUtils.hpp"
-#include "SectionSet.hpp"
-#include <Geode/Enums.hpp>
-#include <Geode/binding/GameObject.hpp>
+#include <utils/SectionSet.hpp>
 #include <common.hpp>
 
 struct CameraView {
@@ -80,17 +78,14 @@ private:
     };
 
     struct VisibleSpriteLayer {
-        LayerIdentifier id;
+        LayerKey id;
         i32 zorder;
 
         std::map<i32, VisibleSpriteList> visibleSpritesPerZOrder;
 
         inline void push(ObjectSprite* sprite, i32 zorder) {
-            // geode::log::info("dawg!");
             auto it = visibleSpritesPerZOrder.find(zorder);
-            // geode::log::info("supra!");
             if (it == visibleSpritesPerZOrder.end()) {
-                // geode::log::info("fuckery!");
                 visibleSpritesPerZOrder[zorder] = {};
                 visibleSpritesPerZOrder[zorder].push(sprite);
             } else {
@@ -117,17 +112,19 @@ public:
         usize indiciesEnd
     );
 
+    void generateFastStructures();
+
     void calculateVisibilitiesForCameraView(const CameraView& view);
 
     void markAllObjectsVisible();
 
     using Layer = void*;
 
-    Layer getLayer(const LayerIdentifier& id);
+    Layer getLayer(const LayerKey& id);
 
     void forEachVisibleSpriteIndexRangeInLayer(Layer layer, std::function<void(usize, usize)> func);
 
-    std::vector<LayerIdentifier> getUsedLayerIds();
+    std::vector<LayerKey> getUsedLayerIds();
 
 private:
     void clearObjectVisibilities();
@@ -138,7 +135,7 @@ private:
     */
     void markObjectAsVisible(Object* object);
 
-    VisibleSpriteLayer* getSpriteLayer(LayerIdentifier labelayerId);
+    VisibleSpriteLayer* getSpriteLayer(LayerKey labelayerId);
 
     static glm::vec2 returnObjectStartPosition(Object* object);
 

@@ -53,7 +53,7 @@ public:
 
     bool isColorChannelBlending(i32 channel);
 
-    cocos2d::CCSpriteBatchNode* getSpriteBatchNodeWithLayerId(LayerIdentifier id);
+    cocos2d::CCSpriteBatchNode* getSpriteBatchNodeWithLayerId(LayerKey id);
 
     inline cocos2d::CCTexture2D* getSpriteSheetTexture(SpriteSheet sheet) {
         if ((i32)sheet < 0 || (i32)sheet >= (i32)SpriteSheet::COUNT)

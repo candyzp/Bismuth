@@ -75,7 +75,7 @@ struct SpriteVertexTransforms {
 class ObjectBatch {
 public:
     struct LayerDrawCall {
-        LayerIdentifier id;
+        LayerKey id;
         VisibilityManager::Layer layer;
         u32 startIndex;
         u32 indexCount;
@@ -132,13 +132,13 @@ public:
         spriteSheetFilter = sheet;
     }
 
-    inline std::vector<LayerIdentifier> getUsedLayerIds() {
+    inline std::vector<LayerKey> getUsedLayerIds() {
         return visibilityManager.getUsedLayerIds();
     }
 
     void predraw(const CameraView& view);
 
-    LayerDrawCall* getDrawCall(const LayerIdentifier& id);
+    LayerDrawCall* getDrawCall(const LayerKey& id);
 
     void draw(LayerDrawCall* drawCall);
 

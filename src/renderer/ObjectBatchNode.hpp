@@ -7,7 +7,7 @@
 
 class ObjectBatchNode : public cocos2d::CCNode {
 public:
-    inline ObjectBatchNode(const LayerIdentifier& id)
+    inline ObjectBatchNode(const LayerKey& id)
         : layerId(id) {}
 
     bool init() override;
@@ -15,7 +15,7 @@ public:
     void draw() override;
 
 public:
-    static inline Ref<ObjectBatchNode> create(const LayerIdentifier& id) {
+    static inline Ref<ObjectBatchNode> create(const LayerKey& id) {
         auto ret = new ObjectBatchNode(id);
         if (ret->init()) {
             ret->autorelease();
@@ -27,6 +27,6 @@ public:
 
 private:
     ObjectBatch::LayerDrawCall* drawCall;
-    LayerIdentifier layerId;
+    LayerKey layerId;
     cocos2d::CCTexture2D* spriteSheetTexture;
 };

@@ -28,16 +28,26 @@ enum class SpriteSheet {
     COUNT
 };
 
-struct LayerIdentifier {
+#define LAYER_KEY_BLENDING 0x80
+
+struct LayerKey {
     ZLayer zlayer;
     SpriteSheet spriteSheet;
     bool blending;
 
-    inline bool operator==(const LayerIdentifier& id) const {
+    inline bool operator==(const LayerKey& id) const {
         return zlayer == id.zlayer && spriteSheet == id.spriteSheet && blending == id.blending;
     }
 
-    inline bool operator!=(const LayerIdentifier& id) const { return !(*this == id); }
+    inline bool operator!=(const LayerKey& id) const { return !(*this == id); }
+
+    inline bool operator<(const LayerKey& id) const {
+        if (zlayer != id.zlayer) return zlayer < id.zlayer;
+        if (spriteSheet != id.spriteSheet) return spriteSheet < id.spriteSheet;
+        return blending < id.blending;
+    }
+
+    u8 asNumber() const;
 
     static inline ZLayer getNormalObjectZLayer(GameObject* object) {
         ZLayer zLayer = object->getObjectZLayer();
@@ -49,11 +59,11 @@ struct LayerIdentifier {
         return zLayer;
     }
 
-    static inline LayerIdentifier getFromObject(GameObject* object, bool blending) {
+    static inline LayerKey getFromObject(GameObject* object, bool blending) {
         return { getNormalObjectZLayer(object), (SpriteSheet)object->getParentMode(), blending };
     }
 
-    static inline LayerIdentifier getFromGlowSpriteObject(GameObject* object) {
+    static inline LayerKey getFromGlowSpriteObject(GameObject* object) {
         return { getNormalObjectZLayer(object), SpriteSheet::GLOW, true };
     }
 };
