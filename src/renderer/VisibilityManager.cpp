@@ -170,38 +170,18 @@ void VisibilityManager::clearObjectVisibilities() {
 }
 
 void VisibilityManager::markObjectAsVisible(Object* object) {
-    // log::info("MARK OBJECT VISIBLE {}", (void*)object);
-
-    // bool present = false;
-    // for (auto obj : allObjects) {
-    //     if (obj == object) {
-    //         present = true;
-    //         break;
-    //     }
-    // }
-    // if (!present) {
-    //     log::info("NOT PRESENT!!!!!");
-    //     return;
-    // }
-
     for (auto& sprite : object->sprites) {
-        // log::info("SPRITZE!");
-        // log::info("GAME OBJECT {}", (void*)object->gameObject);
-
         i32 zorder = object->gameObject->getObjectZOrder();
 
         i32 colorChannel = ObjectUtils::getSpriteColorChannel(sprite.type, object->gameObject, sprite.sprite);
 
         if (sprite.type == SpriteType::GLOW) {
-            // log::info("MARK GLOW");
             if (object->destinationLayerIfGlow)
                 object->destinationLayerIfGlow->push(&sprite, zorder);
         } else if (Renderer::get()->isColorChannelBlending(colorChannel)) {
-            // log::info("MARK BLENDING");
             if (object->destinationLayerIfBlending)
                 object->destinationLayerIfBlending->push(&sprite, zorder);
         } else {
-            // log::info("MARK NOT BLENDING {}", (void*)object->destinationLayerIfNotBlending);
             if (object->destinationLayerIfNotBlending)
                 object->destinationLayerIfNotBlending->push(&sprite, zorder);
         }
