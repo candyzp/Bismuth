@@ -88,12 +88,9 @@ public:
         if (!srect.intersects(boundRect))
             return;
 
-        i32 a = 0;
-
         IRange rangeY = fastMap.getRange().intersection(srect.rangeY());
 
         for (i32 y : rangeY) {
-            a++;
             auto& column = fastMap[y];
             
             auto rangeX = column.sections.getRange();

@@ -68,6 +68,11 @@ inline static float maxOf4(float a, float b, float c, float d) {
     return a;
 }
 
+// volatile float minX;
+// volatile float minY;
+// volatile float maxX;
+// volatile float maxY;
+
 void VisibilityManager::calculateVisibilitiesForCameraView(const CameraView& view) {
     clearObjectVisibilities();
 
@@ -131,6 +136,11 @@ void VisibilityManager::calculateVisibilitiesForCameraView(const CameraView& vie
             // ren->drawLine(tr, tl, glm::vec4(1, 0, 1, 1));
             // ren->drawLine(tl, bl, glm::vec4(1, 0, 1, 1));
         }
+
+//        minX = min.x;
+//        minY = min.y;
+//        maxX = max.x;
+//        maxY = max.y;
 
         Rect rect = { min, max };
 
