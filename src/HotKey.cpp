@@ -3,18 +3,21 @@
 HotKey* HotKey::hotKeysHead = nullptr;
 HotKey* HotKey::hotKeysTail = nullptr;
 
-#include <Geode/modify/CCKeyboardDispatcher.hpp>
-class $modify(RendererCCKeyboardDispatcher, cocos2d::CCKeyboardDispatcher) {
-    bool dispatchKeyboardMSG(cocos2d::enumKeyCodes key, bool keyDown, bool isKeyRepeat) {
-        if (keyDown && !isKeyRepeat) {
+using namespace geode::prelude;
+
+$on_mod(Loaded) {
+    KeyboardInputEvent().listen([](KeyboardInputData& data) -> bool {
+        bool success = false;
+        if (data.action == KeyboardInputData::Action::Press) {
             HotKey* hotKey = HotKey::hotKeysHead;
             while (hotKey) {
-                if (hotKey->key == key)
+                if (hotKey->key == data.key) {
                     hotKey->pressed();
+                    success = true;
+                }
                 hotKey = hotKey->next;
             }
         }
-
-        return cocos2d::CCKeyboardDispatcher::dispatchKeyboardMSG(key, keyDown, isKeyRepeat);
-    }
-};
+        return success;
+    }).leak();
+}

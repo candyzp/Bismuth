@@ -162,7 +162,7 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
                 continue;
 
             double moveX = 0.0, moveY = 0.0;
-            if (mainObject->m_unk4C4 == m_gameState.m_unkUint2) {
+            if (mainObject->m_unk4C4 == m_gameState.m_commandIndex) {
                 moveX = (mainObject->m_positionX - mainObject->m_lastPosition.x) * node->m_unk080; /* followXMod */
                 moveY = (mainObject->m_positionY - mainObject->m_lastPosition.y) * node->m_unk088; /* followYMod */
             }

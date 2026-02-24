@@ -1,17 +1,14 @@
 #include "GJBaseGameLayer.hpp"
 
-using namespace cocos2d;
+using namespace geode::prelude;
 
 void decomp_GJBaseGameLayer::moveObjects(cocos2d::CCArray* objects, double moveX, double moveY, bool unused) {
     if (objects == nullptr)
         return;
 
-    cocos2d::CCObject* obj;
-    CCARRAY_FOREACH(objects, obj) {
-        GameObject* object = (GameObject*)obj;
-
-        if (!object->m_isDecoration2 && object->m_unk4C4 != m_gameState.m_unkUint2) {
-            object->m_unk4C4 = m_gameState.m_unkUint2;
+    for (auto object : CCArrayExt<GameObject*>(objects)) {
+        if (!object->m_isDecoration2 && object->m_unk4C4 != m_gameState.m_commandIndex) {
+            object->m_unk4C4 = m_gameState.m_commandIndex;
 
             object->m_lastPosition.x = object->m_positionX;
             object->m_lastPosition.y = object->m_positionY;
