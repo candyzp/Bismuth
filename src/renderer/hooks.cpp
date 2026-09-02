@@ -122,15 +122,18 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
             if (rotation == 0.0 && !cmdObj->m_finishRelated)
                 continue;
 
-            // Idk what the hell this does but sure
             if (eman->m_unkMap770.find({ targetId, centerId }) != eman->m_unkMap770.end()) {
                 for (auto obj : eman->m_unkMap770[{ targetId, centerId }]) {
                     if (obj->m_someInterpValue1RelatedFalse)
                         continue;
+
+                    // Accumulate this command's own delta. Using cmdObj here
+                    // repeatedly over-counted the current command and made
+                    // complex rotating decoration drift farther apart over time.
                     if (staticGroup->count() != 0)
-                        rotation += cmdObj->m_someInterpValue1RelatedOne - cmdObj->m_someInterpValue1RelatedZero;
+                        rotation += obj->m_someInterpValue1RelatedOne - obj->m_someInterpValue1RelatedZero;
                     else
-                        rotation += cmdObj->m_someInterpValue2RelatedOne - cmdObj->m_someInterpValue2RelatedZero;
+                        rotation += obj->m_someInterpValue2RelatedOne - obj->m_someInterpValue2RelatedZero;
                 }
             }
 
