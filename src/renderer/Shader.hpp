@@ -71,6 +71,9 @@ public:
     }
 
     void setTexture(u32 location, i32 id, u32 texture);
+    inline void setTexture(const char* name, i32 id, u32 texture) {
+        setTexture(location(name), id, texture);
+    }
     inline void setTexture(u32 location, i32 id, cocos2d::CCTexture2D* texture) {
         setTexture(location, id, texture->getName());
     }
