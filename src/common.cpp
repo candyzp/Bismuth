@@ -15,7 +15,7 @@ using ProcGlObjectLabel = void(*)(GLenum, GLuint, GLsizei, const char*);
 ProcGlObjectLabel glObjectLabelProc = nullptr;
 
 void glObjectLabel(GLenum id, GLuint name, GLsizei length, const char* label) {
-    #ifdef GEODE_WINDOWS
+    #ifdef GEODE_IS_WINDOWS
     if (!glObjectLabelProc) {
         HMODULE mod = LoadLibraryA("opengl32.dll");
         if (mod)
