@@ -7,6 +7,8 @@
 #include "math/ConvexList.hpp"
 #include "math/ConvexPolygon.hpp"
 #include <culling/SpriteDrawMap.hpp>
+#include <Geode/binding/CheckpointGameObject.hpp>
+#include <cstring>
 #include <string>
 
 using namespace geode::prelude;
@@ -143,6 +145,19 @@ void ObjectBatch::writeSpriteMeshFromConvexList(const ConvexList& list) {
 
 static SpriteDrawMap drawMap;
 
+bool ObjectBatch::shouldTrackLiveSpriteObject(GameObject* object) const {
+    if (!object)
+        return false;
+
+    // Secret coins and user coins swap display frames while playing. Platformer
+    // checkpoints swap child visibility/color state after activation. Keep this
+    // intentionally narrow so giant decorated levels stay on the static path.
+    if (object->m_objectID == 142 || object->m_objectID == 1329)
+        return true;
+
+    return typeinfo_cast<CheckpointGameObject*>(object) != nullptr;
+}
+
 void ObjectBatch::addSprite(
     GameObject* object,
     cocos2d::CCSprite* sprite,
@@ -152,6 +167,7 @@ void ObjectBatch::addSprite(
     prepareSpriteMeshWrite(object, sprite, type, transform);
 
     usize indiciesBegin = indicies.size();
+    usize vertexBegin = verticies.size();
 
     ConvexList* spriteMesh = SpriteMeshDictionary::getSpriteMeshForSprite(sprite);
 
@@ -174,6 +190,20 @@ void ObjectBatch::addSprite(
     }
 
     visibilityManager.addObjectSprite(sprite, type, indiciesBegin, indicies.size());
+
+    // Coin/checkpoint art is ordinary quad art. Keep its initial positions in
+    // the static batch, but remember the four vertices so changing display
+    // frames/color state can be mirrored with a tiny partial GPU buffer update.
+    if (!spriteMesh && shouldTrackLiveSpriteObject(object) && verticies.size() - vertexBegin == VERTICIES_PER_QUAD) {
+        LiveSpriteRecord record;
+        record.object = object;
+        record.sprite = sprite;
+        record.type = type;
+        record.vertexBegin = (u32)vertexBegin;
+        for (u32 i = 0; i < VERTICIES_PER_QUAD; ++i)
+            record.quad.verticies[i] = verticies[vertexBegin + i];
+        liveSprites.push_back(record);
+    }
 }
 
 void ObjectBatch::writeGameObject(GameObject* object) {
@@ -229,7 +259,50 @@ void ObjectBatch::finishWriting() {
     restoreGLStates();
 }
 
+void ObjectBatch::refreshLiveSpriteData() {
+    if (!vertexBuffer || liveSprites.empty())
+        return;
+
+    const auto identity = CCAffineTransformMakeIdentity();
+
+    for (auto& record : liveSprites) {
+        if (!record.object || !record.sprite)
+            continue;
+
+        SpriteSheet spriteSheet = ObjectUtils::getSpritesheetOfObject(record.object, record.type);
+        auto transforms = getSpriteVertexTransform(record.sprite, identity, spriteSheet);
+
+        u32 colorChannel = ObjectUtils::getSpriteColorChannel(record.type, record.object, record.sprite);
+        if (record.type == SpriteType::DETAIL)
+            colorChannel |= A_COLOR_CHANNEL_IS_SPRITE_DETAIL;
+
+        // Preserve the static geometry position. Group movement/rotation remains
+        // entirely in the GPU group-state path. Only mirror the live display
+        // frame UV and base/detail color classification here.
+        ObjectQuad updated = record.quad;
+        updated.bl.texCoord = transforms.texCoordBottomLeft;
+        updated.br.texCoord = transforms.texCoordBottomLeft + transforms.texCoordRight;
+        updated.tl.texCoord = transforms.texCoordBottomLeft + transforms.texCoordUp;
+        updated.tr.texCoord = transforms.texCoordBottomLeft + transforms.texCoordRight + transforms.texCoordUp;
+
+        for (u32 i = 0; i < VERTICIES_PER_QUAD; ++i)
+            updated.verticies[i].colorChannel = colorChannel;
+
+        if (std::memcmp(&updated, &record.quad, sizeof(ObjectQuad)) == 0)
+            continue;
+
+        vertexBuffer->write(
+            updated.verticies,
+            sizeof(ObjectQuad),
+            (usize)record.vertexBegin * sizeof(ObjectVertex)
+        );
+        record.quad = updated;
+    }
+}
+
 void ObjectBatch::predraw(const CameraView& view) {
+    refreshLiveSpriteData();
+
     auto timer = BProfiler::start("Calculate visibilities");
     visibilityManager.calculateVisibilitiesForCameraView(view);
     timer.end();
