@@ -149,9 +149,15 @@ bool ObjectBatch::shouldTrackLiveSpriteObject(GameObject* object) const {
     if (!object)
         return false;
 
+    // Geometry Dash's AnimatedGameObject path changes CCSpritePart display
+    // frames and child state while the level is running. Bismuth's main VBO is
+    // otherwise a level-start snapshot, so keep those ordinary quad sprites in
+    // the lightweight live refresh path as well.
+    if (object->m_classType == GameObjectClassType::Animated)
+        return true;
+
     // Secret coins and user coins swap display frames while playing. Platformer
-    // checkpoints swap child visibility/color state after activation. Keep this
-    // intentionally narrow so giant decorated levels stay on the static path.
+    // checkpoints swap child visibility/color state after activation.
     if (object->m_objectID == 142 || object->m_objectID == 1329)
         return true;
 
@@ -191,9 +197,10 @@ void ObjectBatch::addSprite(
 
     visibilityManager.addObjectSprite(sprite, type, indiciesBegin, indicies.size());
 
-    // Coin/checkpoint art is ordinary quad art. Keep its initial positions in
-    // the static batch, but remember the four vertices so changing display
-    // frames/color state can be mirrored with a tiny partial GPU buffer update.
+    // Dynamic object art is still ordinary quad art. Keep its static positions
+    // in the fast batch, but remember the four vertices so a frame swap or
+    // base/detail color-state change can be mirrored with a tiny partial VBO
+    // update instead of rebuilding the level.
     if (!spriteMesh && shouldTrackLiveSpriteObject(object) && verticies.size() - vertexBegin == VERTICIES_PER_QUAD) {
         LiveSpriteRecord record;
         record.object = object;
@@ -277,8 +284,9 @@ void ObjectBatch::refreshLiveSpriteData() {
             colorChannel |= A_COLOR_CHANNEL_IS_SPRITE_DETAIL;
 
         // Preserve the static geometry position. Group movement/rotation remains
-        // entirely in the GPU group-state path. Only mirror the live display
-        // frame UV and base/detail color classification here.
+        // entirely in the GPU group-state path. AnimatedGameObject/CCSpritePart
+        // frame changes only need their live atlas UVs and current color role
+        // mirrored here; visibility is handled by VisibilityManager.
         auto updated = record.vertices;
         updated[QUAD_BL].texCoord = transforms.texCoordBottomLeft;
         updated[QUAD_BR].texCoord = transforms.texCoordBottomLeft + transforms.texCoordRight;
