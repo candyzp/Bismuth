@@ -39,6 +39,12 @@
 			"type": "bool",
 			"default": false,
 			"description": "Allows you to enable and disable Bismuth while playing by pressing F8. It also allows you to use Difference Mode by pressing F9 (Difference Mode is very unstable).\n\n WARNING: This option effectively removes any optimization."
+		},
+		"ios_gpu_debug": {
+			"name": "iOS GPU debug overlay",
+			"type": "bool",
+			"default": false,
+			"description": "Shows an on-screen iOS diagnostic that verifies Bismuth is submitting its OpenGL ES GPU draw path with the shader and texture-backed object/group/color state. Debug only; enabling it adds a small amount of diagnostic overhead."
 		}
 	}
 }
