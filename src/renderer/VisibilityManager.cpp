@@ -5,6 +5,7 @@
 #include "Renderer.hpp"
 #include "common.hpp"
 #include "glm/common.hpp"
+#include <Geode/binding/AnimatedGameObject.hpp>
 #include <Geode/binding/GameObject.hpp>
 
 using namespace geode::prelude;
@@ -22,6 +23,7 @@ void VisibilityManager::prepareForObject(GameObject* gameObject) {
     // log::info("NEW GAMEOBJECT {}", (void*)gameObject);
     allObjects.push_back(new Object {
         .gameObject = gameObject,
+        .isAnimated = gameObject->m_classType == GameObjectClassType::Animated,
         .destinationLayerIfGlow        = getSpriteLayer(LayerKey::getFromGlowSpriteObject(gameObject)),
         .destinationLayerIfBlending    = getSpriteLayer(LayerKey::getFromObject(gameObject, true)),
         .destinationLayerIfNotBlending = getSpriteLayer(LayerKey::getFromObject(gameObject, false))
@@ -162,6 +164,8 @@ void VisibilityManager::calculateVisibilitiesForCameraView(const CameraView& vie
 
         transformId++;
     }
+
+    finishAnimatedObjectVisibilities();
 }
 
 void VisibilityManager::markAllObjectsVisible() {
@@ -169,6 +173,8 @@ void VisibilityManager::markAllObjectsVisible() {
 
     for (auto object : allObjects)
         markObjectAsVisible(object);
+
+    finishAnimatedObjectVisibilities();
 }
 
 VisibilityManager::Layer VisibilityManager::getLayer(const LayerKey& id) {
@@ -206,11 +212,96 @@ void VisibilityManager::clearObjectVisibilities() {
     for (auto layer : visibleSpriteLayers) {
         layer->clear();
     }
+
+    // Only the animated objects that were on screen last frame need their
+    // visibility marker reset. This keeps the lifecycle work proportional to
+    // the camera window rather than the size of the entire level.
+    for (auto object : visibleAnimatedObjects)
+        object->animatedVisibleThisFrame = false;
+    nextVisibleAnimatedObjects.clear();
+}
+
+void VisibilityManager::finishAnimatedObjectVisibilities() {
+    // GD normally performs this transition from preUpdateVisibility(). Bismuth
+    // deliberately skips that full CPU path, so stop only animations that have
+    // just left Bismuth's own camera window.
+    for (auto object : visibleAnimatedObjects) {
+        if (!object->animatedVisibleThisFrame && object->gameObject)
+            object->gameObject->deactivateObject(true);
+    }
+
+    visibleAnimatedObjects.swap(nextVisibleAnimatedObjects);
+    nextVisibleAnimatedObjects.clear();
+}
+
+void VisibilityManager::updateVisibleAnimatedObject(Object* object) {
+    if (!object->isAnimated || object->animatedVisibleThisFrame)
+        return;
+
+    object->animatedVisibleThisFrame = true;
+    nextVisibleAnimatedObjects.push_back(object);
+
+    // AnimatedGameObject::activateObject() starts SpriteAnimationManager when
+    // the underlying GameObject changes from inactive to active. Calling it
+    // once per visible frame matches GD's active-object loop; it does not
+    // restart an animation that is already active.
+    object->gameObject->activateObject();
+
+    auto animatedObject = static_cast<AnimatedGameObject*>(object->gameObject);
+    auto renderer = Renderer::get();
+    auto playLayer = renderer ? renderer->getPlayLayer() : nullptr;
+
+    // Synced animations are driven explicitly from the level clock in GD's
+    // visibility loop rather than only by Cocos actions.
+    if (playLayer && object->gameObject->getHasSyncedAnimation())
+        animatedObject->updateSyncedAnimation(playLayer->m_gameState.m_totalTime, -1);
+
+    // Some animated children use the brightened background color. Preserve the
+    // same update that GD applies to active AnimatedGameObjects.
+    if (playLayer && playLayer->m_background && object->gameObject->m_unk367) {
+        auto brightBGColor = GameToolbox::transformColor(
+            playLayer->m_background->getColor(), 0.0, -0.3, 0.4
+        );
+        animatedObject->updateChildSpriteColor(brightBGColor);
+    }
+}
+
+bool VisibilityManager::isAnimatedSpriteVisible(Object* object, cocos2d::CCSprite* sprite) {
+    if (!sprite || !sprite->isVisible())
+        return false;
+
+    // CCPartAnimSprite hides unused CCSpriteParts with local visibility flags.
+    // First determine whether this is actually in the GameObject's child tree.
+    // Detached color/glow sprites live under GD batch nodes, whose visibility
+    // Bismuth intentionally disables, so their external ancestors are ignored.
+    bool belongsToObjectTree = false;
+    for (auto node = static_cast<cocos2d::CCNode*>(sprite); node; node = node->getParent()) {
+        if (node == object->gameObject) {
+            belongsToObjectTree = true;
+            break;
+        }
+    }
+
+    if (!belongsToObjectTree)
+        return true;
+
+    // For real child parts, stop at the GameObject and never inspect its hidden
+    // external batch parent.
+    for (auto node = static_cast<cocos2d::CCNode*>(sprite); node; node = node->getParent()) {
+        if (!node->isVisible())
+            return false;
+        if (node == object->gameObject)
+            return true;
+    }
+
+    return true;
 }
 
 void VisibilityManager::markObjectAsVisible(Object* object) {
     if (!object || !object->gameObject || object->gameObject->m_isInvisible)
         return;
+
+    updateVisibleAnimatedObject(object);
 
     for (auto& sprite : object->sprites) {
         // Bismuth's optimized PlayLayer::updateVisibility bypasses GD's normal
@@ -221,6 +312,14 @@ void VisibilityManager::markObjectAsVisible(Object* object) {
         // submission gate here. Per-part animation visibility needs a separate
         // live-state path that does not inherit the stock object's culling state.
         if (!sprite.sprite)
+            continue;
+
+        // This gate is intentionally restricted to AnimatedGameObject. Those
+        // objects were activated above, so their local CCSpritePart state is
+        // meaningful. Applying stock visibility to every baked object caused
+        // the entire level to disappear as GD's skipped culling loop left
+        // ordinary stock sprites inactive.
+        if (object->isAnimated && !isAnimatedSpriteVisible(object, sprite.sprite))
             continue;
 
         i32 zorder = object->gameObject->getObjectZOrder();

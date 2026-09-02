@@ -144,11 +144,14 @@ private:
         cocos2d::CCSprite* sprite = nullptr;
         SpriteType type = SpriteType::BASE;
         u32 vertexBegin = 0;
+        cocos2d::CCAffineTransform bakedTransform {};
+        cocos2d::CCAffineTransform bakedObjectTransform {};
         std::array<ObjectVertex, VERTICIES_PER_QUAD> vertices {};
     };
 
     void prepareVAO();
     bool shouldTrackLiveSpriteObject(GameObject* object) const;
+    cocos2d::CCAffineTransform getLiveSpriteTransform(const LiveSpriteRecord& record) const;
     void refreshLiveSpriteData();
 
 private:

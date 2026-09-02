@@ -40,6 +40,9 @@ private:
         GameObject* gameObject;
         std::vector<ObjectSprite> sprites;
 
+        bool isAnimated;
+        bool animatedVisibleThisFrame = false;
+
         VisibleSpriteLayer* destinationLayerIfGlow;
         VisibleSpriteLayer* destinationLayerIfBlending;
         VisibleSpriteLayer* destinationLayerIfNotBlending;
@@ -129,6 +132,12 @@ public:
 private:
     void clearObjectVisibilities();
 
+    void finishAnimatedObjectVisibilities();
+
+    void updateVisibleAnimatedObject(Object* object);
+
+    static bool isAnimatedSpriteVisible(Object* object, cocos2d::CCSprite* sprite);
+
     /*
         This can only be called once for every object
         after clearObjectVisibilities has been called.
@@ -144,6 +153,8 @@ private:
 private:
     std::vector<Object*> allObjects;
     std::vector<VisibleSpriteLayer*> visibleSpriteLayers;
+    std::vector<Object*> visibleAnimatedObjects;
+    std::vector<Object*> nextVisibleAnimatedObjects;
 
     using SectionSet = SectionSet<Object*>;
 

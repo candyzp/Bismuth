@@ -207,6 +207,8 @@ void ObjectBatch::addSprite(
         record.sprite = sprite;
         record.type = type;
         record.vertexBegin = (u32)vertexBegin;
+        record.bakedTransform = transform;
+        record.bakedObjectTransform = object->nodeToParentTransform();
         for (u32 i = 0; i < VERTICIES_PER_QUAD; ++i)
             record.vertices[i] = verticies[vertexBegin + i];
         liveSprites.push_back(record);
@@ -266,6 +268,27 @@ void ObjectBatch::finishWriting() {
     restoreGLStates();
 }
 
+cocos2d::CCAffineTransform ObjectBatch::getLiveSpriteTransform(const LiveSpriteRecord& record) const {
+    auto transform = CCAffineTransformMakeIdentity();
+    auto node = static_cast<cocos2d::CCNode*>(record.sprite);
+
+    // Rebuild the current child-to-object transform while freezing the root
+    // GameObject transform at its baked value. Sprite-part animation therefore
+    // reaches the VBO, while GPU group translation/rotation is not applied a
+    // second time on the CPU.
+    while (node && node != record.object) {
+        transform = CCAffineTransformConcat(transform, node->nodeToParentTransform());
+        node = node->getParent();
+    }
+
+    if (node == record.object)
+        return CCAffineTransformConcat(transform, record.bakedObjectTransform);
+
+    // Detached color/glow sprites do not have an object-relative parent chain.
+    // Keep their baked placement, but still allow their frame UV to refresh.
+    return record.bakedTransform;
+}
+
 void ObjectBatch::refreshLiveSpriteData() {
     if (!vertexBuffer || liveSprites.empty())
         return;
@@ -276,18 +299,31 @@ void ObjectBatch::refreshLiveSpriteData() {
         if (!record.object || !record.sprite)
             continue;
 
+        bool isAnimated = record.object->m_classType == GameObjectClassType::Animated;
+        if (isAnimated && !record.object->m_isActivated)
+            continue;
+
         SpriteSheet spriteSheet = ObjectUtils::getSpritesheetOfObject(record.object, record.type);
-        auto transforms = getSpriteVertexTransform(record.sprite, identity, spriteSheet);
+        auto liveTransform = isAnimated ? getLiveSpriteTransform(record) : identity;
+        auto transforms = getSpriteVertexTransform(record.sprite, liveTransform, spriteSheet);
 
         u32 colorChannel = ObjectUtils::getSpriteColorChannel(record.type, record.object, record.sprite);
         if (record.type == SpriteType::DETAIL)
             colorChannel |= A_COLOR_CHANNEL_IS_SPRITE_DETAIL;
 
-        // Preserve the static geometry position. Group movement/rotation remains
-        // entirely in the GPU group-state path. AnimatedGameObject/CCSpritePart
-        // frame changes only need their live atlas UVs and current color role
-        // mirrored here; visibility is handled by VisibilityManager.
+        // Keep group movement/rotation in the GPU group-state path, but mirror
+        // the AnimatedGameObject's child-part transform and frame rectangle.
+        // CCPartAnimSprite animations change position/scale/rotation as well as
+        // UVs and visibility, so an UV-only refresh cannot animate them.
         auto updated = record.vertices;
+        if (isAnimated) {
+            auto positionBottomLeft = transforms.positionBottomLeft - ccPointToGLM(record.object->m_startPosition);
+            updated[QUAD_BL].positionOffset = positionBottomLeft;
+            updated[QUAD_BR].positionOffset = positionBottomLeft + transforms.positionRight;
+            updated[QUAD_TL].positionOffset = positionBottomLeft + transforms.positionUp;
+            updated[QUAD_TR].positionOffset = positionBottomLeft + transforms.positionRight + transforms.positionUp;
+        }
+
         updated[QUAD_BL].texCoord = transforms.texCoordBottomLeft;
         updated[QUAD_BR].texCoord = transforms.texCoordBottomLeft + transforms.texCoordRight;
         updated[QUAD_TL].texCoord = transforms.texCoordBottomLeft + transforms.texCoordUp;
@@ -309,11 +345,13 @@ void ObjectBatch::refreshLiveSpriteData() {
 }
 
 void ObjectBatch::predraw(const CameraView& view) {
-    refreshLiveSpriteData();
-
     auto timer = BProfiler::start("Calculate visibilities");
     visibilityManager.calculateVisibilitiesForCameraView(view);
     timer.end();
+
+    // Visibility calculation activates newly visible AnimatedGameObjects and
+    // establishes their current CCSpritePart state before the VBO is refreshed.
+    refreshLiveSpriteData();
 
     timer = BProfiler::start("Generate indicies");
 
