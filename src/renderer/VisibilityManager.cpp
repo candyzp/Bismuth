@@ -210,6 +210,13 @@ void VisibilityManager::clearObjectVisibilities() {
 
 void VisibilityManager::markObjectAsVisible(Object* object) {
     for (auto& sprite : object->sprites) {
+        // Some game objects (notably platformer checkpoints) toggle individual
+        // child sprites at runtime. Those sprites were baked into the static
+        // batch at level setup, so respect their current visibility before
+        // submitting the baked index range.
+        if (!sprite.sprite || !sprite.sprite->isVisible())
+            continue;
+
         i32 zorder = object->gameObject->getObjectZOrder();
 
         i32 colorChannel = ObjectUtils::getSpriteColorChannel(sprite.type, object->gameObject, sprite.sprite);
