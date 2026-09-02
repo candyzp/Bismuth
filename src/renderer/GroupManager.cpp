@@ -124,7 +124,7 @@ void GroupManager::initWithObjects(cocos2d::CCArray* objects) {
         }
         
         GroupCombination alphaComb = comb;
-        comb.removeGroupIdsNotInSet(alphaGroupIds);
+        alphaComb.removeGroupIdsNotInSet(alphaGroupIds);
 
         if (alphaIndicies.find(alphaComb) == alphaIndicies.end()) {
             alphaIndicies[alphaComb] = alphaCombIndex;
@@ -143,7 +143,7 @@ void GroupManager::initWithObjects(cocos2d::CCArray* objects) {
     transformCombinationCount = transformCombIndex;
     log::info("Number of unique group transformations: {}", transformCombinationCount);
 
-    alphaValuesPerGroupId.resize(maxGroupId);
+    alphaValuesPerGroupId.resize((usize)maxGroupId + 1);
     alphaValuesPerAlphaIndex.resize(alphaIndiciesCount);
 
     groupStateBuffer = Buffer::createDynamicDraw("Group state buffer", getGroupStateBufferSize());
