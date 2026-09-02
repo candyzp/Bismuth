@@ -77,7 +77,7 @@ void VisibilityManager::calculateVisibilitiesForCameraView(const CameraView& vie
     clearObjectVisibilities();
 
     GroupManager& groupManager = Renderer::get()->getGroupManager();
-    auto& groupStates = groupManager.getGroupStates();
+    auto groupStates = groupManager.getGroupStates();
 
     glm::vec2 cameraNormalMin = glm::vec2 {
         minOf4(0, view.rightVector.x, view.upVector.x, view.rightVector.x + view.upVector.x),
@@ -119,6 +119,15 @@ void VisibilityManager::calculateVisibilitiesForCameraView(const CameraView& vie
             min = cameraNormalMin - state.offset;
             max = cameraNormalMax - state.offset;
         }
+
+#ifdef GEODE_IS_IOS
+        // Keep CPU culling coarse on iOS and let the GPU render a small edge band.
+        // This slightly shifts rendering work toward the GPU and makes fast-moving
+        // or transformed decoration less likely to pop out at the camera boundary.
+        constexpr float IOS_GPU_ASSIST_MARGIN = 18.0f;
+        min -= glm::vec2(IOS_GPU_ASSIST_MARGIN);
+        max += glm::vec2(IOS_GPU_ASSIST_MARGIN);
+#endif
 
         // auto ssize = glm::vec2 DEFAULT_SECTION_SIZE;
         
