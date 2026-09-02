@@ -3,7 +3,6 @@
 #ifdef GEODE_IS_IOS
 
 #include <common.hpp>
-#include <vector>
 
 class DataTexture {
 public:
@@ -33,7 +32,6 @@ private:
     usize capacity = 0;
     usize bytesPerTexel = 0;
     GLenum pixelType = GL_UNSIGNED_BYTE;
-    std::vector<u8> staging;
 };
 
 #endif
