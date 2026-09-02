@@ -209,6 +209,9 @@ void VisibilityManager::clearObjectVisibilities() {
 }
 
 void VisibilityManager::markObjectAsVisible(Object* object) {
+    if (!object || !object->gameObject || object->gameObject->m_isInvisible)
+        return;
+
     for (auto& sprite : object->sprites) {
         // Some game objects (notably platformer checkpoints) toggle individual
         // child sprites at runtime. Those sprites were baked into the static
