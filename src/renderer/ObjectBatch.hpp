@@ -14,24 +14,25 @@
 using namespace geode;
 
 /*
-    These are the vertex attributes of the
-    object batch. They are written in this
-    macro so you don't have duplicate code
-    with the and the attrib pointer calls.
-
-    ATTRIB(attributeLocation, type, name)
-
-    NOTE: The positionOffset attribute is this
-          vertex' offset from the position of
-          the object this sprite belongs to.
+    These are the vertex attributes of the object batch.
+    iOS/ES2 has no integer vertex attributes, so the lookup indices are stored
+    as floats there. They are exact for the ranges Geometry Dash uses.
 */
+#ifdef GEODE_IS_IOS
+#define OBJECT_VERTEX_ATTRIBUTES(ATTRIB) \
+    ATTRIB(0, vec2,  positionOffset) \
+    ATTRIB(1, vec2,  texCoord) \
+    ATTRIB(2, float, srbIndex) \
+    ATTRIB(3, float, colorChannel) \
+
+#else
 #define OBJECT_VERTEX_ATTRIBUTES(ATTRIB) \
     ATTRIB(0, vec2, positionOffset) \
     ATTRIB(1, vec2, texCoord) \
     ATTRIB(2, u32,  srbIndex) \
     ATTRIB(3, u16,  colorChannel) \
 
-////////////////////////////////////////////////
+#endif
 
 #define VERTEX_ATTRIBUTE_AS_STRUCT_MEMBER(ID, TYPE, NAME) \
     TYPE NAME;
@@ -58,8 +59,6 @@ struct ObjectQuad {
 struct ObjectIndicies {
     u32 indicies[INDICIES_PER_QUAD];
 };
-
-////////////////////////////////////////////////
 
 class Renderer;
 
@@ -120,10 +119,6 @@ public:
         indexBuffer->bindAs(GL_ELEMENT_ARRAY_BUFFER);
     }
 
-    // inline u32 indexCount() {
-    //     return quadCount * 6;
-    // }
-
     inline usize getVertexBufferSize() {
         return vertexCount * sizeof(ObjectVertex);
     }
@@ -147,10 +142,7 @@ private:
 
 private:
     Renderer& renderer;
-
-    // Manages which objects are visible
     VisibilityManager visibilityManager;
-
     SpriteSheet spriteSheetFilter = (SpriteSheet)-1;
 
     Buffer* vertexBuffer = nullptr;
@@ -163,7 +155,7 @@ private:
 
     std::vector<u32> indicies;
     u32 indexCount = 0;
-    
+
     std::vector<u32> culledIndicies;
     u32 culledIndexCount = 0;
 
