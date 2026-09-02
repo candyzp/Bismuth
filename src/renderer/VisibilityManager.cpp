@@ -208,43 +208,19 @@ void VisibilityManager::clearObjectVisibilities() {
     }
 }
 
-static bool isLiveSpriteVisible(GameObject* object, cocos2d::CCSprite* sprite) {
-    if (!object || !sprite || !sprite->isVisible() || sprite->getDisplayedOpacity() == 0)
-        return false;
-
-    // Animated objects can hide a parent sprite-part while its child keeps its
-    // own local visible flag. Only walk the hierarchy when it actually reaches
-    // this GameObject; detached color/glow sprites may live under GD's batch
-    // nodes, which Bismuth intentionally hides.
-    bool belongsToObjectTree = false;
-    for (auto node = static_cast<cocos2d::CCNode*>(sprite); node; node = node->getParent()) {
-        if (node == object) {
-            belongsToObjectTree = true;
-            break;
-        }
-    }
-
-    if (!belongsToObjectTree)
-        return true;
-
-    for (auto node = static_cast<cocos2d::CCNode*>(sprite); node; node = node->getParent()) {
-        if (!node->isVisible())
-            return false;
-        if (node == object)
-            return object->getDisplayedOpacity() != 0;
-    }
-
-    return true;
-}
-
 void VisibilityManager::markObjectAsVisible(Object* object) {
     if (!object || !object->gameObject || object->gameObject->m_isInvisible)
         return;
 
     for (auto& sprite : object->sprites) {
-        // Runtime animations, coins and platformer checkpoints can toggle
-        // individual sprite parts after Bismuth has baked the level VBO.
-        if (!isLiveSpriteVisible(object->gameObject, sprite.sprite))
+        // Bismuth's optimized PlayLayer::updateVisibility bypasses GD's normal
+        // activate/deactivate loop. As a result, stock sprites outside the
+        // initial active window can remain locally hidden even when Bismuth's
+        // own section culling says their baked geometry is on screen. Do not
+        // use Cocos visibility, displayed opacity, or parent state as a global
+        // submission gate here. Per-part animation visibility needs a separate
+        // live-state path that does not inherit the stock object's culling state.
+        if (!sprite.sprite)
             continue;
 
         i32 zorder = object->gameObject->getObjectZOrder();
