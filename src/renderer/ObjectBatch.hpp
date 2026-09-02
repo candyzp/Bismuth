@@ -3,6 +3,7 @@
 #include <Geode/binding/GameObject.hpp>
 #include <common.hpp>
 #include <Geode/Geode.hpp>
+#include <array>
 #include <vector>
 
 #include "Buffer.hpp"
@@ -143,7 +144,7 @@ private:
         cocos2d::CCSprite* sprite = nullptr;
         SpriteType type = SpriteType::BASE;
         u32 vertexBegin = 0;
-        ObjectQuad quad {};
+        std::array<ObjectVertex, VERTICIES_PER_QUAD> vertices {};
     };
 
     void prepareVAO();
