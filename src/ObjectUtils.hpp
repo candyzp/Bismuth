@@ -99,8 +99,16 @@ public:
             : object->m_activeMainColorID;
         u32 colorChannel = sanitizeColorChannel(rawColorChannel);
 
-        bool isSpriteBlack = (sprite == object) ? object->m_isObjectBlack : object->m_isColorSpriteBlack;
-        if (isSpriteBlack)
+        // SpriteType already tracks whether a sprite belongs to the base/detail
+        // subtree. Using "root vs child" here incorrectly treated every layered
+        // base child (coins/orbs included) as a detail sprite.
+        bool isSpriteBlack = false;
+        if (type == SpriteType::DETAIL)
+            isSpriteBlack = object->m_isColorSpriteBlack;
+        else if (type == SpriteType::BASE || type == SpriteType::BLACK)
+            isSpriteBlack = object->m_isObjectBlack;
+
+        if (isSpriteBlack || type == SpriteType::BLACK)
             return COLOR_CHANNEL_BLACK;
         if (type == SpriteType::GLOW && object->m_glowColorIsLBG)
             return COLOR_CHANNEL_LBG;
