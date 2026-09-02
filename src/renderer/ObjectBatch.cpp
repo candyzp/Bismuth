@@ -31,8 +31,13 @@ SpriteVertexTransforms ObjectBatch::getSpriteVertexTransform(
     SpriteSheet spriteSheet
 ) {
     CCRect crop = sprite->getTextureRect();
-    
-    CCTexture2D* texture = renderer.getSpriteSheetTexture(spriteSheet);
+
+    // Normalize UVs against the exact texture backing this live sprite. This
+    // avoids assuming that a separately-loaded atlas has the same HD/UHD
+    // resolution/content scale as Geometry Dash's active batch texture.
+    CCTexture2D* texture = sprite->getTexture();
+    if (texture == nullptr)
+        texture = renderer.getSpriteSheetTexture(spriteSheet);
     if (texture == nullptr) return {};
 
     glm::vec2 posBottomLeft  = ccPointToGLM(CCPointApplyAffineTransform(sprite->getOffsetPosition(), transform));
