@@ -2,7 +2,6 @@
 
 #include "DataTexture.hpp"
 #include <algorithm>
-#include <cstring>
 
 using namespace geode::prelude;
 
@@ -38,7 +37,6 @@ bool DataTexture::init(const char* name, usize texelCount, Type type) {
     capacity = (usize)width * (usize)height;
     pixelType = type == Type::FloatRGBA ? GL_FLOAT : GL_UNSIGNED_BYTE;
     bytesPerTexel = type == Type::FloatRGBA ? sizeof(float) * 4 : sizeof(u8) * 4;
-    staging.resize(capacity * bytesPerTexel);
 
     glGenTextures(1, &id);
     glBindTexture(GL_TEXTURE_2D, id);
@@ -68,27 +66,50 @@ bool DataTexture::init(const char* name, usize texelCount, Type type) {
 }
 
 bool DataTexture::upload(const void* data, usize texelCount) {
-    if (!id || texelCount > capacity)
+    if (!id || texelCount > capacity || (texelCount > 0 && !data))
         return false;
-
-    const usize usedBytes = texelCount * bytesPerTexel;
-    if (usedBytes && data)
-        std::memcpy(staging.data(), data, usedBytes);
-    if (usedBytes < staging.size())
-        std::memset(staging.data() + usedBytes, 0, staging.size() - usedBytes);
+    if (texelCount == 0)
+        return true;
 
     glBindTexture(GL_TEXTURE_2D, id);
-    glTexSubImage2D(
-        GL_TEXTURE_2D,
-        0,
-        0,
-        0,
-        width,
-        height,
-        GL_RGBA,
-        pixelType,
-        staging.data()
-    );
+
+    const usize rowWidth = (usize)width;
+    const usize fullRows = texelCount / rowWidth;
+    const usize remainder = texelCount % rowWidth;
+    const auto* bytes = static_cast<const u8*>(data);
+
+    // Upload straight from the renderer's CPU buffer instead of first making
+    // a second full-size staging copy. This lowers peak memory on huge levels
+    // and lets the GL driver start consuming the data immediately.
+    if (fullRows > 0) {
+        glTexSubImage2D(
+            GL_TEXTURE_2D,
+            0,
+            0,
+            0,
+            width,
+            (GLsizei)fullRows,
+            GL_RGBA,
+            pixelType,
+            data
+        );
+    }
+
+    if (remainder > 0) {
+        const usize byteOffset = fullRows * rowWidth * bytesPerTexel;
+        glTexSubImage2D(
+            GL_TEXTURE_2D,
+            0,
+            0,
+            (GLint)fullRows,
+            (GLsizei)remainder,
+            1,
+            GL_RGBA,
+            pixelType,
+            bytes + byteOffset
+        );
+    }
+
     return glGetError() == GL_NO_ERROR;
 }
 
