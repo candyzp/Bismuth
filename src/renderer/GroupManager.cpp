@@ -79,8 +79,6 @@ GroupManager::~GroupManager() {
     }
 }
 
-static std::set<GameObject*> dobjects;
-
 void GroupManager::initWithObjects(cocos2d::CCArray* objects) {
     GroupCombinationIndex groupCombIndex = 0;
 
@@ -92,8 +90,6 @@ void GroupManager::initWithObjects(cocos2d::CCArray* objects) {
         else if (object->m_objectID == ALPHA_TRIGGER_ID || object->m_objectID == TOGGLE_TRIGGER_ID)
             alphaGroupIds.insert(((EffectGameObject*)object)->m_targetGroupID);
 
-        dobjects.insert(object);
-        
         GroupCombination comb = GroupCombination(object);
 
         if (groupCombinationIndicies.find(comb) == groupCombinationIndicies.end()) {
