@@ -77,6 +77,7 @@ void VisibilityManager::calculateVisibilitiesForCameraView(const CameraView& vie
     clearObjectVisibilities();
 
     GroupManager& groupManager = Renderer::get()->getGroupManager();
+    auto& groupStates = groupManager.getGroupStates();
 
     glm::vec2 cameraNormalMin = glm::vec2 {
         minOf4(0, view.rightVector.x, view.upVector.x, view.rightVector.x + view.upVector.x),
@@ -91,7 +92,7 @@ void VisibilityManager::calculateVisibilitiesForCameraView(const CameraView& vie
     for (auto& sectionSet : objectSectionSetPerTransformGroupId) {
         i32 groupIndex = groupManager.getFirstGroupIndexOfTransformIndex(transformId);
 
-        GroupCombinationState& state = groupManager.getGroupStates()[groupIndex];
+        GroupCombinationState& state = groupStates[groupIndex];
 
         glm::vec2 min, max;
         
@@ -108,10 +109,10 @@ void VisibilityManager::calculateVisibilitiesForCameraView(const CameraView& vie
 
             min = glm::vec2 {
                 minOf4(0, camRightVector.x, camUpVector.x, camRightUpVector.x),
-                minOf4(0, camRightVector.y, camUpVector.y, camRightUpVector.x)
+                minOf4(0, camRightVector.y, camUpVector.y, camRightUpVector.y)
             } + camBottomLeft;
             max = glm::vec2 {
-                maxOf4(0, camRightVector.x, camUpVector.x, camRightUpVector.y),
+                maxOf4(0, camRightVector.x, camUpVector.x, camRightUpVector.x),
                 maxOf4(0, camRightVector.y, camUpVector.y, camRightUpVector.y)
             } + camBottomLeft;
         } else {
@@ -162,10 +163,9 @@ void VisibilityManager::markAllObjectsVisible() {
 }
 
 VisibilityManager::Layer VisibilityManager::getLayer(const LayerKey& id) {
-    for (auto layer : visibleSpriteLayers) {
+    for (auto layer : visibleSpriteLayers)
         if (layer->id == id)
             return layer;
-    }
     return nullptr;
 }
 
