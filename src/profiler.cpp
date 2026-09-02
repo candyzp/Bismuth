@@ -1,9 +1,23 @@
+#include "profiler.hpp"
+
+#ifdef GEODE_IS_IOS
+
+// The desktop profiler is developer instrumentation, not part of Bismuth's
+// rendering optimization. It depends on desktop GL timer queries and keyboard
+// dispatcher hooks that are unavailable / inline on iOS, so keep the shared
+// instrumentation calls as zero-cost no-ops on the mobile renderer.
+namespace profiler {
+void functionPush(const char*) {}
+void functionPop() {}
+}
+
+#else
+
 #include <Geode/Geode.hpp>
 #include <unordered_map>
 #include <vector>
 #include "Geode/cocos/CCDirector.h"
 #include "common.hpp"
-#include "profiler.hpp"
 #include "HotKey.hpp"
 
 #include <Geode/modify/CCKeyboardDispatcher.hpp>
@@ -136,3 +150,5 @@ _PROFILER_HOOK_VOID(cocos2d::CCSpriteBatchNode, draw);
 #include <Geode/modify/GJBaseGameLayer.hpp>
 _PROFILER_HOOK_VOID(GJBaseGameLayer, update, float);
 _PROFILER_HOOK_VOID(GJBaseGameLayer, visit);
+
+#endif
