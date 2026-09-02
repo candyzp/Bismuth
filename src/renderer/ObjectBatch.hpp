@@ -138,7 +138,17 @@ public:
     void draw(LayerDrawCall* drawCall);
 
 private:
+    struct LiveSpriteRecord {
+        GameObject* object = nullptr;
+        cocos2d::CCSprite* sprite = nullptr;
+        SpriteType type = SpriteType::BASE;
+        u32 vertexBegin = 0;
+        ObjectQuad quad {};
+    };
+
     void prepareVAO();
+    bool shouldTrackLiveSpriteObject(GameObject* object) const;
+    void refreshLiveSpriteData();
 
 private:
     Renderer& renderer;
@@ -160,6 +170,7 @@ private:
     u32 culledIndexCount = 0;
 
     std::vector<LayerDrawCall> layerDrawCalls;
+    std::vector<LiveSpriteRecord> liveSprites;
 
     SpriteVertexTransforms currentSpriteVertexTransforms;
     glm::vec2 currentSpriteObjectStartPosition;
