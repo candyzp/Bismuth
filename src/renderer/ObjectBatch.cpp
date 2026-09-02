@@ -201,7 +201,7 @@ void ObjectBatch::addSprite(
         record.type = type;
         record.vertexBegin = (u32)vertexBegin;
         for (u32 i = 0; i < VERTICIES_PER_QUAD; ++i)
-            record.quad.verticies[i] = verticies[vertexBegin + i];
+            record.vertices[i] = verticies[vertexBegin + i];
         liveSprites.push_back(record);
     }
 }
@@ -279,24 +279,24 @@ void ObjectBatch::refreshLiveSpriteData() {
         // Preserve the static geometry position. Group movement/rotation remains
         // entirely in the GPU group-state path. Only mirror the live display
         // frame UV and base/detail color classification here.
-        ObjectQuad updated = record.quad;
-        updated.bl.texCoord = transforms.texCoordBottomLeft;
-        updated.br.texCoord = transforms.texCoordBottomLeft + transforms.texCoordRight;
-        updated.tl.texCoord = transforms.texCoordBottomLeft + transforms.texCoordUp;
-        updated.tr.texCoord = transforms.texCoordBottomLeft + transforms.texCoordRight + transforms.texCoordUp;
+        auto updated = record.vertices;
+        updated[QUAD_BL].texCoord = transforms.texCoordBottomLeft;
+        updated[QUAD_BR].texCoord = transforms.texCoordBottomLeft + transforms.texCoordRight;
+        updated[QUAD_TL].texCoord = transforms.texCoordBottomLeft + transforms.texCoordUp;
+        updated[QUAD_TR].texCoord = transforms.texCoordBottomLeft + transforms.texCoordRight + transforms.texCoordUp;
 
         for (u32 i = 0; i < VERTICIES_PER_QUAD; ++i)
-            updated.verticies[i].colorChannel = colorChannel;
+            updated[i].colorChannel = colorChannel;
 
-        if (std::memcmp(&updated, &record.quad, sizeof(ObjectQuad)) == 0)
+        if (std::memcmp(updated.data(), record.vertices.data(), VERTICIES_PER_QUAD * sizeof(ObjectVertex)) == 0)
             continue;
 
         vertexBuffer->write(
-            updated.verticies,
-            sizeof(ObjectQuad),
+            updated.data(),
+            VERTICIES_PER_QUAD * sizeof(ObjectVertex),
             (usize)record.vertexBegin * sizeof(ObjectVertex)
         );
-        record.quad = updated;
+        record.vertices = updated;
     }
 }
 
