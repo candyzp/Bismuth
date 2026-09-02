@@ -238,9 +238,12 @@ static void hideGPUDebugOverlay(Renderer* renderer) {
 
 bool ObjectBatchNode::init() {
     auto renderer = Renderer::get();
-    spriteSheetTexture = renderer->getSpriteSheetTexture(layerId.spriteSheet);
+    auto batchNode = renderer->getSpriteBatchNodeWithLayerId(layerId);
+    spriteSheetTexture = batchNode
+        ? batchNode->getTexture()
+        : renderer->getSpriteSheetTexture(layerId.spriteSheet);
     drawCall = renderer->getObjectBatch().getDrawCall(layerId);
-    return true;
+    return spriteSheetTexture != nullptr;
 }
 
 void ObjectBatchNode::draw() {
