@@ -83,8 +83,21 @@ public:
         return type == SpriteType::GLOW ? SpriteSheet::GLOW : (SpriteSheet)object->getParentMode();
     }
 
+    static inline u32 sanitizeColorChannel(i32 colorChannel) {
+        // 0/negative IDs mean no normal color channel for a number of special
+        // objects. On iOS these are texture lookups, so allowing a negative ID
+        // to wrap to u16/u32 samples an unrelated edge texel (often a wild
+        // solid color). White is the neutral tint for those fallback sprites.
+        if (colorChannel <= 0 || colorChannel >= COLOR_CHANNEL_COUNT)
+            return COLOR_CHANNEL_WHITE;
+        return (u32)colorChannel;
+    }
+
     static u32 getSpriteColorChannel(SpriteType type, GameObject* object, cocos2d::CCSprite* sprite) {
-        u32 colorChannel = type == SpriteType::DETAIL ? object->m_activeDetailColorID : object->m_activeMainColorID;
+        i32 rawColorChannel = type == SpriteType::DETAIL
+            ? object->m_activeDetailColorID
+            : object->m_activeMainColorID;
+        u32 colorChannel = sanitizeColorChannel(rawColorChannel);
 
         bool isSpriteBlack = (sprite == object) ? object->m_isObjectBlack : object->m_isColorSpriteBlack;
         if (isSpriteBlack)
