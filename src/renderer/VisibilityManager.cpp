@@ -208,16 +208,43 @@ void VisibilityManager::clearObjectVisibilities() {
     }
 }
 
+static bool isLiveSpriteVisible(GameObject* object, cocos2d::CCSprite* sprite) {
+    if (!object || !sprite || !sprite->isVisible() || sprite->getDisplayedOpacity() == 0)
+        return false;
+
+    // Animated objects can hide a parent sprite-part while its child keeps its
+    // own local visible flag. Only walk the hierarchy when it actually reaches
+    // this GameObject; detached color/glow sprites may live under GD's batch
+    // nodes, which Bismuth intentionally hides.
+    bool belongsToObjectTree = false;
+    for (auto node = static_cast<cocos2d::CCNode*>(sprite); node; node = node->getParent()) {
+        if (node == object) {
+            belongsToObjectTree = true;
+            break;
+        }
+    }
+
+    if (!belongsToObjectTree)
+        return true;
+
+    for (auto node = static_cast<cocos2d::CCNode*>(sprite); node; node = node->getParent()) {
+        if (!node->isVisible())
+            return false;
+        if (node == object)
+            return object->getDisplayedOpacity() != 0;
+    }
+
+    return true;
+}
+
 void VisibilityManager::markObjectAsVisible(Object* object) {
     if (!object || !object->gameObject || object->gameObject->m_isInvisible)
         return;
 
     for (auto& sprite : object->sprites) {
-        // Some game objects (notably platformer checkpoints) toggle individual
-        // child sprites at runtime. Those sprites were baked into the static
-        // batch at level setup, so respect their current visibility before
-        // submitting the baked index range.
-        if (!sprite.sprite || !sprite.sprite->isVisible())
+        // Runtime animations, coins and platformer checkpoints can toggle
+        // individual sprite parts after Bismuth has baked the level VBO.
+        if (!isLiveSpriteVisible(object->gameObject, sprite.sprite))
             continue;
 
         i32 zorder = object->gameObject->getObjectZOrder();
