@@ -85,7 +85,15 @@ public:
             glm::ivec2(rect.topRight   / _SectionSize) + glm::ivec2(1, 1)
         };
 
-        if (!srect.intersects(boundRect))
+        // IRect uses half-open [min, max) ranges, while boundRect is built from
+        // discrete occupied section coordinates. Expand the stored max by one
+        // so the highest occupied row/column is not accidentally treated as
+        // outside the set. Sparse transform groups can otherwise lose whole
+        // chunks of decoration at their section boundary.
+        IRect occupiedBounds = boundRect;
+        occupiedBounds.max += glm::ivec2(1, 1);
+
+        if (!srect.intersects(occupiedBounds))
             return;
 
         IRange rangeY = fastMap.getRange().intersection(srect.rangeY());
