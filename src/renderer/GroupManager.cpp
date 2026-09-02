@@ -200,8 +200,11 @@ void GroupManager::rotateGroup(
     bool lockObjectRotation,
     std::optional<glm::vec2> centerPoint
 ) {
-    float cos = cosf(glm::radians(angle) * 0.5);
-    float sin = sinf(glm::radians(angle) * 0.5);
+    // GroupCommandObject2 already supplies the actual per-step rotation delta
+    // in degrees. Do not halve it here, or GPU-managed decoration rotates at
+    // half the rate of Geometry Dash's own objects and progressively separates.
+    float cos = cosf(glm::radians(angle));
+    float sin = sinf(glm::radians(angle));
     glm::mat2 matrix = {
         { cos, -sin },
         { sin,  cos }
