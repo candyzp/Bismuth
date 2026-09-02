@@ -214,8 +214,10 @@ void GroupManager::rotateGroup(
         if (!lockObjectRotation)
             groupState.localTransform *= matrix;
 
+        // A rotate trigger without a center still applies the local rotation to
+        // every matching group combination. Do not exit after the first one.
         if (!centerPoint.has_value())
-            return;
+            continue;
 
         auto center = centerPoint.value();
         groupState.positionalTransform *= matrix;
