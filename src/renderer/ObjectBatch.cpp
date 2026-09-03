@@ -156,9 +156,11 @@ bool ObjectBatch::shouldTrackLiveSpriteObject(GameObject* object) const {
     if (object->m_classType == GameObjectClassType::Animated)
         return true;
 
-    // Secret coins and user coins swap display frames while playing. Platformer
-    // checkpoints swap child visibility/color state after activation.
-    if (object->m_objectID == 142 || object->m_objectID == 1329)
+    // Gameplay objects animate after interaction even when they are not an
+    // AnimatedGameObject. Orbs/pads pulse, portals change child transforms,
+    // and coins/collectibles swap or hide parts after collection. Mirror those
+    // small live changes into the GPU VBO instead of redrawing them with Cocos.
+    if (ObjectUtils::isInteractiveVisualObject(object))
         return true;
 
     return typeinfo_cast<CheckpointGameObject*>(object) != nullptr;
@@ -289,6 +291,33 @@ cocos2d::CCAffineTransform ObjectBatch::getLiveSpriteTransform(const LiveSpriteR
     return record.bakedTransform;
 }
 
+static bool isLiveChildSpriteVisible(const ObjectBatch::LiveSpriteRecord& record) {
+    if (!record.object || !record.sprite)
+        return false;
+
+    bool belongsToObjectTree = false;
+    for (auto node = static_cast<cocos2d::CCNode*>(record.sprite); node; node = node->getParent()) {
+        if (node == record.object) {
+            belongsToObjectTree = true;
+            break;
+        }
+    }
+
+    // Detached base/detail/glow sprites can inherit stale visibility from GD's
+    // disabled stock batch nodes. Do not treat that external state as live.
+    if (!belongsToObjectTree)
+        return true;
+
+    // Inside the object tree, child visibility is meaningful for coin/orb/
+    // portal animation. Deliberately stop before the root GameObject because
+    // its own Cocos visibility can be stale when Bismuth owns culling.
+    for (auto node = static_cast<cocos2d::CCNode*>(record.sprite); node && node != record.object; node = node->getParent()) {
+        if (!node->isVisible())
+            return false;
+    }
+    return true;
+}
+
 void ObjectBatch::refreshLiveSpriteData() {
     if (!vertexBuffer || liveSprites.empty())
         return;
@@ -299,12 +328,36 @@ void ObjectBatch::refreshLiveSpriteData() {
         if (!record.object || !record.sprite)
             continue;
 
-        bool isAnimated = record.object->m_classType == GameObjectClassType::Animated;
+        const bool isAnimated = record.object->m_classType == GameObjectClassType::Animated;
+        const bool isInteractive = ObjectUtils::isInteractiveVisualObject(record.object);
+        const bool hasLiveChildState = isAnimated || isInteractive;
+
         if (isAnimated && !record.object->m_isActivated)
             continue;
 
+        auto updated = record.vertices;
+
+        if (hasLiveChildState && !isLiveChildSpriteVisible(record)) {
+            // Keep the draw entirely in the GPU batch. Hidden interaction parts
+            // are moved outside clip space until GD makes the child visible
+            // again; no stock Cocos draw is re-enabled.
+            constexpr float HIDDEN_VERTEX = 1000000.0f;
+            for (u32 i = 0; i < VERTICIES_PER_QUAD; ++i)
+                updated[i].positionOffset = { HIDDEN_VERTEX, HIDDEN_VERTEX };
+
+            if (std::memcmp(updated.data(), record.vertices.data(), VERTICIES_PER_QUAD * sizeof(ObjectVertex)) != 0) {
+                vertexBuffer->write(
+                    updated.data(),
+                    VERTICIES_PER_QUAD * sizeof(ObjectVertex),
+                    (usize)record.vertexBegin * sizeof(ObjectVertex)
+                );
+                record.vertices = updated;
+            }
+            continue;
+        }
+
         SpriteSheet spriteSheet = ObjectUtils::getSpritesheetOfObject(record.object, record.type);
-        auto liveTransform = isAnimated ? getLiveSpriteTransform(record) : identity;
+        auto liveTransform = hasLiveChildState ? getLiveSpriteTransform(record) : identity;
         auto transforms = getSpriteVertexTransform(record.sprite, liveTransform, spriteSheet);
 
         u32 colorChannel = ObjectUtils::getSpriteColorChannel(record.type, record.object, record.sprite);
@@ -312,11 +365,10 @@ void ObjectBatch::refreshLiveSpriteData() {
             colorChannel |= A_COLOR_CHANNEL_IS_SPRITE_DETAIL;
 
         // Keep group movement/rotation in the GPU group-state path, but mirror
-        // the AnimatedGameObject's child-part transform and frame rectangle.
-        // CCPartAnimSprite animations change position/scale/rotation as well as
-        // UVs and visibility, so an UV-only refresh cannot animate them.
-        auto updated = record.vertices;
-        if (isAnimated) {
+        // current child-part transform and frame rectangle for animated and
+        // gameplay-interactive objects. This lets orb/portal/coin animation
+        // change the GPU VBO without rebuilding the level or drawing via Cocos.
+        if (hasLiveChildState) {
             auto positionBottomLeft = transforms.positionBottomLeft - ccPointToGLM(record.object->m_startPosition);
             updated[QUAD_BL].positionOffset = positionBottomLeft;
             updated[QUAD_BR].positionOffset = positionBottomLeft + transforms.positionRight;
