@@ -55,12 +55,12 @@ vec2 rotatePointAroundOrigin(vec2 point, float angleInRadians) {
 }
 
 vec3 unpackRGB24(float packedColor) {
-    float packed = floor(packedColor + 0.5);
-    float r = mod(packed, 256.0);
-    packed = floor(packed / 256.0);
-    float g = mod(packed, 256.0);
-    packed = floor(packed / 256.0);
-    float b = mod(packed, 256.0);
+    float packedValue = floor(packedColor + 0.5);
+    float r = mod(packedValue, 256.0);
+    packedValue = floor(packedValue / 256.0);
+    float g = mod(packedValue, 256.0);
+    packedValue = floor(packedValue / 256.0);
+    float b = mod(packedValue, 256.0);
     return vec3(r, g, b) / 255.0;
 }
 
