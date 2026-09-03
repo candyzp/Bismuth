@@ -6,7 +6,7 @@
 #include <Geode/binding/CheckpointGameObject.hpp>
 #include <algorithm>
 #include <cmath>
-#include <limits>
+#include <vector>
 
 using namespace geode::prelude;
 
@@ -14,6 +14,10 @@ namespace {
 constexpr usize OBJECT_TEXELS_PER_STATE = 2;
 constexpr usize SPRITE_TEXELS_PER_STATE = 3;
 constexpr usize MAX_SAFE_SPRITES_PER_OBJECT = 12;
+
+// Merging a tiny gap costs fewer bytes than another GL call, but a distant dirty
+// record should never drag the entire data texture across the bus again.
+constexpr usize DIRTY_RECORD_MERGE_GAP = 2;
 
 inline bool changedFloat(float a, float b, float epsilon = 0.0001f) {
     return std::abs(a - b) > epsilon;
@@ -24,6 +28,50 @@ inline bool rectChanged(const cocos2d::CCRect& a, const cocos2d::CCRect& b) {
            changedFloat(a.origin.y, b.origin.y) ||
            changedFloat(a.size.width, b.size.width) ||
            changedFloat(a.size.height, b.size.height);
+}
+
+void uploadDirtyRecordSpans(
+    DataTexture* texture,
+    const std::vector<glm::vec4>& texels,
+    const std::vector<usize>& dirtyRecords,
+    usize texelsPerRecord,
+    ResolvedStateLayer::Stats& stats
+) {
+    if (!texture || dirtyRecords.empty() || texelsPerRecord == 0)
+        return;
+
+    auto uploadSpan = [&](usize recordStart, usize recordEnd) {
+        const usize startTexel = recordStart * texelsPerRecord;
+        const usize endTexel = (recordEnd + 1) * texelsPerRecord;
+        const usize texelCount = endTexel - startTexel;
+        if (startTexel >= texels.size() || endTexel > texels.size())
+            return;
+
+        if (texture->uploadRange(
+            texels.data() + startTexel,
+            startTexel,
+            texelCount
+        )) {
+            stats.bytesUploaded += texelCount * sizeof(glm::vec4);
+            ++stats.uploadCalls;
+        }
+    };
+
+    usize spanStart = dirtyRecords.front();
+    usize spanEnd = spanStart;
+
+    for (usize i = 1; i < dirtyRecords.size(); ++i) {
+        const usize next = dirtyRecords[i];
+        if (next <= spanEnd + 1 + DIRTY_RECORD_MERGE_GAP) {
+            spanEnd = next;
+            continue;
+        }
+
+        uploadSpan(spanStart, spanEnd);
+        spanStart = spanEnd = next;
+    }
+
+    uploadSpan(spanStart, spanEnd);
 }
 } // namespace
 
@@ -47,9 +95,9 @@ ResolvedStateLayer::SafetyClass ResolvedStateLayer::classifyObject(
     if (!object || object->isTrigger() || object->m_isHide || object->m_isInvisible)
         return SafetyClass::StockOnly;
 
-    // These classes are exactly where the previous replacement renderer became
-    // fragile: their child trees, frames, activation state, or interaction art
-    // can change independently of the root GameObject.
+    // These classes keep the exact stock path. Their sprite trees/frames or
+    // interaction visuals can change independently of simple resolved root
+    // state, which is precisely where the old replacement renderer broke.
     if (object->m_classType == GameObjectClassType::Animated)
         return SafetyClass::StockOnly;
     if (ObjectUtils::isInteractiveVisualObject(object))
@@ -73,9 +121,9 @@ ResolvedStateLayer::SafetyClass ResolvedStateLayer::classifyObject(
     if (invalidSprite || outSprites.empty() || outSprites.size() > MAX_SAFE_SPRITES_PER_OBJECT)
         return SafetyClass::StockOnly;
 
-    // GD remains authoritative either way. "Dynamic" only means this object's
-    // resolved root state is expected to change and therefore needs dirty checks
-    // once the GPU draw path starts consuming the state texture.
+    // DynamicSafe is still GD-owned state. It only means the final transform is
+    // expected to change, so the state texture will receive dirty updates while
+    // the A15 performs the final per-vertex transform math.
     const bool dynamic =
         object->m_groupCount > 0 ||
         object->getHasRotateAction() ||
@@ -92,10 +140,6 @@ bool ResolvedStateLayer::isShadowValidationCandidate(
     if (!object || safety != SafetyClass::StaticSafe)
         return false;
 
-    // First live GPU submission is intentionally tiny and boring. Only a plain
-    // solid whose complete visible representation is the root CCSprite is used.
-    // No child ordering, reparenting, portal/orb state, animation, or SectionSet
-    // semantics can enter this path.
     if (object->m_objectType != GameObjectType::Solid)
         return false;
     if (objectSprites.size() != 1)
@@ -118,7 +162,7 @@ ResolvedStateLayer::ObjectState ResolvedStateLayer::captureObjectState(GameObjec
     state.rotation = object->getRotation();
     state.scaleX = object->getScaleX();
     state.scaleY = object->getScaleY();
-    state.opacity = (float)object->getOpacity() / 255.f;
+    state.opacity = (float)object->getDisplayedOpacity() / 255.f;
     state.visible = object->isVisible() && !object->m_isInvisible;
     return state;
 }
@@ -128,8 +172,10 @@ ResolvedStateLayer::SpriteState ResolvedStateLayer::captureSpriteState(cocos2d::
     if (!sprite)
         return state;
 
-    state.color = sprite->getColor();
-    state.opacity = sprite->getOpacity();
+    // Consume Cocos' already-resolved display state. Bismuth does not recreate
+    // GD color channels, cascade color, cascade opacity, HSV, or fade semantics.
+    state.color = sprite->getDisplayedColor();
+    state.opacity = sprite->getDisplayedOpacity();
     state.textureRect = sprite->getTextureRect();
     state.visible = sprite->isVisible();
     state.rotated = sprite->isTextureRectRotated();
@@ -150,8 +196,6 @@ void ResolvedStateLayer::packObjectState(usize index, const ObjectState& state, 
     if (base + 1 >= objectTexels.size())
         return;
 
-    // The assist vertex shader consumes only final GD-resolved root state. It
-    // does not know about Move/Rotate/Follow/Area trigger semantics.
     objectTexels[base + 0] = {
         state.position.x,
         state.position.y,
@@ -310,7 +354,7 @@ bool ResolvedStateLayer::init(PlayLayer* playLayer) {
     );
 
     if (!objectStateTexture || !spriteStateTexture) {
-        log::warn("Bismuth iOS resolved-state textures unavailable; stock GD rendering remains active");
+        log::warn("Bismuth iOS resolved-state textures unavailable; GPU assist cannot consume state");
         destroyTextures();
         return false;
     }
@@ -318,13 +362,12 @@ bool ResolvedStateLayer::init(PlayLayer* playLayer) {
     resync();
 
     log::info(
-        "Bismuth iOS state layer: {} safe objects ({} static, {} dynamic), {} stock, {} sprite records, {} shadow candidates",
+        "Bismuth iOS state layer: {} safe objects ({} static, {} dynamic), {} stock, {} sprite records",
         stats.safeObjects,
         stats.staticObjects,
         stats.dynamicObjects,
         stats.stockObjects,
-        stats.safeSprites,
-        shadowCandidates.size()
+        stats.safeSprites
     );
     return true;
 }
@@ -360,17 +403,15 @@ void ResolvedStateLayer::update(bool detailedProbe) {
     stats.bytesUploaded = 0;
     stats.uploadCalls = 0;
 
-    // The shadow batch is enabled only with the debug overlay, so the expensive
-    // resolved-state walk stays out of normal gameplay until visible ownership
-    // is ready to replace equivalent stock CPU render work.
+    // detailedProbe is also enabled whenever visible GPU ownership exists. In
+    // that mode these textures are live renderer input, not diagnostic data.
     if (!detailedProbe || !objectStateTexture || !spriteStateTexture)
         return;
 
-    const usize NONE = std::numeric_limits<usize>::max();
-    usize objectDirtyMin = NONE;
-    usize objectDirtyMax = 0;
-    usize spriteDirtyMin = NONE;
-    usize spriteDirtyMax = 0;
+    std::vector<usize> dirtyObjectRecords;
+    std::vector<usize> dirtySpriteRecords;
+    dirtyObjectRecords.reserve(64);
+    dirtySpriteRecords.reserve(64);
     std::vector<bool> staticTouched(objects.size(), false);
 
     for (usize i = 0; i < objects.size(); ++i) {
@@ -394,8 +435,7 @@ void ResolvedStateLayer::update(bool detailedProbe) {
 
             record.state = next;
             packObjectState(i, record.state, record.safety);
-            objectDirtyMin = std::min(objectDirtyMin, i);
-            objectDirtyMax = std::max(objectDirtyMax, i);
+            dirtyObjectRecords.push_back(i);
         }
     }
 
@@ -422,46 +462,33 @@ void ResolvedStateLayer::update(bool detailedProbe) {
 
             record.state = next;
             packSpriteState(i, record.state, record.objectIndex);
-            spriteDirtyMin = std::min(spriteDirtyMin, i);
-            spriteDirtyMax = std::max(spriteDirtyMax, i);
+            dirtySpriteRecords.push_back(i);
         }
     }
 
     usize touchedStaticCount = 0;
-    for (bool touched : staticTouched)
+    for (bool touched : staticTouched) {
         if (touched)
             ++touchedStaticCount;
+    }
     stats.staticObjectsReused = stats.staticObjects > touchedStaticCount
         ? stats.staticObjects - touchedStaticCount
         : 0;
 
-    if (objectDirtyMin != NONE) {
-        const usize startTexel = objectDirtyMin * OBJECT_TEXELS_PER_STATE;
-        const usize endTexel = (objectDirtyMax + 1) * OBJECT_TEXELS_PER_STATE;
-        const usize texelCount = endTexel - startTexel;
-        if (objectStateTexture->uploadRange(
-            objectTexels.data() + startTexel,
-            startTexel,
-            texelCount
-        )) {
-            stats.bytesUploaded += texelCount * sizeof(glm::vec4);
-            ++stats.uploadCalls;
-        }
-    }
-
-    if (spriteDirtyMin != NONE) {
-        const usize startTexel = spriteDirtyMin * SPRITE_TEXELS_PER_STATE;
-        const usize endTexel = (spriteDirtyMax + 1) * SPRITE_TEXELS_PER_STATE;
-        const usize texelCount = endTexel - startTexel;
-        if (spriteStateTexture->uploadRange(
-            spriteTexels.data() + startTexel,
-            startTexel,
-            texelCount
-        )) {
-            stats.bytesUploaded += texelCount * sizeof(glm::vec4);
-            ++stats.uploadCalls;
-        }
-    }
+    uploadDirtyRecordSpans(
+        objectStateTexture,
+        objectTexels,
+        dirtyObjectRecords,
+        OBJECT_TEXELS_PER_STATE,
+        stats
+    );
+    uploadDirtyRecordSpans(
+        spriteStateTexture,
+        spriteTexels,
+        dirtySpriteRecords,
+        SPRITE_TEXELS_PER_STATE,
+        stats
+    );
 }
 
 #endif
