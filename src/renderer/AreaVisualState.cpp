@@ -18,7 +18,7 @@ namespace AreaVisualState {
         return it == g_areaFadeOpacity.end() ? 1.f : it->second;
     }
 
-    void clearFadeFrame() {
+    void reset() {
         g_areaFadeOpacity.clear();
     }
 }
@@ -40,7 +40,7 @@ namespace AreaVisualState {
         return 1.f;
     }
 
-    void clearFadeFrame() {}
+    void reset() {}
 }
 
 #endif
