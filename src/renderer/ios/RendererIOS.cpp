@@ -1,6 +1,7 @@
 #ifdef GEODE_IS_IOS
 
 #include "../Renderer.hpp"
+#include "../AreaVisualState.hpp"
 #include "DataTexture.hpp"
 #include "../SpriteMeshDictionary.hpp"
 #include "../VisibilityManager.hpp"
@@ -28,7 +29,7 @@ using namespace geode::prelude;
 namespace {
 
 constexpr usize IOS_STATIC_TEXELS_PER_OBJECT = 5;
-constexpr usize IOS_RUNTIME_TEXELS_PER_OBJECT = 2;
+constexpr usize IOS_RUNTIME_TEXELS_PER_OBJECT = 3;
 constexpr usize IOS_GROUP_TEXELS_PER_STATE = 3;
 constexpr i32 IOS_STATIC_TEXTURE_UNIT = 1;
 constexpr i32 IOS_GROUP_TEXTURE_UNIT = 2;
@@ -143,10 +144,12 @@ static void packRuntimeObjectStateTexture(Renderer* renderer) {
     state->runtimeTexels.resize(objectCount * IOS_RUNTIME_TEXELS_PER_OBJECT);
 
     for (usize i = 0; i < objectCount; ++i) {
+        const usize runtimeBase = i * IOS_RUNTIME_TEXELS_PER_OBJECT;
         auto object = state->objects[i];
         if (!object) {
-            state->runtimeTexels[i * 2 + 0] = { 0.f, 0.f, 0.f, 0.f };
-            state->runtimeTexels[i * 2 + 1] = { 0.f, 0.f, 0.f, 0.f };
+            state->runtimeTexels[runtimeBase + 0] = { 0.f, 0.f, 0.f, 0.f };
+            state->runtimeTexels[runtimeBase + 1] = { 0.f, 0.f, 0.f, 0.f };
+            state->runtimeTexels[runtimeBase + 2] = { 1.f, 0.f, 0.f, 0.f };
             continue;
         }
 
@@ -174,18 +177,27 @@ static void packRuntimeObjectStateTexture(Renderer* renderer) {
             renderer->getObjectBatch().trackRuntimeVisualObject(object);
 
         // r0 = world move XY + raw Area Rotate contributions XY.
-        state->runtimeTexels[i * 2 + 0] = {
+        state->runtimeTexels[runtimeBase + 0] = {
             object->m_positionXOffset,
             object->m_positionYOffset,
             runtimeRotationX,
             runtimeRotationY
         };
         // r1 = raw Area Scale offsets XY + precomputed inverse base scale XY.
-        state->runtimeTexels[i * 2 + 1] = {
+        state->runtimeTexels[runtimeBase + 1] = {
             runtimeScaleOffsetX,
             runtimeScaleOffsetY,
             inverseBaseScale.x,
             inverseBaseScale.y
+        };
+        // r2 is reserved for appearance-side runtime state. X is the final
+        // Area Fade multiplier captured after GD resolves setAreaOpacity().
+        // YZW remain available for Area Tint / related appearance metadata.
+        state->runtimeTexels[runtimeBase + 2] = {
+            AreaVisualState::getFadeOpacity(object),
+            0.f,
+            0.f,
+            0.f
         };
     }
 
@@ -208,6 +220,7 @@ bool Renderer::init(PlayLayer* layer) {
 
     currentRenderer = this;
     this->layer = layer;
+    AreaVisualState::reset();
 
     if (!Mod::get()->getSettingValue<bool>("enabled"))
         return false;
@@ -232,6 +245,8 @@ bool Renderer::init(PlayLayer* layer) {
     auto state = iosState(this);
     colorChannelBuffer = state->colorChannels.get();
     std::memset(colorChannelBuffer, 0, sizeof(ColorChannelBuffer));
+    colorChannelBuffer->u_channelColors[COLOR_CHANNEL_BLACK] = {0, 0, 0, 255};
+    colorChannelBuffer->u_channelColors[COLOR_CHANNEL_WHITE] = {255, 255, 255, 255};
 
     ingameEnableDisable = Mod::get()->getSettingValue<bool>("ingame_enable");
     useIndexCulling = false;
@@ -347,6 +362,7 @@ void Renderer::terminate() {
     srbBuffer = nullptr;
     uniformBuffer = nullptr;
 
+    AreaVisualState::reset();
     g_iosStates.erase(this);
     if (currentRenderer == this)
         currentRenderer = nullptr;
@@ -405,6 +421,7 @@ void Renderer::prepareColorChannelBuffer() {
     }
 
     colorChannelBuffer->u_channelColors[COLOR_CHANNEL_BLACK] = {0, 0, 0, 255};
+    colorChannelBuffer->u_channelColors[COLOR_CHANNEL_WHITE] = {255, 255, 255, 255};
     timer.end();
 }
 
@@ -497,6 +514,7 @@ void Renderer::generateStaticRenderingBuffer(ObjectSorter& sorter) {
         const usize runtimeBase = state->runtimeDataOffset + i * IOS_RUNTIME_TEXELS_PER_OBJECT;
         state->staticTexels[runtimeBase + 0] = { 0.f, 0.f, 0.f, 0.f };
         state->staticTexels[runtimeBase + 1] = { 0.f, 0.f, 0.f, 0.f };
+        state->staticTexels[runtimeBase + 2] = { 1.f, 0.f, 0.f, 0.f };
     }
 
     state->staticDataTexture = DataTexture::create(
@@ -563,6 +581,7 @@ void Renderer::updateDebugText() {
         text += fmt::format("Group data: {}\n", byteSizeToString(groupManager.getGroupStateBufferSize()));
         text += fmt::format("Color data: {}\n", byteSizeToString(sizeof(ColorChannelBuffer)));
         text += "Runtime transform math: GPU\n";
+        text += "Runtime Area Fade: GPU\n";
         text += "\n" + BProfiler::toString();
     }
 
@@ -659,6 +678,7 @@ void Renderer::setEnabled(bool enabled) {
 
 void Renderer::reset() {
     groupManager.resetGroupStates();
+    AreaVisualState::reset();
 }
 
 void Renderer::drawLine(const glm::vec2&, const glm::vec2&, const glm::vec4&) {
