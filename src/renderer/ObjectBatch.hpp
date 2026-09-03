@@ -132,6 +132,10 @@ public:
         return visibilityManager.getUsedLayerIds();
     }
 
+    inline void trackRuntimeVisualObject(GameObject* object) {
+        visibilityManager.trackRuntimeVisualObject(object);
+    }
+
     void predraw(const CameraView& view);
 
     LayerDrawCall* getDrawCall(const LayerKey& id);
