@@ -79,6 +79,14 @@ private:
         u32 lastVisibleGeneration = 0;
         u32 groupCombinationIndex = 0;
 
+        // Baked world-space bounds of every sprite in this object's static GPU
+        // representation. Section culling must use the visual footprint, not
+        // just m_startPosition, or wide decoration gets sliced at 100-unit
+        // section boundaries while part of the artwork is still on-screen.
+        bool hasBakedVisualBounds = false;
+        glm::vec2 bakedVisualMin = { 0.f, 0.f };
+        glm::vec2 bakedVisualMax = { 0.f, 0.f };
+
         VisibleSpriteLayer* destinationLayerIfGlow;
         VisibleSpriteLayer* destinationLayerIfBlending;
         VisibleSpriteLayer* destinationLayerIfNotBlending;
@@ -144,6 +152,12 @@ public:
 
     void prepareForObject(GameObject* object);
 
+    // ObjectBatch calls this for every baked sprite after calculating its four
+    // transformed corners, then finishObject() inserts the completed object in
+    // every SectionSet cell touched by that visual footprint.
+    void includeCurrentObjectVisualBounds(const glm::vec2& min, const glm::vec2& max);
+    void finishObject();
+
     void addObjectSprite(
         cocos2d::CCSprite* sprite,
         SpriteType type,
@@ -199,13 +213,9 @@ private:
 
     /*
         This is the most important structure for finding which
-        objects are on screen.
-        Objects here are put into equal-sized sections based
-        on position like how Geometry Dash does it.
-        
-        However, objects can move. The way we fix this is
-        by further organising these sections based on
-        which transforming group id the objects belong to.
+        objects are on screen and which are invisible.
+        Objects are registered in every equal-sized section touched by their
+        baked visual bounds, then further organised by transforming group id.
 
         Objects with the same transform group (see GroupManager.hpp)
         always transform the same way. And so the idea is to
