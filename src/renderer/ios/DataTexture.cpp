@@ -66,7 +66,11 @@ bool DataTexture::init(const char* name, usize texelCount, Type type) {
 }
 
 bool DataTexture::upload(const void* data, usize texelCount) {
-    if (!id || texelCount > capacity || (texelCount > 0 && !data))
+    return uploadRange(data, 0, texelCount);
+}
+
+bool DataTexture::uploadRange(const void* data, usize startTexel, usize texelCount) {
+    if (!id || startTexel + texelCount > capacity || (texelCount > 0 && !data))
         return false;
     if (texelCount == 0)
         return true;
@@ -74,35 +78,59 @@ bool DataTexture::upload(const void* data, usize texelCount) {
     glBindTexture(GL_TEXTURE_2D, id);
 
     const usize rowWidth = (usize)width;
-    const usize fullRows = texelCount / rowWidth;
-    const usize remainder = texelCount % rowWidth;
     const auto* bytes = static_cast<const u8*>(data);
+    usize cursor = startTexel;
+    usize remaining = texelCount;
+    usize byteOffset = 0;
 
-    // Upload straight from the renderer's CPU buffer instead of first making
-    // a second full-size staging copy. This lowers peak memory on huge levels
-    // and lets the GL driver start consuming the data immediately.
+    // The runtime object-state region is contiguous but may start part-way
+    // through a texture row. Upload the first partial row, the middle full rows,
+    // and the final partial row so each frame needs at most three GL uploads.
+    const usize firstX = cursor % rowWidth;
+    if (firstX != 0) {
+        const usize firstCount = std::min(remaining, rowWidth - firstX);
+        glTexSubImage2D(
+            GL_TEXTURE_2D,
+            0,
+            (GLint)firstX,
+            (GLint)(cursor / rowWidth),
+            (GLsizei)firstCount,
+            1,
+            GL_RGBA,
+            pixelType,
+            bytes
+        );
+        cursor += firstCount;
+        remaining -= firstCount;
+        byteOffset += firstCount * bytesPerTexel;
+    }
+
+    const usize fullRows = remaining / rowWidth;
     if (fullRows > 0) {
         glTexSubImage2D(
             GL_TEXTURE_2D,
             0,
             0,
-            0,
+            (GLint)(cursor / rowWidth),
             width,
             (GLsizei)fullRows,
             GL_RGBA,
             pixelType,
-            data
+            bytes + byteOffset
         );
+        const usize uploaded = fullRows * rowWidth;
+        cursor += uploaded;
+        remaining -= uploaded;
+        byteOffset += uploaded * bytesPerTexel;
     }
 
-    if (remainder > 0) {
-        const usize byteOffset = fullRows * rowWidth * bytesPerTexel;
+    if (remaining > 0) {
         glTexSubImage2D(
             GL_TEXTURE_2D,
             0,
             0,
-            (GLint)fullRows,
-            (GLsizei)remainder,
+            (GLint)(cursor / rowWidth),
+            (GLsizei)remaining,
             1,
             GL_RGBA,
             pixelType,
