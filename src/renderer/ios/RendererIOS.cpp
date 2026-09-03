@@ -18,6 +18,7 @@
 #include <Geode/binding/RingObject.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <memory>
 #include <unordered_map>
@@ -27,6 +28,7 @@ using namespace geode::prelude;
 namespace {
 
 constexpr usize IOS_STATIC_TEXELS_PER_OBJECT = 5;
+constexpr usize IOS_RUNTIME_TEXELS_PER_OBJECT = 2;
 constexpr usize IOS_GROUP_TEXELS_PER_STATE = 3;
 constexpr i32 IOS_STATIC_TEXTURE_UNIT = 1;
 constexpr i32 IOS_GROUP_TEXTURE_UNIT = 2;
@@ -38,7 +40,11 @@ struct IOSRendererState {
     DataTexture* colorDataTexture = nullptr;
 
     std::vector<glm::vec4> staticTexels;
+    std::vector<glm::vec4> runtimeTexels;
     std::vector<glm::vec4> groupTexels;
+    std::vector<GameObject*> objects;
+    std::vector<glm::vec2> baseScales;
+    usize runtimeDataOffset = 0;
     std::unique_ptr<ColorChannelBuffer> colorChannels = std::make_unique<ColorChannelBuffer>();
 
     ~IOSRendererState() {
@@ -126,6 +132,57 @@ static void packGroupStateTexture(Renderer* renderer) {
     }
 
     state->groupDataTexture->upload(state->groupTexels.data(), state->groupTexels.size());
+}
+
+static void packRuntimeObjectStateTexture(Renderer* renderer) {
+    auto state = iosState(renderer);
+    if (!state || !state->staticDataTexture || state->objects.empty())
+        return;
+
+    const usize objectCount = state->objects.size();
+    state->runtimeTexels.resize(objectCount * IOS_RUNTIME_TEXELS_PER_OBJECT);
+
+    for (usize i = 0; i < objectCount; ++i) {
+        auto object = state->objects[i];
+        if (!object) {
+            state->runtimeTexels[i * 2 + 0] = { 0.f, 0.f, 0.f, 1.f };
+            state->runtimeTexels[i * 2 + 1] = { 1.f, 1.f, 0.f, 0.f };
+            continue;
+        }
+
+        const glm::vec2 baseScale = state->baseScales[i];
+        const float runtimeScaleX = std::abs(baseScale.x) > 0.0001f
+            ? 1.f + object->m_unk2BC / baseScale.x
+            : 1.f;
+        const float runtimeScaleY = std::abs(baseScale.y) > 0.0001f
+            ? 1.f + object->m_unk2C0 / baseScale.y
+            : 1.f;
+
+        // 2.2 Area / enter effects keep their temporary visual contribution in
+        // these fields. Old Move/Rotate group state remains in GroupManager, so
+        // feeding only these deltas avoids applying the normal trigger path twice.
+        const float runtimeRotation = (object->m_unk2A8 + object->m_unk2B0) * 0.5f;
+        const float runtimeOpacity = std::clamp((float)object->getOpacity() / 255.f, 0.f, 1.f);
+
+        state->runtimeTexels[i * 2 + 0] = {
+            object->m_positionXOffset,
+            object->m_positionYOffset,
+            runtimeRotation,
+            runtimeOpacity
+        };
+        state->runtimeTexels[i * 2 + 1] = {
+            runtimeScaleX,
+            runtimeScaleY,
+            0.f,
+            0.f
+        };
+    }
+
+    state->staticDataTexture->uploadRange(
+        state->runtimeTexels.data(),
+        state->runtimeDataOffset,
+        state->runtimeTexels.size()
+    );
 }
 
 } // namespace
@@ -344,6 +401,12 @@ void Renderer::generateStaticRenderingBuffer(ObjectSorter& sorter) {
     std::vector<StaticObjectInfo> objectInfos;
     objectInfos.resize(renderedGameObjectCount);
 
+    auto state = iosState(this);
+    state->objects.clear();
+    state->baseScales.clear();
+    state->objects.reserve(renderedGameObjectCount);
+    state->baseScales.reserve(renderedGameObjectCount);
+
     usize index = 0;
     for (auto it = sorter.iterator(); !it.isEnd(); it.next()) {
         auto object = it.get();
@@ -383,12 +446,17 @@ void Renderer::generateStaticRenderingBuffer(ObjectSorter& sorter) {
         info->fadeMargin = object->m_fadeMargin;
 
         objectSRBIndicies[object] = index;
+        state->objects.push_back(object);
+        state->baseScales.push_back({ object->m_scaleX, object->m_scaleY });
         index++;
     }
 
-    auto state = iosState(this);
-    usize texelCount = std::max<usize>(1, objectInfos.size() * IOS_STATIC_TEXELS_PER_OBJECT);
+    const usize staticTexelCount = objectInfos.size() * IOS_STATIC_TEXELS_PER_OBJECT;
+    const usize runtimeTexelCount = objectInfos.size() * IOS_RUNTIME_TEXELS_PER_OBJECT;
+    const usize texelCount = std::max<usize>(1, staticTexelCount + runtimeTexelCount);
+    state->runtimeDataOffset = staticTexelCount;
     state->staticTexels.assign(texelCount, glm::vec4(0.f));
+    state->runtimeTexels.assign(runtimeTexelCount, glm::vec4(0.f));
 
     for (usize i = 0; i < objectInfos.size(); ++i) {
         const auto& info = objectInfos[i];
@@ -411,10 +479,14 @@ void Renderer::generateStaticRenderingBuffer(ObjectSorter& sorter) {
         state->staticTexels[base + 4] = {
             detailHSV.val, detailHSV.satAdd, detailHSV.valAdd, 0.f
         };
+
+        const usize runtimeBase = state->runtimeDataOffset + i * IOS_RUNTIME_TEXELS_PER_OBJECT;
+        state->staticTexels[runtimeBase + 0] = { 0.f, 0.f, 0.f, 1.f };
+        state->staticTexels[runtimeBase + 1] = { 1.f, 1.f, 0.f, 0.f };
     }
 
     state->staticDataTexture = DataTexture::create(
-        "Static object data", texelCount, DataTexture::Type::FloatRGBA
+        "Static + runtime object data", texelCount, DataTexture::Type::FloatRGBA
     );
     if (state->staticDataTexture)
         state->staticDataTexture->upload(state->staticTexels.data(), state->staticTexels.size());
@@ -432,6 +504,7 @@ void Renderer::draw() {
         prepareColorChannelBuffer();
         groupManager.prepareGroupStateBuffer();
         packGroupStateTexture(this);
+        packRuntimeObjectStateTexture(this);
         state->colorDataTexture->upload(colorChannelBuffer, COLOR_CHANNEL_COUNT);
 
         CameraView view = {
@@ -462,12 +535,17 @@ void Renderer::updateDebugText() {
         text = "Bismuth iOS renderer is disabled\n";
     } else if (debugTextEnabled) {
         auto screenSize = CCDirector::get()->getWinSizeInPixels();
+        auto state = iosState(this);
+        const usize objectDataSize = state && state->staticDataTexture
+            ? state->staticDataTexture->getCapacity() * sizeof(glm::vec4)
+            : 0;
+
         text += fmt::format("Bismuth iOS {}\n", Mod::get()->getVersion().toVString());
         text += fmt::format("OpenGL ES {}\n", (const char*)glGetString(GL_VERSION));
         text += fmt::format("{}\n", (const char*)glGetString(GL_RENDERER));
         text += fmt::format("Window: {}x{}\n", screenSize.width, screenSize.height);
         text += fmt::format("Vertex buffer: {}\n", byteSizeToString(objectBatch.getVertexBufferSize()));
-        text += fmt::format("Static data: {}\n", byteSizeToString(renderedGameObjectCount * sizeof(StaticObjectInfo)));
+        text += fmt::format("Object data: {}\n", byteSizeToString(objectDataSize));
         text += fmt::format("Group data: {}\n", byteSizeToString(groupManager.getGroupStateBufferSize()));
         text += fmt::format("Color data: {}\n", byteSizeToString(sizeof(ColorChannelBuffer)));
         text += "\n" + BProfiler::toString();
@@ -496,6 +574,7 @@ Shader* Renderer::prepareDraw() {
     shader->setFloat("u_cameraUnzoomedX", uniforms.u_cameraUnzoomedX);
     shader->setVec3("u_specialLightBGColor", uniforms.u_specialLightBGColor);
     shader->setFloat("u_gameStateFlags", (float)uniforms.u_gameStateFlags);
+    shader->setFloat("u_runtimeDataOffset", (float)state->runtimeDataOffset);
 
     shader->setTexture("u_staticDataTexture", IOS_STATIC_TEXTURE_UNIT, state->staticDataTexture->getId());
     shader->setTexture("u_groupDataTexture", IOS_GROUP_TEXTURE_UNIT, state->groupDataTexture->getId());
