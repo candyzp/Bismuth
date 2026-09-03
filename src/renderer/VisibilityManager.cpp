@@ -364,12 +364,12 @@ void VisibilityManager::markObjectAsVisible(Object* object) {
 
     updateVisibleAnimatedObject(object);
 
-    // The stock active-object loop also activates gameplay-interactive objects
-    // such as orbs, pads, portals and coins. Bismuth skips that CPU visibility
-    // loop, so restore only this tiny lifecycle step for interactive objects
-    // that are already inside Bismuth's GPU camera band. Drawing still remains
-    // entirely in the GPU batch.
-    if (!object->isAnimated && ObjectUtils::isInteractiveVisualObject(object->gameObject))
+    // Geometry Dash's normal active-object loop calls activateObject() for all
+    // active visual objects, not just orbs/portals. Bismuth bypasses that loop,
+    // which leaves ordinary level decoration animations in their startup state.
+    // Restore only the lifecycle tick for objects Bismuth already decided are
+    // visible. Rendering and transforms still stay entirely in the GPU batch.
+    if (!object->isAnimated)
         object->gameObject->activateObject();
 
     for (auto& sprite : object->sprites) {
