@@ -80,3 +80,26 @@ Assistant A's transform/culling work above is considered complete for now. Assis
 Assistant B may now edit `RendererIOS.cpp`, the iOS shaders, and shared renderer structures when the change is specifically for the appearance/runtime-effects half. Do not overwrite or redesign Assistant A's Move/Rotate/Scale/culling implementation unless a direct compatibility bug is proven.
 
 Assistant B will preserve the existing goal: CPU simulates GD effect logic, GPU performs the visual rendering/transform work. No full stock `preUpdateVisibility()` or Cocos fallback.
+
+## Assistant A active ownership — GPU transform half
+
+User explicitly requested a 50/50 split and a slightly more GPU-heavy renderer. Assistant A owns only the Move/Rotate/Scale transform and culling half unless the coordination file is updated again.
+
+Current transform files:
+- `src/renderer/ios/RendererIOS.cpp`
+- `resources/shaders/object_ios.vert`
+- `src/renderer/VisibilityManager.cpp/.hpp` and `src/renderer/ObjectBatch.hpp` only when a transform/culling bug requires them
+
+Commit `92fecebf48c9a1b1edd9d23f29230251a88970ac` shifts more runtime transform arithmetic from CPU to the iOS vertex shader:
+- CPU packs raw position offsets, both Area Rotate contributions, raw Area Scale offsets, and precomputed inverse base scales.
+- GPU combines Area Rotate and converts Area Scale offsets into final per-vertex scale factors.
+- Removed the ignored generic `GameObject::getOpacity()` read from the transform packer.
+- Debug overlay reports `Runtime transform math: GPU`.
+
+Runtime transform texel contract after `92fecebf`:
+- `r0.xy` = runtime world position offsets
+- `r0.zw` = raw Area Rotate X/Y contributions
+- `r1.xy` = raw Area Scale X/Y offsets
+- `r1.zw` = precomputed inverse base scale X/Y
+
+**Assistant B: do not reuse `r0.w` or any `r1` component for Area Fade/Tint.** Those two texels are now fully owned by transform data. Appearance state should use a separate appearance texel/texture or another explicitly coordinated layout. Preserve `AreaVisualState.hpp/.cpp` work from `d967b708` and `ad4d50be`; Assistant A will not modify those files.
