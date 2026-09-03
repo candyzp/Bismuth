@@ -11,6 +11,8 @@
 #include <cstring>
 #include <memory>
 #include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 using namespace geode::prelude;
 
@@ -19,7 +21,12 @@ struct IOSRendererState {
     std::unique_ptr<ColorChannelBuffer> colorChannels = std::make_unique<ColorChannelBuffer>();
     std::unique_ptr<ResolvedStateLayer> resolvedState;
     Shader* assistShader = nullptr;
-    Ref<AssistShadowBatch> shadowBatch;
+
+    // Visible GPU ownership is deliberately coarse: one GPU node replaces one
+    // complete stock CCSpriteBatchNode only when every direct GameObject in that
+    // batch is StaticSafe. Mixed/animated batches remain 100% stock Cocos.
+    std::vector<Ref<AssistShadowBatch>> staticBatches;
+    std::vector<cocos2d::CCSpriteBatchNode*> ownedStockBatches;
 
     ~IOSRendererState() {
         if (assistShader)
@@ -42,6 +49,45 @@ static std::string byteSizeToString(usize size) {
         return fmt::format("{:.2f} KiB", (double)size / 1024.0);
     return fmt::format("{:.2f} MiB", (double)size / (1024.0 * 1024.0));
 }
+
+static bool batchContainsOnlyStaticSafeObjects(
+    cocos2d::CCSpriteBatchNode* batch,
+    const std::unordered_set<GameObject*>& staticSafeObjects
+) {
+    if (!batch || !batch->isVisible())
+        return false;
+
+    auto children = batch->getChildren();
+    if (!children || children->count() == 0)
+        return false;
+
+    bool sawGameObject = false;
+    for (auto child : CCArrayExt<cocos2d::CCNode*>(children)) {
+        auto object = typeinfo_cast<GameObject*>(child);
+
+        // Reparented glow/detail sprites, particles, or any non-GameObject direct
+        // child make the entire batch stock-owned. This is intentionally strict:
+        // hiding a mixed stock batch is exactly how animation pieces vanished in
+        // the previous replacement renderer.
+        if (!object)
+            return false;
+        if (!staticSafeObjects.contains(object))
+            return false;
+
+        sawGameObject = true;
+    }
+
+    return sawGameObject;
+}
+
+static void restoreOwnedStockBatches(IOSRendererState* state) {
+    if (!state)
+        return;
+    for (auto batch : state->ownedStockBatches) {
+        if (batch)
+            batch->setVisible(true);
+    }
+}
 } // namespace
 
 Renderer::~Renderer() { terminate(); }
@@ -57,8 +103,9 @@ bool Renderer::init(PlayLayer* playLayer) {
     if (!Mod::get()->getSettingValue<bool>("enabled"))
         return false;
 
-    // iOS is intentionally GD-authoritative. Bismuth observes final state and
-    // prepares GPU resources without recreating animation/trigger semantics.
+    // Keep Geometry Dash authoritative for gameplay, triggers, colors and all
+    // animation lifecycle. The optimization below only replaces complete stock
+    // batch nodes that contain conservative StaticSafe objects.
     g_iosStates[this] = std::make_unique<IOSRendererState>();
     auto state = iosState(this);
     colorChannelBuffer = state->colorChannels.get();
@@ -66,24 +113,56 @@ bool Renderer::init(PlayLayer* playLayer) {
 
     state->resolvedState = std::make_unique<ResolvedStateLayer>();
     if (!state->resolvedState->init(layer)) {
-        log::warn("Bismuth iOS resolved-state layer unavailable; continuing with pure stock GD rendering");
+        log::warn("Bismuth iOS resolved-state layer unavailable; continuing with stock GD rendering");
     }
 
     if (state->resolvedState && state->resolvedState->isGPUStateReady()) {
         state->assistShader = Shader::create("assist_ios.vert", "assist_ios.frag");
         if (!state->assistShader) {
             log::warn("Bismuth iOS assist shader unavailable; stock GD rendering remains active");
-        } else if (layer->m_objectLayer) {
-            // First real GPU submission is a shadow pass. It batches only plain,
-            // single-sprite static solids and disables every framebuffer write.
-            // The A15 performs real transform/raster work while GD remains the
-            // sole visible renderer, so ordering/duplication bugs are impossible.
-            state->shadowBatch = AssistShadowBatch::create(
-                state->resolvedState.get(),
-                state->assistShader
+        } else if (layer->m_batchNodes) {
+            // Build the set once from the conservative classifier. Animated,
+            // synced-animation, interactive, checkpoint and grouped/dynamic
+            // objects are not StaticSafe and therefore poison their whole stock
+            // batch back to Cocos rather than being partially replaced.
+            std::unordered_set<GameObject*> staticSafeObjects;
+            const auto candidates = state->resolvedState->getStaticShadowCandidates();
+            staticSafeObjects.reserve(candidates.size());
+            for (const auto& candidate : candidates) {
+                if (candidate.object)
+                    staticSafeObjects.insert(candidate.object);
+            }
+
+            for (auto node : CCArrayExt<cocos2d::CCNode*>(layer->m_batchNodes)) {
+                auto batch = static_cast<cocos2d::CCSpriteBatchNode*>(node);
+                if (!batchContainsOnlyStaticSafeObjects(batch, staticSafeObjects))
+                    continue;
+
+                auto parent = batch->getParent();
+                if (!parent)
+                    continue;
+
+                auto gpuBatch = AssistShadowBatch::create(
+                    state->resolvedState.get(),
+                    state->assistShader,
+                    batch
+                );
+                if (!gpuBatch || !gpuBatch->getStats().ready || gpuBatch->getStats().batchedSprites == 0)
+                    continue;
+
+                // The GPU node occupies the exact scene-graph layer of the stock
+                // batch. Only after geometry is complete do we hide that one stock
+                // batch, so a failed candidate never produces missing art.
+                parent->addChild(gpuBatch, batch->getZOrder());
+                batch->setVisible(false);
+                state->ownedStockBatches.push_back(batch);
+                state->staticBatches.push_back(gpuBatch);
+            }
+
+            log::info(
+                "Bismuth iOS visible ownership: {} complete static batch node(s)",
+                state->staticBatches.size()
             );
-            if (state->shadowBatch)
-                layer->m_objectLayer->addChild(state->shadowBatch, 1000000);
         }
     }
 
@@ -120,16 +199,23 @@ bool Renderer::init(PlayLayer* playLayer) {
     setVisible(false);
     rendererStartTime = getTime();
 
-    log::info("Bismuth iOS initialized: GD-authoritative resolved-state GPU assist architecture");
+    log::info("Bismuth iOS initialized: static GPU batch ownership + stock animation lifecycle");
     return true;
 }
 
 void Renderer::generateBatchNodes() {}
 
 void Renderer::terminate() {
-    if (auto state = iosState(this); state && state->shadowBatch) {
-        state->shadowBatch->removeFromParentAndCleanup(true);
-        state->shadowBatch = nullptr;
+    auto state = iosState(this);
+    restoreOwnedStockBatches(state);
+
+    if (state) {
+        for (auto& gpuBatch : state->staticBatches) {
+            if (gpuBatch)
+                gpuBatch->removeFromParentAndCleanup(true);
+        }
+        state->staticBatches.clear();
+        state->ownedStockBatches.clear();
     }
 
     if (shader)
@@ -155,8 +241,8 @@ void Renderer::prepareColorChannelBuffer() {}
 void Renderer::generateStaticRenderingBuffer(ObjectSorter&) {}
 
 void Renderer::draw() {
-    // The Renderer node itself never replaces stock visuals. GPU-assist work is
-    // opt-in per conservative child batch.
+    // Visible GPU work is submitted by the per-stock-layer AssistShadowBatch
+    // children. Keeping Renderer itself draw-less avoids an extra global pass.
 }
 
 void Renderer::updateDebugText() {
@@ -171,21 +257,42 @@ void Renderer::updateDebugText() {
 
         if (resolved) {
             const auto& stats = resolved->getStats();
-            const auto* shadow = state && state->shadowBatch ? &state->shadowBatch->getStats() : nullptr;
+
+            usize ownedSprites = 0;
+            usize residentVertices = 0;
+            usize gpuDraws = 0;
+            usize gpuIndices = 0;
+            usize textureRanges = 0;
+            if (state) {
+                for (const auto& batch : state->staticBatches) {
+                    if (!batch)
+                        continue;
+                    const auto& batchStats = batch->getStats();
+                    ownedSprites += batchStats.batchedSprites;
+                    residentVertices += batchStats.verticesResident;
+                    gpuDraws += batchStats.drawCallsLastFrame;
+                    gpuIndices += batchStats.indicesLastFrame;
+                    textureRanges += batchStats.textureBatches;
+                }
+            }
+
+            const usize ownedBatchCount = state ? state->staticBatches.size() : 0;
+            const bool ownsPixels = enabled && ownedBatchCount > 0;
 
             text = fmt::format(
                 "Bismuth iOS GPU Assist\n"
-                "Visible output: STOCK GD (authoritative)\n"
+                "Visible output: {}\n"
                 "GPU: {}\n"
                 "Resolved GPU state: {} | transform shader: {}\n"
                 "Safe objects: {} ({} static / {} dynamic)\n"
-                "Stock fallback: {} | safe sprite records: {}\n"
+                "Stock animation/complex objects: {} | safe sprite records: {}\n"
                 "Dirty: {} transform | {} appearance | {} visibility | {} UV\n"
                 "Static reused: {}/{} | uploads: {} in {} call(s)\n"
-                "Shadow candidates: {} | batched: {} | resident verts: {}\n"
-                "Shadow GPU draws: {} / frame | indices: {} | texture batches: {}\n"
-                "Framebuffer writes: OFF (validation only)\n"
-                "Visible GPU ownership: OFF",
+                "GPU-owned stock batches: {} | sprites: {} | resident verts: {}\n"
+                "GPU draws: {} / frame | indices: {} | texture ranges: {}\n"
+                "Framebuffer writes: {}\n"
+                "Animation lifecycle ownership: STOCK GD",
+                ownsPixels ? "GPU STATIC BATCHES + STOCK ANIMATION" : "STOCK GD",
                 gpuRenderer ? gpuRenderer : "unknown",
                 resolved->isGPUStateReady() ? "READY" : "UNAVAILABLE",
                 state && state->assistShader ? "READY" : "UNAVAILABLE",
@@ -202,22 +309,23 @@ void Renderer::updateDebugText() {
                 stats.staticObjects,
                 byteSizeToString(stats.bytesUploaded),
                 stats.uploadCalls,
-                shadow ? shadow->eligibleSprites : 0,
-                shadow ? shadow->batchedSprites : 0,
-                shadow ? shadow->verticesResident : 0,
-                shadow ? shadow->drawCallsLastFrame : 0,
-                shadow ? shadow->indicesLastFrame : 0,
-                shadow ? shadow->textureBatches : 0
+                ownedBatchCount,
+                ownedSprites,
+                residentVertices,
+                gpuDraws,
+                gpuIndices,
+                textureRanges,
+                ownsPixels ? "ON (owned static batches)" : "OFF"
             );
         } else {
             text = fmt::format(
                 "Bismuth iOS GPU Assist\n"
-                "Visible output: STOCK GD (authoritative)\n"
+                "Visible output: STOCK GD\n"
                 "GPU: {}\n"
                 "Resolved GPU state: UNAVAILABLE\n"
                 "GPU transform shader: UNAVAILABLE\n"
-                "Shadow GPU batch: OFF\n"
-                "Visible GPU ownership: OFF",
+                "Visible GPU ownership: OFF\n"
+                "Animation lifecycle ownership: STOCK GD",
                 gpuRenderer ? gpuRenderer : "unknown"
             );
         }
@@ -235,8 +343,14 @@ void Renderer::update(float dt) {
     gameTimer += dt;
 
     const bool detailedProbe = Mod::get()->getSettingValue<bool>("ios_gpu_debug");
-    if (auto state = iosState(this); state && state->resolvedState)
-        state->resolvedState->update(detailedProbe);
+    if (auto state = iosState(this); state && state->resolvedState) {
+        // Once a stock batch is actually replaced, the resolved textures are no
+        // longer diagnostic data. Keep them current every frame so GD-resolved
+        // position/color/opacity/visibility continues feeding the GPU without
+        // changing any animation code.
+        const bool gpuConsumesResolvedState = enabled && !state->staticBatches.empty();
+        state->resolvedState->update(detailedProbe || gpuConsumesResolvedState);
+    }
 
     updateDebugText();
 }
@@ -265,19 +379,28 @@ Ref<Renderer> Renderer::create(PlayLayer* playLayer) {
 Ref<Renderer> Renderer::get() { return currentRenderer; }
 
 bool Renderer::useOptimizations() {
-    // The old replacement lifecycle is permanently disabled on iOS. Future
-    // optimization is opt-in per safe batch, not a global renderer takeover.
+    // IMPORTANT: iOS still runs Geometry Dash's normal visibility/animation
+    // lifecycle in hooks.cpp. Visible ownership here only removes draw work for
+    // complete StaticSafe sprite batches; it never switches to the old optimized
+    // visibility loop that froze animations.
     return false;
 }
 
 void Renderer::setEnabled(bool value) {
     enabled = value;
 
-    // Stock Cocos batch nodes stay authoritative and visible. Never hide the
-    // whole GD renderer just because Bismuth's assist layer is enabled.
-    for (auto batch : CCArrayExt<CCNode*>(layer->m_batchNodes))
-        batch->setVisible(true);
+    if (auto state = iosState(this)) {
+        for (auto& gpuBatch : state->staticBatches) {
+            if (gpuBatch)
+                gpuBatch->setVisible(value);
+        }
+        for (auto batch : state->ownedStockBatches) {
+            if (batch)
+                batch->setVisible(!value);
+        }
+    }
 
+    // The Renderer node itself has no draw pass.
     setVisible(false);
     updateDebugText();
 }
