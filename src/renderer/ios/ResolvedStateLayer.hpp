@@ -34,10 +34,10 @@ public:
         usize uploadCalls = 0;
     };
 
-    // First-live-draw candidates are intentionally much narrower than the
-    // general safe classification. They are plain, single-root-sprite static
-    // solids only. The shadow batch may exercise them on the GPU without taking
-    // ownership of their visible pixels yet.
+    // Shadow candidates are renderer-only records. GD remains authoritative for
+    // gameplay, triggers, animation lifecycle, and the final resolved state.
+    // The assist batch may consume these records to exercise GPU transform math
+    // and texture sampling without mutating the source GameObjects.
     struct ShadowCandidate {
         GameObject* object = nullptr;
         cocos2d::CCSprite* sprite = nullptr;
@@ -58,6 +58,43 @@ public:
 
     inline const Stats& getStats() const { return stats; }
     inline const std::vector<ShadowCandidate>& getShadowCandidates() const { return shadowCandidates; }
+
+    // The original validation list was restricted to single-root static solids.
+    // On iOS that can legitimately produce zero candidates even when thousands
+    // of static-safe sprite records are available. Build a renderer-only view of
+    // every sprite already admitted by the conservative StaticSafe classifier.
+    // This does not broaden animation/trigger ownership: animated, interactive,
+    // synced-animation, checkpoint, and other StockOnly objects never enter it.
+    inline std::vector<ShadowCandidate> getStaticShadowCandidates() const {
+        std::vector<ShadowCandidate> candidates;
+        candidates.reserve(stats.safeSprites);
+
+        for (usize objectIndex = 0; objectIndex < objects.size(); ++objectIndex) {
+            const auto& objectRecord = objects[objectIndex];
+            if (!objectRecord.object || objectRecord.safety != SafetyClass::StaticSafe)
+                continue;
+
+            for (usize localSprite = 0; localSprite < objectRecord.spriteCount; ++localSprite) {
+                const usize spriteIndex = objectRecord.firstSprite + localSprite;
+                if (spriteIndex >= sprites.size())
+                    break;
+
+                const auto& spriteRecord = sprites[spriteIndex];
+                if (!spriteRecord.sprite || !spriteRecord.sprite->getTexture())
+                    continue;
+
+                candidates.push_back({
+                    objectRecord.object,
+                    spriteRecord.sprite,
+                    objectIndex,
+                    spriteIndex
+                });
+            }
+        }
+
+        return candidates;
+    }
+
     inline bool isGPUStateReady() const {
         return objectStateTexture != nullptr && spriteStateTexture != nullptr;
     }
