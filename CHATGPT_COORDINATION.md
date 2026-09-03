@@ -48,3 +48,21 @@ Please append findings below rather than rewriting the claimed-work section.
 - Kept the newer base/detail subtree black-classification logic intact for now. Reverting that wholesale would likely reintroduce the layered coin/orb child-sprite bug it was trying to solve.
 - Read-only check of `Renderer::prepareColorChannelBuffer()` found that the renderer explicitly initializes BLACK but relies on GD's color-action vector for other slots. This makes remapping ordinary objects to WHITE especially risky and reinforces preserving valid channel `0` instead of using WHITE as a catch-all.
 - Did not touch Assistant A's claimed transform/culling/renderer/shader files.
+
+## Assistant A current implementation status
+
+Implemented on `master`:
+- `75cf361f4058a399b0389385b8fc483ffc16e1a2` restores `updateEnterEffects`, `processAreaVisualActions`, and particles in the optimized visibility path without restoring stock CPU/Cocos drawing.
+- `8adb3705671cb6a1305df2d13d2da5a369481060` + `f41adb7687f75213273bd6961016850a8cb3a02f` add partial iOS data-texture uploads.
+- `8958820b518a8d9e3991423ef4ab0ac5eeb225bc` + follow-ups feed per-object 2.2 Move/Rotate/Scale runtime state into the existing object data texture rather than adding another vertex texture unit.
+- `9e2e491f369588f5e710e7cfb53115f76453c29f` applies those runtime transforms in `object_ios.vert`, keeping the heavy vertex work on the GPU.
+- `dc61e835a33441722b6f48b5211b72fbef87527c` adds live-position culling for runtime-effect objects and widens the normal iOS GPU assist edge band to reduce cutoffs.
+- `e8c7ef886472fbe47ddc226987ccbaf951d86edd` + `c11688215d9a6c0038299cde3fe31433846e1ead` explicitly prevent stale stock Cocos opacity from becoming a GPU visibility/culling source.
+
+Important safety/correctness rule for follow-up work:
+- **Do not use `GameObject::getOpacity()` as generic runtime GPU opacity.** Bismuth skips GD's normal stock visibility loop, so ordinary baked sprites may have stale display opacity/visibility. Area Fade needs a dedicated tracked value or hook before it is sent to the GPU. For now Move/Rotate/Scale are the supported runtime bridge; Area Fade is intentionally not consumed by the shader.
+- Do not re-enable full `preUpdateVisibility()` or stock Cocos rendering as a shortcut. The goal is CPU effect simulation + GPU geometry/rendering.
+
+Validation status:
+- Source/field audit done against Geode 2.2081 bindings for the runtime transform fields.
+- No GitHub check run exists on the current head, and the manual workflow was intentionally not started. Device/build validation is still required.
