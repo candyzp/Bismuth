@@ -28,7 +28,7 @@ using namespace geode::prelude;
 
 namespace {
 
-constexpr usize IOS_STATIC_TEXELS_PER_OBJECT = 5;
+constexpr usize IOS_STATIC_TEXELS_PER_OBJECT = 6;
 constexpr usize IOS_RUNTIME_TEXELS_PER_OBJECT = 3;
 constexpr usize IOS_GROUP_TEXELS_PER_STATE = 3;
 constexpr i32 IOS_STATIC_TEXTURE_UNIT = 1;
@@ -74,6 +74,14 @@ static std::string byteSizeToString(usize size) {
     if (dsize > 1000.0) { dsize /= 1000.0; unit = "kB"; }
     if (dsize > 1000.0) { dsize /= 1000.0; unit = "MB"; }
     return fmt::format("{:.3f}{}", dsize, unit);
+}
+
+// Every 24-bit RGB integer is represented exactly by IEEE-754 float32. Packing
+// the two resolved legacy tints this way costs one extra vec4 texel per object,
+// rather than adding another color attribute to every vertex in the level.
+static float packRGB24(const ccColor3B& color) {
+    const u32 packed = (u32)color.r | ((u32)color.g << 8) | ((u32)color.b << 16);
+    return (float)packed;
 }
 
 static u32 convertToShaderHSV(const ccHSVValue& hsv) {
@@ -511,6 +519,17 @@ void Renderer::generateStaticRenderingBuffer(ObjectSorter& sorter) {
             detailHSV.val, detailHSV.satAdd, detailHSV.valAdd, 0.f
         };
 
+        auto object = state->objects[i];
+        ccColor3B baseTint = {255, 255, 255};
+        ccColor3B detailTint = baseTint;
+        if (object) {
+            baseTint = object->getColor();
+            detailTint = object->m_colorSprite ? object->m_colorSprite->getColor() : baseTint;
+        }
+        state->staticTexels[base + 5] = {
+            packRGB24(baseTint), packRGB24(detailTint), 0.f, 0.f
+        };
+
         const usize runtimeBase = state->runtimeDataOffset + i * IOS_RUNTIME_TEXELS_PER_OBJECT;
         state->staticTexels[runtimeBase + 0] = { 0.f, 0.f, 0.f, 0.f };
         state->staticTexels[runtimeBase + 1] = { 0.f, 0.f, 0.f, 0.f };
@@ -582,6 +601,7 @@ void Renderer::updateDebugText() {
         text += fmt::format("Color data: {}\n", byteSizeToString(sizeof(ColorChannelBuffer)));
         text += "Runtime transform math: GPU\n";
         text += "Runtime Area Fade: GPU\n";
+        text += "Legacy direct tint: GPU\n";
         text += "\n" + BProfiler::toString();
     }
 
@@ -636,6 +656,9 @@ void Renderer::update(float dt) {
 }
 
 bool Renderer::isColorChannelBlending(i32 channel) {
+    // a_colorChannel also carries iOS-only attribute flags above the low 12
+    // channel bits. Never feed those flags into Geometry Dash's blend lookup.
+    channel &= 0x0fff;
     if (channel == COLOR_CHANNEL_P1 || channel == COLOR_CHANNEL_P2 || channel == COLOR_CHANNEL_LBG)
         return true;
     return layer->shouldBlend(channel);
