@@ -164,6 +164,17 @@ static void packRuntimeObjectStateTexture(Renderer* renderer) {
         const float runtimeRotation = (object->m_unk2A8 + object->m_unk2B0) * 0.5f;
         const float runtimeOpacity = std::clamp((float)object->getOpacity() / 255.f, 0.f, 1.f);
 
+        const bool hasRuntimeVisualState =
+            std::abs(object->m_positionXOffset) > 0.001f ||
+            std::abs(object->m_positionYOffset) > 0.001f ||
+            std::abs(runtimeRotation) > 0.001f ||
+            std::abs(runtimeScaleX - 1.f) > 0.0001f ||
+            std::abs(runtimeScaleY - 1.f) > 0.0001f ||
+            runtimeOpacity < 0.999f;
+
+        if (hasRuntimeVisualState)
+            renderer->getObjectBatch().trackRuntimeVisualObject(object);
+
         state->runtimeTexels[i * 2 + 0] = {
             object->m_positionXOffset,
             object->m_positionYOffset,
