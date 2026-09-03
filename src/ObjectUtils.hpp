@@ -84,11 +84,12 @@ public:
     }
 
     static inline u32 sanitizeColorChannel(i32 colorChannel) {
-        // 0/negative IDs mean no normal color channel for a number of special
-        // objects. On iOS these are texture lookups, so allowing a negative ID
-        // to wrap to u16/u32 samples an unrelated edge texel (often a wild
-        // solid color). White is the neutral tint for those fallback sprites.
-        if (colorChannel <= 0 || colorChannel >= COLOR_CHANNEL_COUNT)
+        // Channel 0 is a real slot in Bismuth/GD's color table and upstream
+        // Bismuth intentionally passes it through. Treating it as "invalid"
+        // forces ordinary stock objects onto the WHITE fallback channel and can
+        // change their tint/blending. Only reject values that cannot index the
+        // GPU color table at all.
+        if (colorChannel < 0 || colorChannel >= COLOR_CHANNEL_COUNT)
             return COLOR_CHANNEL_WHITE;
         return (u32)colorChannel;
     }
