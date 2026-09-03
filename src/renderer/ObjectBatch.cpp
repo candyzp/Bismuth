@@ -20,6 +20,15 @@ using namespace geode::prelude;
 #define QUAD_TR 3
 
 ObjectBatch::~ObjectBatch() {
+    // Live records can outlive a child being detached/replaced by GD animation.
+    // Each tracked sprite is retained when recorded so refresh never dereferences
+    // freed memory; release those ownership pins with the renderer.
+    for (auto& record : liveSprites) {
+        if (record.sprite)
+            record.sprite->release();
+    }
+    liveSprites.clear();
+
     if (vertexBuffer)
         Buffer::destroy(vertexBuffer);
     if (indexBuffer)
@@ -180,6 +189,17 @@ bool ObjectBatch::shouldTrackLiveSpriteObject(GameObject* object) const {
     return typeinfo_cast<CheckpointGameObject*>(object) != nullptr;
 }
 
+static bool spriteBelongsToObjectTree(GameObject* object, cocos2d::CCSprite* sprite) {
+    if (!object || !sprite)
+        return false;
+
+    for (auto node = static_cast<cocos2d::CCNode*>(sprite); node; node = node->getParent()) {
+        if (node == object)
+            return true;
+    }
+    return false;
+}
+
 void ObjectBatch::addSprite(
     GameObject* object,
     cocos2d::CCSprite* sprite,
@@ -225,6 +245,10 @@ void ObjectBatch::addSprite(
         record.vertexBegin = (u32)vertexBegin;
         record.bakedTransform = transform;
         record.bakedObjectTransform = object->nodeToParentTransform();
+        record.bakedInObjectTree = spriteBelongsToObjectTree(object, sprite);
+        // Keep the pointer valid even if a portal/coin animation removes this
+        // particular child from its Cocos parent later.
+        record.sprite->retain();
         for (u32 i = 0; i < VERTICIES_PER_QUAD; ++i)
             record.vertices[i] = verticies[vertexBegin + i];
         liveSprites.push_back(record);
@@ -313,18 +337,16 @@ static bool isLiveChildSpriteVisible(const ObjectBatch::LiveSpriteRecord& record
     if (!record.object || !record.sprite)
         return false;
 
-    bool belongsToObjectTree = false;
-    for (auto node = static_cast<cocos2d::CCNode*>(record.sprite); node; node = node->getParent()) {
-        if (node == record.object) {
-            belongsToObjectTree = true;
-            break;
-        }
-    }
-
-    // Detached base/detail/glow sprites can inherit stale visibility from GD's
-    // disabled stock batch nodes. Do not treat that external state as live.
-    if (!belongsToObjectTree)
+    // Sprites that were detached from the object tree at bake time (normal GD
+    // color/glow batch sprites) deliberately ignore their external batch parent.
+    // But a sprite that WAS an object child and later gets detached/reparented is
+    // an obsolete animation part. Continuing to draw its old baked record is the
+    // portal ghosting/corruption case, so hide it immediately.
+    if (!record.bakedInObjectTree)
         return true;
+
+    if (!spriteBelongsToObjectTree(record.object, record.sprite))
+        return false;
 
     // Inside the object tree, child visibility is meaningful for coin/orb/
     // portal animation. Deliberately stop before the root GameObject because
@@ -356,9 +378,9 @@ void ObjectBatch::refreshLiveSpriteData() {
         auto updated = record.vertices;
 
         if (hasLiveChildState && !isLiveChildSpriteVisible(record)) {
-            // Keep the draw entirely in the GPU batch. Hidden interaction parts
-            // are moved outside clip space until GD makes the child visible
-            // again; no stock Cocos draw is re-enabled.
+            // Keep the draw entirely in the GPU batch. Hidden/replaced
+            // interaction parts are moved outside clip space; no stock Cocos
+            // draw is re-enabled and stale portal pieces cannot remain on-screen.
             constexpr float HIDDEN_VERTEX = 1000000.0f;
             for (u32 i = 0; i < VERTICIES_PER_QUAD; ++i)
                 updated[i].positionOffset = { HIDDEN_VERTEX, HIDDEN_VERTEX };
