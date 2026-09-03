@@ -52,6 +52,10 @@ static bool getSpriteLocalTransform(
     }
     return node == object;
 }
+
+static glm::vec2 quadUV(const cocos2d::ccV3F_C4B_T2F& vertex) {
+    return { vertex.texCoords.u, vertex.texCoords.v };
+}
 } // namespace
 
 AssistShadowBatch::~AssistShadowBatch() {
@@ -192,7 +196,6 @@ bool AssistShadowBatch::buildGeometry() {
     indices.reserve(candidates.size() * 6);
     drawRanges.clear();
 
-    const float contentScaleFactor = CCDirector::get()->getContentScaleFactor();
     u32 activeTexture = 0;
     DrawRange* activeRange = nullptr;
 
@@ -217,7 +220,12 @@ bool AssistShadowBatch::buildGeometry() {
             localTransform
         );
 
-        glm::vec2 posBottomLeft = ccPointToGLM(localBottomLeftPoint);
+        // Cocos' root nodeToParentTransform rotates/scales around the root
+        // anchor point. The assist shader uses the GameObject position itself as
+        // that pivot, so express all child/root geometry relative to the same
+        // anchor before the GPU applies the root transform.
+        const glm::vec2 rootAnchor = ccPointToGLM(object->getAnchorPointInPoints());
+        glm::vec2 posBottomLeft = ccPointToGLM(localBottomLeftPoint) - rootAnchor;
         glm::vec2 posRight = {
             localTransform.a * crop.size.width,
             localTransform.b * crop.size.width
@@ -227,35 +235,14 @@ bool AssistShadowBatch::buildGeometry() {
             localTransform.d * crop.size.height
         };
 
-        glm::vec2 texBottomLeft;
-        glm::vec2 texRight;
-        glm::vec2 texUp;
-        if (!sprite->isTextureRectRotated()) {
-            texBottomLeft = { crop.origin.x, crop.origin.y + crop.size.height };
-            texRight = { crop.size.width, 0.f };
-            texUp = { 0.f, -crop.size.height };
-        } else {
-            texBottomLeft = { crop.origin.x, crop.origin.y };
-            texRight = { 0.f, crop.size.width };
-            texUp = { crop.size.height, 0.f };
-        }
-
-        if (sprite->isFlipX()) {
-            posBottomLeft += posRight;
-            posRight = -posRight;
-        }
-        if (sprite->isFlipY()) {
-            posBottomLeft += posUp;
-            posUp = -posUp;
-        }
-
-        const glm::vec2 texFactor = {
-            contentScaleFactor / std::max(1.f, (float)texture->getPixelsWide()),
-            contentScaleFactor / std::max(1.f, (float)texture->getPixelsHigh())
-        };
-        texBottomLeft *= texFactor;
-        texRight *= texFactor;
-        texUp *= texFactor;
+        // Do not reconstruct flip/rotated-frame UV behavior ourselves. Cocos has
+        // already resolved it in m_sQuad. Reusing those exact UV corners avoids
+        // mirrored/rotated sprite mismatches while GD keeps frame ownership.
+        const auto stockQuad = sprite->getQuad();
+        const glm::vec2 uvBL = quadUV(stockQuad.bl);
+        const glm::vec2 uvBR = quadUV(stockQuad.br);
+        const glm::vec2 uvTL = quadUV(stockQuad.tl);
+        const glm::vec2 uvTR = quadUV(stockQuad.tr);
 
         if (!activeRange || activeTexture != entry.textureId) {
             drawRanges.push_back({
@@ -271,12 +258,12 @@ bool AssistShadowBatch::buildGeometry() {
         const float objectIndex = (float)entry.candidate.objectStateIndex;
         const float spriteIndex = (float)entry.candidate.spriteStateIndex;
 
-        vertices.push_back({ posBottomLeft, texBottomLeft, objectIndex, spriteIndex });
-        vertices.push_back({ posBottomLeft + posRight, texBottomLeft + texRight, objectIndex, spriteIndex });
-        vertices.push_back({ posBottomLeft + posUp, texBottomLeft + texUp, objectIndex, spriteIndex });
+        vertices.push_back({ posBottomLeft, uvBL, objectIndex, spriteIndex });
+        vertices.push_back({ posBottomLeft + posRight, uvBR, objectIndex, spriteIndex });
+        vertices.push_back({ posBottomLeft + posUp, uvTL, objectIndex, spriteIndex });
         vertices.push_back({
             posBottomLeft + posRight + posUp,
-            texBottomLeft + texRight + texUp,
+            uvTR,
             objectIndex,
             spriteIndex
         });
