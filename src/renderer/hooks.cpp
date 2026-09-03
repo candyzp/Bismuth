@@ -15,9 +15,15 @@ class $modify(RendererPlayLayer, PlayLayer) {
         newPlayLayer = false;
     }
 
-    // This gets called from inside PlayLayer::setupHasCompleted()
+    // This gets called from inside PlayLayer::setupHasCompleted(). On the first
+    // reset, let Geometry Dash finish resetting/initializing every object before
+    // Bismuth snapshots sprite geometry, colors and animation children. Baking
+    // before the stock reset captured stale startup state on iOS, which could
+    // leave old-level colors white and dynamic child hierarchies frozen/glitched.
     void resetLevel() {
-        if (newPlayLayer) {
+        if (newPlayLayer && Renderer::get() == nullptr) {
+            PlayLayer::resetLevel();
+
             auto batchLayer = this->m_objectLayer;
             if (!batchLayer) {
                 log::error("failed to attach renderer: batch layer not found");
@@ -25,8 +31,17 @@ class $modify(RendererPlayLayer, PlayLayer) {
             }
 
             auto renderer = Renderer::create(this);
-            if (renderer)
+            if (renderer) {
                 batchLayer->addChild(renderer, -100000);
+
+                // The initial stock reset ran before Renderer existed, so the
+                // optimizeMoveGroups hook intentionally left GD's decoration in
+                // its CPU move arrays. Rebuild those arrays once now that the GPU
+                // renderer owns decoration transforms.
+                this->optimizeMoveGroups();
+                renderer->reset();
+            }
+            return;
         }
 
         PlayLayer::resetLevel();
