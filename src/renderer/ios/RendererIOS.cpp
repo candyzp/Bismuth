@@ -3,6 +3,7 @@
 #include "../Renderer.hpp"
 #include "../AreaVisualState.hpp"
 #include "ResolvedStateLayer.hpp"
+#include "AssistShadowBatch.hpp"
 
 #include "Geode/cocos/CCDirector.h"
 #include "Geode/cocos/sprite_nodes/CCSpriteBatchNode.h"
@@ -18,6 +19,7 @@ struct IOSRendererState {
     std::unique_ptr<ColorChannelBuffer> colorChannels = std::make_unique<ColorChannelBuffer>();
     std::unique_ptr<ResolvedStateLayer> resolvedState;
     Shader* assistShader = nullptr;
+    Ref<AssistShadowBatch> shadowBatch;
 
     ~IOSRendererState() {
         if (assistShader)
@@ -55,9 +57,8 @@ bool Renderer::init(PlayLayer* playLayer) {
     if (!Mod::get()->getSettingValue<bool>("enabled"))
         return false;
 
-    // iOS is intentionally GD-authoritative. Bismuth may observe final state and
-    // prepare GPU resources, but it does not replace stock visuals until a
-    // conservative batch has been independently validated.
+    // iOS is intentionally GD-authoritative. Bismuth observes final state and
+    // prepares GPU resources without recreating animation/trigger semantics.
     g_iosStates[this] = std::make_unique<IOSRendererState>();
     auto state = iosState(this);
     colorChannelBuffer = state->colorChannels.get();
@@ -68,13 +69,22 @@ bool Renderer::init(PlayLayer* playLayer) {
         log::warn("Bismuth iOS resolved-state layer unavailable; continuing with pure stock GD rendering");
     }
 
-    // Compile the new math-only shader now so device testing can prove that the
-    // A15/ES2 backend accepts the future transform pipeline before it owns a
-    // single visible sprite. Shader failure never disables stock rendering.
     if (state->resolvedState && state->resolvedState->isGPUStateReady()) {
         state->assistShader = Shader::create("assist_ios.vert", "assist_ios.frag");
-        if (!state->assistShader)
+        if (!state->assistShader) {
             log::warn("Bismuth iOS assist shader unavailable; stock GD rendering remains active");
+        } else if (layer->m_objectLayer) {
+            // First real GPU submission is a shadow pass. It batches only plain,
+            // single-sprite static solids and disables every framebuffer write.
+            // The A15 performs real transform/raster work while GD remains the
+            // sole visible renderer, so ordering/duplication bugs are impossible.
+            state->shadowBatch = AssistShadowBatch::create(
+                state->resolvedState.get(),
+                state->assistShader
+            );
+            if (state->shadowBatch)
+                layer->m_objectLayer->addChild(state->shadowBatch, 1000000);
+        }
     }
 
     ingameEnableDisable = false;
@@ -117,6 +127,11 @@ bool Renderer::init(PlayLayer* playLayer) {
 void Renderer::generateBatchNodes() {}
 
 void Renderer::terminate() {
+    if (auto state = iosState(this); state && state->shadowBatch) {
+        state->shadowBatch->removeFromParentAndCleanup(true);
+        state->shadowBatch = nullptr;
+    }
+
     if (shader)
         Shader::destroy(shader);
     shader = nullptr;
@@ -140,8 +155,8 @@ void Renderer::prepareColorChannelBuffer() {}
 void Renderer::generateStaticRenderingBuffer(ObjectSorter&) {}
 
 void Renderer::draw() {
-    // Stock Geometry Dash remains the only visible draw path in this validation
-    // stage. The assist state/textures are deliberately side-band resources.
+    // The Renderer node itself never replaces stock visuals. GPU-assist work is
+    // opt-in per conservative child batch.
 }
 
 void Renderer::updateDebugText() {
@@ -156,20 +171,24 @@ void Renderer::updateDebugText() {
 
         if (resolved) {
             const auto& stats = resolved->getStats();
+            const auto* shadow = state && state->shadowBatch ? &state->shadowBatch->getStats() : nullptr;
+
             text = fmt::format(
                 "Bismuth iOS GPU Assist\n"
-                "Render output: STOCK GD (authoritative)\n"
+                "Visible output: STOCK GD (authoritative)\n"
                 "GPU: {}\n"
-                "Resolved GPU state: {}\n"
+                "Resolved GPU state: {} | transform shader: {}\n"
                 "Safe objects: {} ({} static / {} dynamic)\n"
                 "Stock fallback: {} | safe sprite records: {}\n"
                 "Dirty: {} transform | {} appearance | {} visibility | {} UV\n"
-                "Static reused: {}/{}\n"
-                "State uploads: {} / frame in {} call(s)\n"
-                "GPU transform shader: {}\n"
-                "GPU batch drawing: OFF until visual validation",
+                "Static reused: {}/{} | uploads: {} in {} call(s)\n"
+                "Shadow candidates: {} | batched: {} | resident verts: {}\n"
+                "Shadow GPU draws: {} / frame | indices: {} | texture batches: {}\n"
+                "Framebuffer writes: OFF (validation only)\n"
+                "Visible GPU ownership: OFF",
                 gpuRenderer ? gpuRenderer : "unknown",
                 resolved->isGPUStateReady() ? "READY" : "UNAVAILABLE",
+                state && state->assistShader ? "READY" : "UNAVAILABLE",
                 stats.safeObjects,
                 stats.staticObjects,
                 stats.dynamicObjects,
@@ -183,16 +202,22 @@ void Renderer::updateDebugText() {
                 stats.staticObjects,
                 byteSizeToString(stats.bytesUploaded),
                 stats.uploadCalls,
-                state && state->assistShader ? "READY" : "UNAVAILABLE"
+                shadow ? shadow->eligibleSprites : 0,
+                shadow ? shadow->batchedSprites : 0,
+                shadow ? shadow->verticesResident : 0,
+                shadow ? shadow->drawCallsLastFrame : 0,
+                shadow ? shadow->indicesLastFrame : 0,
+                shadow ? shadow->textureBatches : 0
             );
         } else {
             text = fmt::format(
                 "Bismuth iOS GPU Assist\n"
-                "Render output: STOCK GD (authoritative)\n"
+                "Visible output: STOCK GD (authoritative)\n"
                 "GPU: {}\n"
                 "Resolved GPU state: UNAVAILABLE\n"
                 "GPU transform shader: UNAVAILABLE\n"
-                "GPU batch drawing: OFF",
+                "Shadow GPU batch: OFF\n"
+                "Visible GPU ownership: OFF",
                 gpuRenderer ? gpuRenderer : "unknown"
             );
         }

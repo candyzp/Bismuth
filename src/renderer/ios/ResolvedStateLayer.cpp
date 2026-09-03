@@ -84,6 +84,30 @@ ResolvedStateLayer::SafetyClass ResolvedStateLayer::classifyObject(
     return dynamic ? SafetyClass::DynamicSafe : SafetyClass::StaticSafe;
 }
 
+bool ResolvedStateLayer::isShadowValidationCandidate(
+    GameObject* object,
+    SafetyClass safety,
+    const std::vector<cocos2d::CCSprite*>& objectSprites
+) const {
+    if (!object || safety != SafetyClass::StaticSafe)
+        return false;
+
+    // First live GPU submission is intentionally tiny and boring. Only a plain
+    // solid whose complete visible representation is the root CCSprite is used.
+    // No child ordering, reparenting, portal/orb state, animation, or SectionSet
+    // semantics can enter this path.
+    if (object->m_objectType != GameObjectType::Solid)
+        return false;
+    if (objectSprites.size() != 1)
+        return false;
+    if (objectSprites[0] != static_cast<cocos2d::CCSprite*>(object))
+        return false;
+    if (object->m_groupCount != 0 || object->getHasRotateAction() || object->m_usesAudioScale)
+        return false;
+
+    return objectSprites[0]->getTexture() != nullptr;
+}
+
 ResolvedStateLayer::ObjectState ResolvedStateLayer::captureObjectState(GameObject* object) const {
     ObjectState state;
     if (!object)
@@ -126,8 +150,8 @@ void ResolvedStateLayer::packObjectState(usize index, const ObjectState& state, 
     if (base + 1 >= objectTexels.size())
         return;
 
-    // The future assist vertex shader consumes only final GD-resolved root state.
-    // It does not know about Move/Rotate/Follow/Area trigger semantics.
+    // The assist vertex shader consumes only final GD-resolved root state. It
+    // does not know about Move/Rotate/Follow/Area trigger semantics.
     objectTexels[base + 0] = {
         state.position.x,
         state.position.y,
@@ -206,6 +230,7 @@ bool ResolvedStateLayer::init(PlayLayer* playLayer) {
     layer = playLayer;
     objects.clear();
     sprites.clear();
+    shadowCandidates.clear();
     objectTexels.clear();
     spriteTexels.clear();
     stats = {};
@@ -234,6 +259,7 @@ bool ResolvedStateLayer::init(PlayLayer* playLayer) {
         record.state = captureObjectState(object);
 
         const usize objectIndex = objects.size();
+        const usize firstSpriteIndex = sprites.size();
         objects.push_back(record);
 
         ++stats.safeObjects;
@@ -249,6 +275,15 @@ bool ResolvedStateLayer::init(PlayLayer* playLayer) {
             spriteRecord.state = captureSpriteState(sprite);
             sprites.push_back(spriteRecord);
             ++stats.safeSprites;
+        }
+
+        if (isShadowValidationCandidate(object, safety, objectSprites)) {
+            shadowCandidates.push_back({
+                object,
+                objectSprites[0],
+                objectIndex,
+                firstSpriteIndex
+            });
         }
     }
 
@@ -283,12 +318,13 @@ bool ResolvedStateLayer::init(PlayLayer* playLayer) {
     resync();
 
     log::info(
-        "Bismuth iOS state layer: {} safe objects ({} static, {} dynamic), {} stock, {} sprite records",
+        "Bismuth iOS state layer: {} safe objects ({} static, {} dynamic), {} stock, {} sprite records, {} shadow candidates",
         stats.safeObjects,
         stats.staticObjects,
         stats.dynamicObjects,
         stats.stockObjects,
-        stats.safeSprites
+        stats.safeSprites,
+        shadowCandidates.size()
     );
     return true;
 }
@@ -324,9 +360,9 @@ void ResolvedStateLayer::update(bool detailedProbe) {
     stats.bytesUploaded = 0;
     stats.uploadCalls = 0;
 
-    // Until a validated GPU batch consumes the textures, do not add a full
-    // per-frame object walk to normal gameplay merely to make GPU statistics
-    // look busy. Debug mode performs the expensive proof/measurement pass.
+    // The shadow batch is enabled only with the debug overlay, so the expensive
+    // resolved-state walk stays out of normal gameplay until visible ownership
+    // is ready to replace equivalent stock CPU render work.
     if (!detailedProbe || !objectStateTexture || !spriteStateTexture)
         return;
 

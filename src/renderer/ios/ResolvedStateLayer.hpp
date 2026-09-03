@@ -34,6 +34,17 @@ public:
         usize uploadCalls = 0;
     };
 
+    // First-live-draw candidates are intentionally much narrower than the
+    // general safe classification. They are plain, single-root-sprite static
+    // solids only. The shadow batch may exercise them on the GPU without taking
+    // ownership of their visible pixels yet.
+    struct ShadowCandidate {
+        GameObject* object = nullptr;
+        cocos2d::CCSprite* sprite = nullptr;
+        usize objectStateIndex = 0;
+        usize spriteStateIndex = 0;
+    };
+
     ResolvedStateLayer() = default;
     ~ResolvedStateLayer();
 
@@ -46,6 +57,7 @@ public:
     void update(bool detailedProbe);
 
     inline const Stats& getStats() const { return stats; }
+    inline const std::vector<ShadowCandidate>& getShadowCandidates() const { return shadowCandidates; }
     inline bool isGPUStateReady() const {
         return objectStateTexture != nullptr && spriteStateTexture != nullptr;
     }
@@ -91,6 +103,11 @@ private:
     };
 
     SafetyClass classifyObject(GameObject* object, std::vector<cocos2d::CCSprite*>& sprites) const;
+    bool isShadowValidationCandidate(
+        GameObject* object,
+        SafetyClass safety,
+        const std::vector<cocos2d::CCSprite*>& sprites
+    ) const;
     ObjectState captureObjectState(GameObject* object) const;
     SpriteState captureSpriteState(cocos2d::CCSprite* sprite) const;
 
@@ -109,6 +126,7 @@ private:
 
     std::vector<ObjectRecord> objects;
     std::vector<SpriteRecord> sprites;
+    std::vector<ShadowCandidate> shadowCandidates;
     std::vector<glm::vec4> objectTexels;
     std::vector<glm::vec4> spriteTexels;
 
