@@ -86,6 +86,10 @@ vec2 rotatePointAroundOrigin(vec2 point, float angleInRadians) {
 #define GROUP_IDS_PER_OBJECT 10
 
 #define A_COLOR_CHANNEL_IS_SPRITE_DETAIL 0x1000
+// iOS can mark a vertex to use the object's baked direct sprite tint instead
+// of sampling a normal GD color-table channel. Desktop shaders ignore this bit
+// because they mask the channel to the low 12 bits as before.
+#define A_COLOR_CHANNEL_USE_DIRECT      0x2000
 
 #define OBJECT_FLAG_USES_AUDIO_SCALE   (1 << 0)
 #define OBJECT_FLAG_CUSTOM_AUDIO_SCALE (1 << 1)
