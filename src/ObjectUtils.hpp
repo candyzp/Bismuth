@@ -83,21 +83,78 @@ public:
         return type == SpriteType::GLOW ? SpriteSheet::GLOW : (SpriteSheet)object->getParentMode();
     }
 
+    static inline bool isInteractiveVisualObject(GameObject* object) {
+        if (!object)
+            return false;
+
+        switch (object->m_objectType) {
+            case GameObjectType::InverseGravityPortal:
+            case GameObjectType::NormalGravityPortal:
+            case GameObjectType::ShipPortal:
+            case GameObjectType::CubePortal:
+            case GameObjectType::YellowJumpPad:
+            case GameObjectType::PinkJumpPad:
+            case GameObjectType::GravityPad:
+            case GameObjectType::YellowJumpRing:
+            case GameObjectType::PinkJumpRing:
+            case GameObjectType::GravityRing:
+            case GameObjectType::InverseMirrorPortal:
+            case GameObjectType::NormalMirrorPortal:
+            case GameObjectType::BallPortal:
+            case GameObjectType::RegularSizePortal:
+            case GameObjectType::MiniSizePortal:
+            case GameObjectType::UfoPortal:
+            case GameObjectType::SecretCoin:
+            case GameObjectType::DualPortal:
+            case GameObjectType::SoloPortal:
+            case GameObjectType::WavePortal:
+            case GameObjectType::RobotPortal:
+            case GameObjectType::TeleportPortal:
+            case GameObjectType::GreenRing:
+            case GameObjectType::Collectible:
+            case GameObjectType::UserCoin:
+            case GameObjectType::DropRing:
+            case GameObjectType::SpiderPortal:
+            case GameObjectType::RedJumpPad:
+            case GameObjectType::RedJumpRing:
+            case GameObjectType::CustomRing:
+            case GameObjectType::DashRing:
+            case GameObjectType::GravityDashRing:
+            case GameObjectType::SwingPortal:
+            case GameObjectType::GravityTogglePortal:
+            case GameObjectType::SpiderOrb:
+            case GameObjectType::SpiderPad:
+            case GameObjectType::TeleportOrb:
+                return true;
+            default:
+                return false;
+        }
+    }
+
     static inline u32 sanitizeColorChannel(i32 colorChannel) {
-        // Channel 0 is a real slot in Bismuth/GD's color table and upstream
-        // Bismuth intentionally passes it through. Treating it as "invalid"
-        // forces ordinary stock objects onto the WHITE fallback channel and can
-        // change their tint/blending. Only reject values that cannot index the
-        // GPU color table at all.
         if (colorChannel < 0 || colorChannel >= COLOR_CHANNEL_COUNT)
             return COLOR_CHANNEL_WHITE;
         return (u32)colorChannel;
     }
 
     static u32 getSpriteColorChannel(SpriteType type, GameObject* object, cocos2d::CCSprite* sprite) {
-        i32 rawColorChannel = type == SpriteType::DETAIL
+        const bool detail = type == SpriteType::DETAIL;
+        i32 rawColorChannel = detail
             ? object->m_activeDetailColorID
             : object->m_activeMainColorID;
+
+        // Geometry Dash uses active color ID 0 as "use this sprite color's
+        // authored/default channel" rather than as an ordinary color-table
+        // lookup. The optimized renderer skipped that distinction and could
+        // therefore turn stock level art white or otherwise sample the wrong
+        // slot. Resolve the stored default before sanitizing for the GPU table.
+        auto spriteColor = detail ? object->m_detailColor : object->m_baseColor;
+        if ((rawColorChannel <= 0 || rawColorChannel >= COLOR_CHANNEL_COUNT) && spriteColor) {
+            const i32 defaultColor = spriteColor->m_defaultColorID;
+            if (defaultColor > 0 && defaultColor < COLOR_CHANNEL_COUNT)
+                rawColorChannel = defaultColor;
+        }
+
         u32 colorChannel = sanitizeColorChannel(rawColorChannel);
 
         // SpriteType already tracks whether a sprite belongs to the base/detail
