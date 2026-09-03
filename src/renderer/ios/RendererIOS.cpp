@@ -4,6 +4,7 @@
 #include "../AreaVisualState.hpp"
 #include "ResolvedStateLayer.hpp"
 #include "AssistShadowBatch.hpp"
+#include "StandaloneAssistBatch.hpp"
 
 #include "Geode/cocos/CCDirector.h"
 #include "Geode/cocos/sprite_nodes/CCSpriteBatchNode.h"
@@ -17,23 +18,35 @@
 using namespace geode::prelude;
 
 namespace {
+struct StandaloneRunDesc {
+    cocos2d::CCNode* parent = nullptr;
+    int zOrder = 0;
+    unsigned int orderOfArrival = 0;
+    std::vector<ResolvedStateLayer::ShadowCandidate> candidates;
+};
+
 struct IOSRendererState {
     std::unique_ptr<ColorChannelBuffer> colorChannels = std::make_unique<ColorChannelBuffer>();
     std::unique_ptr<ResolvedStateLayer> resolvedState;
     Shader* assistShader = nullptr;
 
     std::vector<Ref<AssistShadowBatch>> gpuBatches;
+    std::vector<Ref<StandaloneAssistBatch>> standaloneBatches;
+
+    std::unordered_set<cocos2d::CCSprite*> batchOwnedSprites;
+    std::unordered_set<cocos2d::CCSprite*> standaloneOwnedSprites;
     std::unordered_set<cocos2d::CCSprite*> ownedSprites;
 
-    // Discovery statistics are intentionally separate from the safety
-    // classifier. A sprite may be completely safe for GPU math but not currently
-    // live inside a CCSpriteBatchNode. This tells us where the remaining CPU work
-    // actually lives instead of silently treating it as a renderer rejection.
     usize gpuCandidateSprites = 0;
     usize candidatesWithBatch = 0;
     usize candidatesWithoutBatch = 0;
     usize candidateBatchNodes = 0;
     usize batchesWithoutParent = 0;
+
+    usize standaloneLeafCandidates = 0;
+    usize standaloneUnsupported = 0;
+    usize standaloneParentCount = 0;
+    usize standaloneRunCount = 0;
 
     ~IOSRendererState() {
         if (assistShader)
@@ -57,14 +70,13 @@ static std::string byteSizeToString(usize size) {
     return fmt::format("{:.2f} MiB", (double)size / (1024.0 * 1024.0));
 }
 
-// Park an owned Cocos atlas slot exactly when ownership is established/reset.
-// The per-frame CCSprite hook then only clears its dirty flag, so safe sprites
-// stop doing CPU matrix expansion AND stop dirtying the stock atlas every frame.
 static void parkOwnedStockQuads(IOSRendererState* state) {
     if (!state)
         return;
 
-    for (auto sprite : state->ownedSprites) {
+    // Only sprites actually living in a CCSpriteBatchNode have atlas quads to
+    // park. Standalone ownership is suppressed by the CCSprite::visit hook.
+    for (auto sprite : state->batchOwnedSprites) {
         if (!sprite)
             continue;
 
@@ -79,19 +91,82 @@ static void parkOwnedStockQuads(IOSRendererState* state) {
     }
 }
 
-// This is ONLY for a manual in-level disable. At that point the PlayLayer,
-// sprites and stock batches are still alive. Renderer destruction must never
-// call this because Cocos may already be tearing those objects down.
 static void restoreOwnedStockQuads(IOSRendererState* state) {
     if (!state)
         return;
 
-    for (auto sprite : state->ownedSprites) {
+    // Manual in-level disable only. The scene is known to still be alive here.
+    for (auto sprite : state->batchOwnedSprites) {
         if (!sprite || !sprite->getBatchNode())
             continue;
         sprite->setDirty(true);
         sprite->updateTransform();
     }
+}
+
+static std::vector<StandaloneRunDesc> buildStandaloneRuns(
+    IOSRendererState* state,
+    const std::unordered_map<cocos2d::CCSprite*, ResolvedStateLayer::ShadowCandidate>& lookup,
+    const std::unordered_set<cocos2d::CCNode*>& parents
+) {
+    std::vector<StandaloneRunDesc> runs;
+    if (!state)
+        return runs;
+
+    for (auto parent : parents) {
+        if (!parent || parent->getChildrenCount() == 0)
+            continue;
+
+        parent->sortAllChildren();
+        auto children = parent->getChildren();
+        if (!children)
+            continue;
+
+        StandaloneRunDesc current;
+        cocos2d::ccBlendFunc currentBlend {0, 0};
+        bool hasRun = false;
+
+        auto flush = [&]() {
+            if (!current.candidates.empty())
+                runs.push_back(std::move(current));
+            current = {};
+            currentBlend = {0, 0};
+            hasRun = false;
+        };
+
+        for (auto child : CCArrayExt<cocos2d::CCNode*>(children)) {
+            auto sprite = typeinfo_cast<cocos2d::CCSprite*>(child);
+            auto it = sprite ? lookup.find(sprite) : lookup.end();
+            if (it == lookup.end()) {
+                flush();
+                continue;
+            }
+
+            const auto blend = sprite->getBlendFunc();
+            const int zOrder = sprite->getZOrder();
+            if (hasRun && (
+                zOrder != current.zOrder ||
+                blend.src != currentBlend.src ||
+                blend.dst != currentBlend.dst
+            )) {
+                flush();
+            }
+
+            if (!hasRun) {
+                current.parent = parent;
+                current.zOrder = zOrder;
+                current.orderOfArrival = sprite->getOrderOfArrival();
+                currentBlend = blend;
+                hasRun = true;
+            }
+
+            current.candidates.push_back(it->second);
+        }
+
+        flush();
+    }
+
+    return runs;
 }
 } // namespace
 
@@ -125,33 +200,62 @@ bool Renderer::init(PlayLayer* playLayer) {
         if (!state->assistShader) {
             log::warn("Bismuth iOS assist shader unavailable");
         } else {
-            // Do not discover ownership from PlayLayer::m_batchNodes anymore.
-            // The authoritative relationship is already on every live safe
-            // CCSprite. Bucket by sprite->getBatchNode() so nested/alternate GD
-            // batch nodes are not invisible to Bismuth simply because they are
-            // absent from that one PlayLayer array.
             const auto candidates = state->resolvedState->getGPUCandidates();
             state->gpuCandidateSprites = candidates.size();
 
             std::unordered_set<cocos2d::CCSpriteBatchNode*> candidateBatches;
+            std::unordered_map<cocos2d::CCSprite*, ResolvedStateLayer::ShadowCandidate> standaloneLookup;
+            std::unordered_set<cocos2d::CCNode*> standaloneParents;
             candidateBatches.reserve(64);
+            standaloneLookup.reserve(candidates.size());
+            standaloneParents.reserve(64);
 
             for (const auto& candidate : candidates) {
+                auto object = candidate.object;
                 auto sprite = candidate.sprite;
-                if (!sprite)
+                if (!object || !sprite)
                     continue;
 
-                auto batch = sprite->getBatchNode();
-                if (!batch) {
-                    ++state->candidatesWithoutBatch;
+                if (auto batch = sprite->getBatchNode()) {
+                    ++state->candidatesWithBatch;
+                    candidateBatches.insert(batch);
                     continue;
                 }
 
-                ++state->candidatesWithBatch;
-                candidateBatches.insert(batch);
+                ++state->candidatesWithoutBatch;
+
+                // First standalone phase: only a root leaf sprite. This lets us
+                // skip CCSprite::visit entirely without losing child traversal or
+                // interfering with glow/detail/animation hierarchies.
+                auto parent = sprite->getParent();
+                const bool leafRoot =
+                    parent &&
+                    sprite == static_cast<cocos2d::CCSprite*>(object) &&
+                    sprite->getChildrenCount() == 0 &&
+                    sprite->getTexture() != nullptr;
+
+                if (!leafRoot) {
+                    ++state->standaloneUnsupported;
+                    continue;
+                }
+
+                ++state->standaloneLeafCandidates;
+                standaloneLookup.emplace(sprite, candidate);
+                standaloneParents.insert(parent);
             }
 
             state->candidateBatchNodes = candidateBatches.size();
+            state->standaloneParentCount = standaloneParents.size();
+
+            // Capture parent/z/order runs before inserting any assist nodes. A
+            // run is only consecutive safe siblings, so an unsafe/animated node
+            // naturally splits the batch and keeps its original draw position.
+            const auto standaloneRuns = buildStandaloneRuns(
+                state,
+                standaloneLookup,
+                standaloneParents
+            );
+            state->standaloneRunCount = standaloneRuns.size();
 
             for (auto batch : candidateBatches) {
                 if (!batch)
@@ -171,28 +275,52 @@ bool Renderer::init(PlayLayer* playLayer) {
                 if (!gpuBatch || !gpuBatch->getStats().ready || gpuBatch->getStats().batchedSprites == 0)
                     continue;
 
-                // Keep the stock batch alive. Only exact safe sprite atlas slots
-                // are parked; animation/interactive/unknown sprites stay stock.
                 parent->addChild(gpuBatch, batch->getZOrder());
                 state->gpuBatches.push_back(gpuBatch);
                 for (auto sprite : gpuBatch->getOwnedSprites()) {
-                    if (sprite)
-                        state->ownedSprites.insert(sprite);
+                    if (!sprite)
+                        continue;
+                    state->batchOwnedSprites.insert(sprite);
+                    state->ownedSprites.insert(sprite);
                 }
             }
 
-            // Compile the exact per-frame state walk only after ownership is
-            // final. Safe-but-unowned objects remain stock and are no longer
-            // polled every frame merely because they passed classification.
+            for (const auto& run : standaloneRuns) {
+                if (!run.parent || run.candidates.empty())
+                    continue;
+
+                auto gpuRun = StandaloneAssistBatch::create(
+                    state->resolvedState.get(),
+                    state->assistShader,
+                    run.candidates
+                );
+                if (!gpuRun || !gpuRun->getStats().ready || gpuRun->getStats().sprites == 0)
+                    continue;
+
+                // Drop the replacement node into the exact sibling ordering slot
+                // occupied by the first safe sprite in this consecutive run.
+                run.parent->addChild(gpuRun, run.zOrder);
+                gpuRun->setOrderOfArrival(run.orderOfArrival);
+                state->standaloneBatches.push_back(gpuRun);
+
+                for (auto sprite : gpuRun->getOwnedSprites()) {
+                    if (!sprite)
+                        continue;
+                    state->standaloneOwnedSprites.insert(sprite);
+                    state->ownedSprites.insert(sprite);
+                }
+            }
+
             state->resolvedState->setGPUOwnedSprites(state->ownedSprites);
 
             log::info(
-                "Bismuth iOS direct discovery: {} candidates, {} batched, {} unbatched, {} unique batch nodes, {} GPU nodes, {} owned sprites",
+                "Bismuth iOS ownership: {} candidates, {} atlas candidates, {} standalone leaf candidates, {} unsupported standalone; {} atlas GPU nodes + {} standalone runs; {} total owned sprites",
                 state->gpuCandidateSprites,
                 state->candidatesWithBatch,
-                state->candidatesWithoutBatch,
-                state->candidateBatchNodes,
+                state->standaloneLeafCandidates,
+                state->standaloneUnsupported,
                 state->gpuBatches.size(),
+                state->standaloneBatches.size(),
                 state->ownedSprites.size()
             );
         }
@@ -232,36 +360,44 @@ bool Renderer::init(PlayLayer* playLayer) {
         if (gpuBatch)
             gpuBatch->setVisible(true);
     }
+    for (auto& gpuRun : state->standaloneBatches) {
+        if (gpuRun)
+            gpuRun->setVisible(true);
+    }
     parkOwnedStockQuads(state);
 
     setVisible(false);
     rendererStartTime = getTime();
 
-    log::info("Bismuth iOS initialized: direct per-sprite GPU batch discovery + stock animation lifecycle");
+    log::info("Bismuth iOS initialized: atlas + standalone GPU math ownership, stock animation lifecycle");
     return true;
 }
 
 void Renderer::generateBatchNodes() {}
 
 void Renderer::terminate() {
-    // PlayLayer/CCSprite destruction order is not guaranteed relative to this
-    // node. Drop the global hook target first so any late CCSprite transform goes
-    // straight through stock Cocos instead of consulting half-destroyed state.
     if (currentRenderer == this)
         currentRenderer = nullptr;
     enabled = false;
 
     auto state = iosState(this);
     if (state) {
-        // Do NOT restore atlas quads or remove GPU nodes from their parents here.
-        // On level exit those parent/sprite pointers may already be stale. The
-        // scene is being destroyed anyway, so touching it only creates UAF risk.
+        // Never call into scene sprites/parents during teardown. The PlayLayer may
+        // already be partially destroyed; simply disable and release our refs.
         for (auto& gpuBatch : state->gpuBatches) {
             if (gpuBatch)
                 gpuBatch->setVisible(false);
         }
+        for (auto& gpuRun : state->standaloneBatches) {
+            if (gpuRun)
+                gpuRun->setVisible(false);
+        }
+
         state->ownedSprites.clear();
+        state->batchOwnedSprites.clear();
+        state->standaloneOwnedSprites.clear();
         state->gpuBatches.clear();
+        state->standaloneBatches.clear();
     }
 
     if (shader)
@@ -305,21 +441,35 @@ void Renderer::updateDebugText() {
             usize gpuIndices = 0;
             usize textureRanges = 0;
             usize rejectedSprites = 0;
+
             if (state) {
                 for (const auto& batch : state->gpuBatches) {
                     if (!batch)
                         continue;
-                    const auto& batchStats = batch->getStats();
-                    residentVertices += batchStats.verticesResident;
-                    gpuDraws += batchStats.drawCallsLastFrame;
-                    gpuIndices += batchStats.indicesLastFrame;
-                    textureRanges += batchStats.textureBatches;
-                    rejectedSprites += batchStats.rejectedSprites;
+                    const auto& s = batch->getStats();
+                    residentVertices += s.verticesResident;
+                    gpuDraws += s.drawCallsLastFrame;
+                    gpuIndices += s.indicesLastFrame;
+                    textureRanges += s.textureBatches;
+                    rejectedSprites += s.rejectedSprites;
+                }
+
+                for (const auto& run : state->standaloneBatches) {
+                    if (!run)
+                        continue;
+                    const auto& s = run->getStats();
+                    residentVertices += s.verticesResident;
+                    gpuDraws += s.drawCallsLastFrame;
+                    gpuIndices += s.indicesLastFrame;
+                    textureRanges += s.textureRanges;
                 }
             }
 
-            const usize gpuBatchCount = state ? state->gpuBatches.size() : 0;
+            const usize atlasBatchCount = state ? state->gpuBatches.size() : 0;
+            const usize standaloneBatchCount = state ? state->standaloneBatches.size() : 0;
             const usize ownedSprites = state ? state->ownedSprites.size() : 0;
+            const usize batchOwned = state ? state->batchOwnedSprites.size() : 0;
+            const usize standaloneOwned = state ? state->standaloneOwnedSprites.size() : 0;
             const bool ownsPixels = enabled && ownedSprites > 0;
 
             text = fmt::format(
@@ -328,14 +478,14 @@ void Renderer::updateDebugText() {
                 "GPU: {}\n"
                 "Resolved GPU state: {} | transform shader: {}\n"
                 "Safe objects: {} ({} static / {} dynamic)\n"
-                "Stock animation/complex objects: {} | safe sprite records: {}\n"
-                "Discovery: {} candidates | {} batched | {} no-batch | {} batch nodes\n"
+                "Stock animation/complex: {} | safe sprite records: {}\n"
+                "Discovery: {} total | {} atlas | {} standalone leaf | {} unsupported standalone\n"
+                "GPU nodes: {} atlas + {} standalone runs | owned: {} ({} atlas + {} standalone)\n"
                 "Active GPU state: {} objects | {} sprites\n"
                 "Dirty: {} transform | {} appearance | {} visibility | {} UV\n"
                 "Static GPU reused: {}/{} | uploads: {} in {} call(s)\n"
-                "GPU assist batches: {} | owned sprites: {} | rejected: {} | parentless batches: {}\n"
-                "Resident verts: {} | GPU draws: {} / frame | indices: {} | ranges: {}\n"
-                "Stock CPU quad transforms skipped: {}\n"
+                "Resident verts: {} | GPU draws: {} / frame | indices: {} | ranges: {} | rejected: {}\n"
+                "CPU render skipped: {} atlas quad transforms | {} standalone visits\n"
                 "Framebuffer writes: {}\n"
                 "Animation lifecycle ownership: STOCK GD",
                 ownsPixels ? "GPU SAFE SPRITES + STOCK ANIMATION" : "STOCK GD",
@@ -349,8 +499,13 @@ void Renderer::updateDebugText() {
                 stats.safeSprites,
                 state ? state->gpuCandidateSprites : 0,
                 state ? state->candidatesWithBatch : 0,
-                state ? state->candidatesWithoutBatch : 0,
-                state ? state->candidateBatchNodes : 0,
+                state ? state->standaloneLeafCandidates : 0,
+                state ? state->standaloneUnsupported : 0,
+                atlasBatchCount,
+                standaloneBatchCount,
+                ownedSprites,
+                batchOwned,
+                standaloneOwned,
                 stats.activeGPUObjects,
                 stats.activeGPUSprites,
                 stats.dirtyTransforms,
@@ -361,15 +516,13 @@ void Renderer::updateDebugText() {
                 stats.activeStaticObjects,
                 byteSizeToString(stats.bytesUploaded),
                 stats.uploadCalls,
-                gpuBatchCount,
-                ownedSprites,
-                rejectedSprites,
-                state ? state->batchesWithoutParent : 0,
                 residentVertices,
                 gpuDraws,
                 gpuIndices,
                 textureRanges,
-                ownsPixels ? ownedSprites : 0,
+                rejectedSprites,
+                batchOwned,
+                standaloneOwned,
                 ownsPixels ? "ON (owned safe sprites)" : "OFF"
             );
         } else {
@@ -440,7 +593,15 @@ bool Renderer::isGPUOwnedSprite(cocos2d::CCSprite* sprite) const {
         return false;
 
     auto state = iosState(const_cast<Renderer*>(this));
-    return state && state->ownedSprites.contains(sprite);
+    return state && state->batchOwnedSprites.contains(sprite);
+}
+
+bool Renderer::isGPUOwnedStandaloneSprite(cocos2d::CCSprite* sprite) const {
+    if (!enabled || !sprite)
+        return false;
+
+    auto state = iosState(const_cast<Renderer*>(this));
+    return state && state->standaloneOwnedSprites.contains(sprite);
 }
 
 void Renderer::setEnabled(bool value) {
@@ -453,6 +614,10 @@ void Renderer::setEnabled(bool value) {
                 if (gpuBatch)
                     gpuBatch->setVisible(false);
             }
+            for (auto& gpuRun : state->standaloneBatches) {
+                if (gpuRun)
+                    gpuRun->setVisible(false);
+            }
             restoreOwnedStockQuads(state);
         }
     } else {
@@ -462,6 +627,10 @@ void Renderer::setEnabled(bool value) {
             for (auto& gpuBatch : state->gpuBatches) {
                 if (gpuBatch)
                     gpuBatch->setVisible(true);
+            }
+            for (auto& gpuRun : state->standaloneBatches) {
+                if (gpuRun)
+                    gpuRun->setVisible(true);
             }
         }
     }
