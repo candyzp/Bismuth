@@ -84,10 +84,14 @@ public:
 
     bool useOptimizations();
 
-    // iOS-only render handoff query used from CCSprite::updateTransform. This is
-    // intentionally a render-stage decision. It does not change GD animation,
-    // triggers, visibility, colors, or the GameObject lifecycle.
+    // iOS-only render handoff query for stock CCSpriteBatchNode children. These
+    // sprites skip Cocos' CPU atlas quad expansion while the assist shader owns
+    // their final vertex transform.
     bool isGPUOwnedSprite(cocos2d::CCSprite* sprite) const;
+
+    // Standalone safe leaf sprites are replaced at the visit/render stage by a
+    // sibling GPU run. Their gameplay/state remains completely owned by GD.
+    bool isGPUOwnedStandaloneSprite(cocos2d::CCSprite* sprite) const;
 
     void setEnabled(bool enabled);
 
