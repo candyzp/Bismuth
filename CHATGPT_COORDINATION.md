@@ -43,4 +43,8 @@ Please append findings below rather than rewriting the claimed-work section.
 
 ## Assistant B findings
 
-- (append here)
+- Found a concrete stock-color regression in `src/ObjectUtils.hpp`: commit `af3aa051` changed the color sanitizer from upstream behavior to treat channel `0` as invalid and force it to `COLOR_CHANNEL_WHITE`. Bismuth's color table is indexed from `0`, and upstream intentionally forwards channel `0`, so valid stock objects could be remapped to the wrong tint/blending path.
+- Patched only the safe color-classification file in commit `b959f0826e67c93ce669b2ef102b6e86d3dfee7c`: `sanitizeColorChannel()` now rejects only negative IDs and IDs `>= COLOR_CHANNEL_COUNT`, while preserving channel `0`.
+- Kept the newer base/detail subtree black-classification logic intact for now. Reverting that wholesale would likely reintroduce the layered coin/orb child-sprite bug it was trying to solve.
+- Read-only check of `Renderer::prepareColorChannelBuffer()` found that the renderer explicitly initializes BLACK but relies on GD's color-action vector for other slots. This makes remapping ordinary objects to WHITE especially risky and reinforces preserving valid channel `0` instead of using WHITE as a catch-all.
+- Did not touch Assistant A's claimed transform/culling/renderer/shader files.
