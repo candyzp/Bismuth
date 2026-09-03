@@ -89,8 +89,9 @@ public:
     // their final vertex transform.
     bool isGPUOwnedSprite(cocos2d::CCSprite* sprite) const;
 
-    // Standalone safe leaf sprites are replaced at the visit/render stage by a
-    // sibling GPU run. Their gameplay/state remains completely owned by GD.
+    // Standalone ownership is queried at the GameObject root visit. A root only
+    // returns true after its COMPLETE safe visual subtree has been accepted by a
+    // standalone GPU batch. Gameplay/state/animation updates remain stock GD.
     bool isGPUOwnedStandaloneSprite(cocos2d::CCSprite* sprite) const;
 
     void setEnabled(bool enabled);
