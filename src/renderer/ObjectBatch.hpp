@@ -117,12 +117,22 @@ public:
     void finishWriting();
 
     inline void bind() {
+        if (!vertexBuffer || !indexBuffer || vao == 0)
+            return;
         glBindVertexArray(vao);
         indexBuffer->bindAs(GL_ELEMENT_ARRAY_BUFFER);
     }
 
-    inline usize getVertexBufferSize() {
+    inline usize getVertexBufferSize() const {
         return vertexCount * sizeof(ObjectVertex);
+    }
+
+    inline usize getIndexCount() const {
+        return indexCount;
+    }
+
+    inline bool isReady() const {
+        return vertexBuffer != nullptr && indexBuffer != nullptr && vao != 0;
     }
 
     inline void setSpriteSheetFilter(SpriteSheet sheet) {
