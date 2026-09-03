@@ -38,22 +38,21 @@ bool DataTexture::init(const char* name, usize texelCount, Type type) {
     pixelType = type == Type::FloatRGBA ? GL_FLOAT : GL_UNSIGNED_BYTE;
     bytesPerTexel = type == Type::FloatRGBA ? sizeof(float) * 4 : sizeof(u8) * 4;
 
-    // DataTexture can be created immediately after Bismuth's VBO/VAO setup.
-    // OpenGL's error flag is sticky, so an unrelated earlier error must not be
-    // blamed on this texture allocation. Drain it before issuing our own calls,
-    // then the error read below belongs specifically to this allocation.
+    // OpenGL's error flag is sticky, so drain unrelated errors before this
+    // allocation. Also preserve the caller's texture binding because this state
+    // layer is side-band to Geometry Dash's stock renderer.
     GLenum staleError = GL_NO_ERROR;
-    bool hadStaleError = false;
-    while ((staleError = glGetError()) != GL_NO_ERROR) {
-        hadStaleError = true;
+    while ((staleError = glGetError()) != GL_NO_ERROR)
         log::warn("Ignoring pre-existing GL error 0x{:X} before allocating {} data texture", (u32)staleError, name);
-    }
+
+    GLint previousActiveTexture = GL_TEXTURE0;
+    GLint previousTexture = 0;
+    glGetIntegerv(GL_ACTIVE_TEXTURE, &previousActiveTexture);
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &previousTexture);
 
     glGenTextures(1, &id);
-    if (!id) {
-        log::error("Failed to create {} data texture object", name);
+    if (!id)
         return false;
-    }
 
     glBindTexture(GL_TEXTURE_2D, id);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
@@ -72,7 +71,10 @@ bool DataTexture::init(const char* name, usize texelCount, Type type) {
         nullptr
     );
 
-    GLenum error = glGetError();
+    const GLenum error = glGetError();
+    glBindTexture(GL_TEXTURE_2D, (GLuint)previousTexture);
+    glActiveTexture((GLenum)previousActiveTexture);
+
     if (error != GL_NO_ERROR) {
         log::error(
             "Failed to allocate {} data texture ({}x{}, {} texels, GL error 0x{:X})",
@@ -87,7 +89,6 @@ bool DataTexture::init(const char* name, usize texelCount, Type type) {
         return false;
     }
 
-    (void)hadStaleError;
     return true;
 }
 
@@ -101,6 +102,11 @@ bool DataTexture::uploadRange(const void* data, usize startTexel, usize texelCou
     if (texelCount == 0)
         return true;
 
+    GLint previousActiveTexture = GL_TEXTURE0;
+    GLint previousTexture = 0;
+    glGetIntegerv(GL_ACTIVE_TEXTURE, &previousActiveTexture);
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &previousTexture);
+
     glBindTexture(GL_TEXTURE_2D, id);
 
     const usize rowWidth = (usize)width;
@@ -109,9 +115,8 @@ bool DataTexture::uploadRange(const void* data, usize startTexel, usize texelCou
     usize remaining = texelCount;
     usize byteOffset = 0;
 
-    // The runtime object-state region is contiguous but may start part-way
-    // through a texture row. Upload the first partial row, the middle full rows,
-    // and the final partial row so each frame needs at most three GL uploads.
+    // A dirty range may begin/end part-way through a texture row. Keep each
+    // logical range to at most three GL uploads without reallocating storage.
     const usize firstX = cursor % rowWidth;
     if (firstX != 0) {
         const usize firstCount = std::min(remaining, rowWidth - firstX);
@@ -164,7 +169,10 @@ bool DataTexture::uploadRange(const void* data, usize startTexel, usize texelCou
         );
     }
 
-    return glGetError() == GL_NO_ERROR;
+    const GLenum error = glGetError();
+    glBindTexture(GL_TEXTURE_2D, (GLuint)previousTexture);
+    glActiveTexture((GLenum)previousActiveTexture);
+    return error == GL_NO_ERROR;
 }
 
 void DataTexture::bind(i32 unit) const {
