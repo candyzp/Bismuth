@@ -22,9 +22,6 @@ struct IOSRendererState {
     std::unique_ptr<ResolvedStateLayer> resolvedState;
     Shader* assistShader = nullptr;
 
-    // Mixed ownership is per sprite, not per stock batch. The Cocos batch stays
-    // alive for animations and complex objects; only exact safe sprite quads are
-    // replaced by these GPU nodes.
     std::vector<Ref<AssistShadowBatch>> gpuBatches;
     std::unordered_set<cocos2d::CCSprite*> ownedSprites;
 
@@ -50,12 +47,32 @@ static std::string byteSizeToString(usize size) {
     return fmt::format("{:.2f} MiB", (double)size / (1024.0 * 1024.0));
 }
 
-// Force Cocos to refresh only the quads involved in the handoff. When the
-// renderer is enabled the CCSprite hook parks those stock quads. When disabled,
-// the exact same call goes through stock Cocos and restores them. This does not
-// touch animation actions, visibility updates, color resolution, or GameObjects.
-static void refreshOwnedStockQuads(Renderer* renderer, IOSRendererState* state) {
-    if (!renderer || !state)
+// Park an owned Cocos atlas slot exactly when ownership is established/reset.
+// The per-frame CCSprite hook then only clears its dirty flag, so safe sprites
+// stop doing CPU matrix expansion AND stop dirtying the stock atlas every frame.
+static void parkOwnedStockQuads(IOSRendererState* state) {
+    if (!state)
+        return;
+
+    for (auto sprite : state->ownedSprites) {
+        if (!sprite)
+            continue;
+
+        auto atlas = sprite->getTextureAtlas();
+        const auto atlasIndex = sprite->getAtlasIndex();
+        if (!atlas || atlasIndex == CCSpriteIndexNotInitialized || atlasIndex >= atlas->getTotalQuads())
+            continue;
+
+        cocos2d::ccV3F_C4B_T2F_Quad parked {};
+        atlas->updateQuad(&parked, atlasIndex);
+        sprite->setDirty(false);
+    }
+}
+
+// enabled must be false before this is called. That makes the CCSprite hook
+// immediately route through stock Cocos and reconstruct the original atlas quad.
+static void restoreOwnedStockQuads(IOSRendererState* state) {
+    if (!state)
         return;
 
     for (auto sprite : state->ownedSprites) {
@@ -82,10 +99,6 @@ bool Renderer::init(PlayLayer* playLayer) {
         return false;
     }
 
-    // Geometry Dash remains authoritative for gameplay and visual state. The
-    // renderer consumes final resolved state only after GD has finished updating
-    // it, then replaces Cocos quad transform/draw work for classifier-safe
-    // sprites. Animated/interactive/unknown objects never enter ownedSprites.
     g_iosStates[this] = std::make_unique<IOSRendererState>();
     auto state = iosState(this);
     colorChannelBuffer = state->colorChannels.get();
@@ -118,9 +131,9 @@ bool Renderer::init(PlayLayer* playLayer) {
                 if (!gpuBatch || !gpuBatch->getStats().ready || gpuBatch->getStats().batchedSprites == 0)
                     continue;
 
-                // Keep the stock batch alive. The CCSprite transform hook parks
-                // only the exact quads owned by this GPU batch, leaving animation
-                // and complex sprite quads in Cocos untouched.
+                // Keep the stock batch alive. Only exact safe sprite atlas slots
+                // are parked; all animated/interactive/unknown sprites continue
+                // through the normal batch and animation lifecycle.
                 parent->addChild(gpuBatch, batch->getZOrder());
                 state->gpuBatches.push_back(gpuBatch);
                 for (auto sprite : gpuBatch->getOwnedSprites()) {
@@ -171,7 +184,7 @@ bool Renderer::init(PlayLayer* playLayer) {
         if (gpuBatch)
             gpuBatch->setVisible(true);
     }
-    refreshOwnedStockQuads(this, state);
+    parkOwnedStockQuads(state);
 
     setVisible(false);
     rendererStartTime = getTime();
@@ -185,9 +198,8 @@ void Renderer::generateBatchNodes() {}
 void Renderer::terminate() {
     auto state = iosState(this);
 
-    // Restore every parked stock quad before destroying ownership metadata.
     enabled = false;
-    refreshOwnedStockQuads(this, state);
+    restoreOwnedStockQuads(state);
 
     if (state) {
         for (auto& gpuBatch : state->gpuBatches) {
@@ -220,10 +232,7 @@ void Renderer::prepareShaderUniforms() {}
 void Renderer::prepareColorChannelBuffer() {}
 void Renderer::generateStaticRenderingBuffer(ObjectSorter&) {}
 
-void Renderer::draw() {
-    // Per-source-batch assist children submit the visible GPU work. Renderer
-    // itself intentionally owns no global draw pass.
-}
+void Renderer::draw() {}
 
 void Renderer::updateDebugText() {
     if (!debugText)
@@ -271,7 +280,7 @@ void Renderer::updateDebugText() {
                 "Static reused: {}/{} | uploads: {} in {} call(s)\n"
                 "GPU assist batches: {} | owned sprites: {} | rejected: {}\n"
                 "Resident verts: {} | GPU draws: {} / frame | indices: {} | ranges: {}\n"
-                "Stock atlas transforms skipped: {}\n"
+                "Stock CPU quad transforms skipped: {}\n"
                 "Framebuffer writes: {}\n"
                 "Animation lifecycle ownership: STOCK GD",
                 ownsPixels ? "GPU SAFE SPRITES + STOCK ANIMATION" : "STOCK GD",
@@ -327,8 +336,6 @@ void Renderer::update(float dt) {
 
     const bool detailedProbe = Mod::get()->getSettingValue<bool>("ios_gpu_debug");
     if (auto state = iosState(this); state && state->resolvedState) {
-        // GPU-owned safe sprites need current GD-resolved state every frame even
-        // with the debug overlay disabled. No animation calculations are copied.
         const bool gpuConsumesResolvedState = enabled && !state->ownedSprites.empty();
         state->resolvedState->update(detailedProbe || gpuConsumesResolvedState);
     }
@@ -360,7 +367,6 @@ Ref<Renderer> Renderer::create(PlayLayer* playLayer) {
 Ref<Renderer> Renderer::get() { return currentRenderer; }
 
 bool Renderer::useOptimizations() {
-    // Never switch iOS to the retired replacement visibility/animation path.
     return false;
 }
 
@@ -373,17 +379,26 @@ bool Renderer::isGPUOwnedSprite(cocos2d::CCSprite* sprite) const {
 }
 
 void Renderer::setEnabled(bool value) {
-    enabled = value;
+    auto state = iosState(this);
 
-    if (auto state = iosState(this)) {
-        for (auto& gpuBatch : state->gpuBatches) {
-            if (gpuBatch)
-                gpuBatch->setVisible(value);
+    if (!value) {
+        enabled = false;
+        if (state) {
+            for (auto& gpuBatch : state->gpuBatches) {
+                if (gpuBatch)
+                    gpuBatch->setVisible(false);
+            }
+            restoreOwnedStockQuads(state);
         }
-
-        // Rebuild only the affected stock atlas quads. enabled=true parks them;
-        // enabled=false restores normal Cocos geometry.
-        refreshOwnedStockQuads(this, state);
+    } else {
+        enabled = true;
+        if (state) {
+            parkOwnedStockQuads(state);
+            for (auto& gpuBatch : state->gpuBatches) {
+                if (gpuBatch)
+                    gpuBatch->setVisible(true);
+            }
+        }
     }
 
     setVisible(false);
@@ -394,7 +409,8 @@ void Renderer::reset() {
     AreaVisualState::reset();
     if (auto state = iosState(this); state && state->resolvedState) {
         state->resolvedState->resync();
-        refreshOwnedStockQuads(this, state);
+        if (enabled)
+            parkOwnedStockQuads(state);
     }
 }
 
