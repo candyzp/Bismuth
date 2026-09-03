@@ -6,6 +6,7 @@
 #include "common.hpp"
 #include "glm/common.hpp"
 #include <Geode/binding/AnimatedGameObject.hpp>
+#include <Geode/binding/EnhancedGameObject.hpp>
 #include <Geode/binding/GameObject.hpp>
 #include <algorithm>
 
@@ -36,7 +37,29 @@ void VisibilityManager::prepareForObject(GameObject* gameObject) {
     allObjects.push_back(object);
     objectLookup[gameObject] = object;
     currentObject = object;
+}
+
+void VisibilityManager::includeCurrentObjectVisualBounds(const glm::vec2& min, const glm::vec2& max) {
+    if (!currentObject)
+        return;
+
+    if (!currentObject->hasBakedVisualBounds) {
+        currentObject->bakedVisualMin = min;
+        currentObject->bakedVisualMax = max;
+        currentObject->hasBakedVisualBounds = true;
+        return;
+    }
+
+    currentObject->bakedVisualMin = glm::min(currentObject->bakedVisualMin, min);
+    currentObject->bakedVisualMax = glm::max(currentObject->bakedVisualMax, max);
+}
+
+void VisibilityManager::finishObject() {
+    if (!currentObject)
+        return;
+
     addObjectToSectionStructure(currentObject);
+    currentObject = nullptr;
 }
 
 void VisibilityManager::addObjectSprite(
@@ -125,9 +148,9 @@ void VisibilityManager::calculateVisibilitiesForCameraView(const CameraView& vie
         }
 
 #ifdef GEODE_IS_IOS
-        // Deliberately keep a wider GPU-side edge band on iOS. This is cheaper
-        // than making the CPU chase every rotated/scaled sprite boundary and it
-        // prevents ordinary fast decoration from being chopped at section edges.
+        // Keep a modest GPU-side edge band for rotated/scaled corners. Large
+        // decoration itself is now indexed by real baked visual bounds instead
+        // of relying on this margin to compensate for anchor-only culling.
         constexpr float IOS_GPU_ASSIST_MARGIN = 72.0f;
         min -= glm::vec2(IOS_GPU_ASSIST_MARGIN);
         max += glm::vec2(IOS_GPU_ASSIST_MARGIN);
@@ -355,9 +378,9 @@ void VisibilityManager::markObjectAsVisible(Object* object) {
     if (!object || !object->gameObject || object->gameObject->m_isInvisible)
         return;
 
-    // Normal section culling and the live 2.2 pass can find the same object in
-    // one frame. A generation marker keeps the intrusive sprite lists valid and
-    // makes duplicate submission essentially free.
+    // One object can now intentionally live in several visual-bound sections.
+    // The generation marker makes those duplicate section references free at
+    // submission time and also protects the intrusive sprite lists.
     if (object->lastVisibleGeneration == visibilityGeneration)
         return;
     object->lastVisibleGeneration = visibilityGeneration;
@@ -371,6 +394,17 @@ void VisibilityManager::markObjectAsVisible(Object* object) {
     // visible. Rendering and transforms still stay entirely in the GPU batch.
     if (!object->isAnimated)
         object->gameObject->activateObject();
+
+    // Some non-AnimatedGameObject classes still use GD's synced animation path.
+    // The stock visibility loop advances it explicitly from total level time,
+    // so mirror that small visual-only tick for the Bismuth-visible set.
+    auto renderer = Renderer::get();
+    auto playLayer = renderer ? renderer->getPlayLayer() : nullptr;
+    if (!object->isAnimated && playLayer && object->gameObject->getHasSyncedAnimation()) {
+        static_cast<EnhancedGameObject*>(object->gameObject)->updateSyncedAnimation(
+            playLayer->m_gameState.m_totalTime, -1
+        );
+    }
 
     for (auto& sprite : object->sprites) {
         // Bismuth's optimized PlayLayer::updateVisibility bypasses GD's normal
@@ -439,10 +473,18 @@ glm::vec2 VisibilityManager::returnObjectStartPosition(Object* object) {
 void VisibilityManager::addObjectToSectionStructure(Object* object) {
     i32 transformId = Renderer::get()->getGroupManager().getTransformCombinationIndexForObject(object->gameObject);
 
-    SectionSet* sectionSet = nullptr;
-
     while (transformId >= objectSectionSetPerTransformGroupId.size())
         objectSectionSetPerTransformGroupId.push_back(SectionSet(returnObjectStartPosition));
 
-    objectSectionSetPerTransformGroupId[transformId].add(object);
+    auto& sectionSet = objectSectionSetPerTransformGroupId[transformId];
+    if (object->hasBakedVisualBounds) {
+        // A tiny pad covers texture filtering/rounding at exact section edges.
+        constexpr float BOUNDS_PAD = 2.0f;
+        sectionSet.addInRect(object, {
+            object->bakedVisualMin - glm::vec2(BOUNDS_PAD),
+            object->bakedVisualMax + glm::vec2(BOUNDS_PAD)
+        });
+    } else {
+        sectionSet.add(object);
+    }
 }
