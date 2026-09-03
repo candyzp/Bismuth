@@ -69,8 +69,9 @@ static void parkOwnedStockQuads(IOSRendererState* state) {
     }
 }
 
-// enabled must be false before this is called. That makes the CCSprite hook
-// immediately route through stock Cocos and reconstruct the original atlas quad.
+// This is ONLY for a manual in-level disable. At that point the PlayLayer,
+// sprites and stock batches are still alive. Renderer destruction must never
+// call this because Cocos may already be tearing those objects down.
 static void restoreOwnedStockQuads(IOSRendererState* state) {
     if (!state)
         return;
@@ -132,8 +133,7 @@ bool Renderer::init(PlayLayer* playLayer) {
                     continue;
 
                 // Keep the stock batch alive. Only exact safe sprite atlas slots
-                // are parked; all animated/interactive/unknown sprites continue
-                // through the normal batch and animation lifecycle.
+                // are parked; animation/interactive/unknown sprites stay stock.
                 parent->addChild(gpuBatch, batch->getZOrder());
                 state->gpuBatches.push_back(gpuBatch);
                 for (auto sprite : gpuBatch->getOwnedSprites()) {
@@ -196,18 +196,24 @@ bool Renderer::init(PlayLayer* playLayer) {
 void Renderer::generateBatchNodes() {}
 
 void Renderer::terminate() {
-    auto state = iosState(this);
-
+    // PlayLayer/CCSprite destruction order is not guaranteed relative to this
+    // node. Drop the global hook target first so any late CCSprite transform goes
+    // straight through stock Cocos instead of consulting half-destroyed state.
+    if (currentRenderer == this)
+        currentRenderer = nullptr;
     enabled = false;
-    restoreOwnedStockQuads(state);
 
+    auto state = iosState(this);
     if (state) {
+        // Do NOT restore atlas quads or remove GPU nodes from their parents here.
+        // On level exit those parent/sprite pointers may already be stale. The
+        // scene is being destroyed anyway, so touching it only creates UAF risk.
         for (auto& gpuBatch : state->gpuBatches) {
             if (gpuBatch)
-                gpuBatch->removeFromParentAndCleanup(true);
+                gpuBatch->setVisible(false);
         }
-        state->gpuBatches.clear();
         state->ownedSprites.clear();
+        state->gpuBatches.clear();
     }
 
     if (shader)
@@ -224,8 +230,7 @@ void Renderer::terminate() {
 
     AreaVisualState::reset();
     g_iosStates.erase(this);
-    if (currentRenderer == this)
-        currentRenderer = nullptr;
+    layer = nullptr;
 }
 
 void Renderer::prepareShaderUniforms() {}
@@ -344,10 +349,13 @@ void Renderer::update(float dt) {
 }
 
 bool Renderer::isColorChannelBlending(i32 channel) {
-    return layer->shouldBlend(channel);
+    return layer && layer->shouldBlend(channel);
 }
 
 CCSpriteBatchNode* Renderer::getSpriteBatchNodeWithLayerId(LayerKey id) {
+    if (!layer || !layer->m_batchNodes)
+        return nullptr;
+
     CCNode* node = layer->parentForZLayer((i32)id.zlayer, id.blending, (i32)id.spriteSheet, false);
     if (!node || layer->m_batchNodes->indexOfObject(node) == UINT_MAX)
         return nullptr;
