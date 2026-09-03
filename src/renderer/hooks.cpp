@@ -42,10 +42,9 @@ class $modify(RendererPlayLayer, PlayLayer) {
 
     void updateVisibility(float dt) {
 #ifdef GEODE_IS_IOS
-        // Hybrid iOS mode: Geometry Dash owns the actual sprite renderer and
-        // therefore keeps its complete visibility, color and animation lifecycle.
-        // Bismuth still exists as a GPU math/state helper, but no longer replaces
-        // the stock visual update path that caused frozen animations and seams.
+        // Never replace GD's visual lifecycle on iOS. Animation activation,
+        // visibility, colors and child state remain stock even while selected
+        // final sprite transforms are drawn by the GPU assist path.
         PlayLayer::updateVisibility(dt);
 #else
         auto renderer = Renderer::get();
@@ -85,9 +84,8 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
 
     void processMoveActions() {
 #ifdef GEODE_IS_IOS
-        // Keep stock object transforms authoritative in hybrid mode. The GPU
-        // helper can observe/pack state, but must not remove CPU-rendered deco
-        // from GD's normal movement lifecycle.
+        // GD resolves all move state. Bismuth reads the final result later; it
+        // does not simulate Move triggers or mutate movement groups.
         GJBaseGameLayer::processMoveActions();
         return;
 #else
@@ -217,8 +215,7 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
         GJBaseGameLayer::optimizeMoveGroups();
 
 #ifdef GEODE_IS_IOS
-        // Do not strip decoration from GD's CPU groups in hybrid mode. Stock GD
-        // owns rendering/animation correctness on iOS now.
+        // Keep GD's movement/group bookkeeping fully intact on iOS.
         return;
 #else
         auto renderer = Renderer::get();
@@ -232,6 +229,49 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
 #endif
     }
 };
+
+#ifdef GEODE_IS_IOS
+#include <Geode/modify/CCSprite.hpp>
+class $modify(RendererOwnedCCSprite, cocos2d::CCSprite) {
+    void updateTransform() {
+        auto renderer = Renderer::get();
+        if (!renderer || !renderer->isGPUOwnedSprite(this)) {
+            cocos2d::CCSprite::updateTransform();
+            return;
+        }
+
+        auto atlas = this->getTextureAtlas();
+        const auto atlasIndex = this->getAtlasIndex();
+
+        // Ownership was admitted only for live batched sprites. If Cocos has
+        // structurally moved this exact sprite since initialization, use stock
+        // transform for this sprite only. This never disables GPU ownership for
+        // the rest of the batch and never changes animation state.
+        if (!atlas || atlasIndex == CCSpriteIndexNotInitialized || atlasIndex >= atlas->getTotalQuads()) {
+            cocos2d::CCSprite::updateTransform();
+            return;
+        }
+
+        // Cocos would normally do CPU matrix expansion here and upload the
+        // transformed quad to its atlas. For an owned sprite, park only that
+        // atlas slot. The real local quad stays persistent in Bismuth's VBO and
+        // the A15 vertex shader applies GD's final position/rotation/scale.
+        cocos2d::ccV3F_C4B_T2F_Quad parked {};
+        atlas->updateQuad(&parked, atlasIndex);
+        this->setDirty(false);
+
+        // Stock CCSprite::updateTransform recursively visits batched child
+        // sprites. Preserve that traversal explicitly so an unowned child still
+        // receives normal Cocos behavior and an owned child parks its own slot.
+        if (auto children = this->getChildren()) {
+            for (auto child : CCArrayExt<cocos2d::CCNode*>(children)) {
+                if (auto sprite = typeinfo_cast<cocos2d::CCSprite*>(child))
+                    sprite->updateTransform();
+            }
+        }
+    }
+};
+#endif
 
 #include <Geode/modify/CCDisplayLinkDirector.hpp>
 class $modify(RendererCCDisplayLinkDirector, CCDisplayLinkDirector) {
