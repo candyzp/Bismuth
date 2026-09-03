@@ -128,7 +128,9 @@ void main() {
 
     // Runtime state shares the static object texture so the ES2 backend does
     // not consume another vertex texture unit. Two contiguous texels per object
-    // are refreshed each frame: move/rotate/opacity and scale.
+    // are refreshed each frame: move/rotate plus scale. The fourth component of
+    // r0 is intentionally ignored until Area Fade is tracked independently;
+    // stock Cocos opacity is not authoritative when Bismuth skips GD culling.
     float runtimeBase = u_runtimeDataOffset + objectIndex * 2.0;
     vec4 r0 = fetchData(u_staticDataTexture, u_staticDataTextureSize, runtimeBase + 0.0);
     vec4 r1 = fetchData(u_staticDataTexture, u_staticDataTextureSize, runtimeBase + 1.0);
@@ -154,7 +156,7 @@ void main() {
     // GD calculates 2.2 Area / enter effects on the CPU, but Bismuth keeps the
     // heavy vertex work here. The position delta is already in world space.
     objectPosition += r0.xy;
-    objectOpacity *= g2.z * r0.w;
+    objectOpacity *= g2.z;
 
     vec2 vertexOffset = a_positionOffset;
     if (hasFlag(objectFlags, 128.0) < 0.5)
