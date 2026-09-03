@@ -6,6 +6,10 @@
 #include <common.hpp>
 #include <unordered_map>
 
+#ifdef GEODE_IS_IOS
+#include "ios/GPUCoverage.hpp"
+#endif
+
 struct CameraView {
     // Bottom-left position of the camera
     glm::vec2 bottomLeft;
@@ -13,6 +17,34 @@ struct CameraView {
     glm::vec2 rightVector;
     // Vector from the bottom-left corner to the top-left corner
     glm::vec2 upVector;
+
+#ifdef GEODE_IS_IOS
+    CameraView(glm::vec2 bottomLeft, glm::vec2 rightVector, glm::vec2 upVector)
+        : bottomLeft(bottomLeft), rightVector(rightVector), upVector(upVector) {
+        // Keep one deterministic GPU-heavy render band on iOS. RendererIOS
+        // applies its original 1.3x expansion after construction, so this is a
+        // fixed pre-expansion rather than a level-density dependent mode.
+        const auto coverage = getIOSGPUCoverage();
+        const glm::vec2 center = this->bottomLeft + (this->rightVector + this->upVector) * 0.5f;
+
+        this->rightVector *= coverage.preViewScale;
+        this->upVector *= coverage.preViewScale;
+        this->bottomLeft = center - (this->rightVector + this->upVector) * 0.5f;
+
+        const float rightLength = glm::length(this->rightVector);
+        const float upLength = glm::length(this->upVector);
+        if (rightLength > 0.001f) {
+            const glm::vec2 dir = this->rightVector / rightLength;
+            this->bottomLeft -= dir * coverage.preEdgeMargin;
+            this->rightVector += dir * coverage.preEdgeMargin * 2.0f;
+        }
+        if (upLength > 0.001f) {
+            const glm::vec2 dir = this->upVector / upLength;
+            this->bottomLeft -= dir * coverage.preEdgeMargin;
+            this->upVector += dir * coverage.preEdgeMargin * 2.0f;
+        }
+    }
+#endif
 };
 
 
