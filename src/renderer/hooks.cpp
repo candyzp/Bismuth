@@ -34,11 +34,12 @@ class $modify(RendererPlayLayer, PlayLayer) {
             if (renderer) {
                 batchLayer->addChild(renderer, -100000);
 
-                // The initial stock reset ran before Renderer existed, so the
-                // optimizeMoveGroups hook intentionally left GD's decoration in
-                // its CPU move arrays. Rebuild those arrays once now that the GPU
-                // renderer owns decoration transforms.
-                this->optimizeMoveGroups();
+                // Do not force optimizeMoveGroups() again while setupHasCompleted
+                // is still unwinding. On iOS some of GD's optimized/static group
+                // arrays are not guaranteed to exist at this point, so the extra
+                // rebuild could call CCArray::count() through a null pointer.
+                // Normal GD lifecycle calls will hit our optimizeMoveGroups hook
+                // later when those arrays are actually ready.
                 renderer->reset();
             }
             return;
@@ -63,6 +64,9 @@ class $modify(RendererPlayLayer, PlayLayer) {
 };
 
 static void removeDecoObjects(CCArray* array) {
+    if (!array)
+        return;
+
     for (u32 i = 0; i < array->count();) {
         auto object = (GameObject*)array->objectAtIndex(i);
         if (object->m_objectType == GameObjectType::Decoration)
@@ -127,9 +131,10 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
 
             auto mainObject = tryGetMainObject(centerId);
             auto staticGroup = getStaticGroup(targetId);
+            const bool hasStaticGroup = staticGroup && staticGroup->count() != 0;
 
             float rotation;
-            if (staticGroup->count() != 0)
+            if (hasStaticGroup)
                 rotation = cmdObj->m_someInterpValue1RelatedOne - cmdObj->m_someInterpValue1RelatedZero;
             else
                 rotation = cmdObj->m_someInterpValue2RelatedOne - cmdObj->m_someInterpValue2RelatedZero;
@@ -145,7 +150,7 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
                     // Accumulate this command's own delta. Using cmdObj here
                     // repeatedly over-counted the current command and made
                     // complex rotating decoration drift farther apart over time.
-                    if (staticGroup->count() != 0)
+                    if (hasStaticGroup)
                         rotation += obj->m_someInterpValue1RelatedOne - obj->m_someInterpValue1RelatedZero;
                     else
                         rotation += obj->m_someInterpValue2RelatedOne - obj->m_someInterpValue2RelatedZero;
@@ -205,10 +210,14 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
         if (!renderer || !renderer->useOptimizations())
             return;
 
-        for (auto array : m_optimizedGroups)
-            removeDecoObjects(array);
-        for (auto array : m_staticGroups)
-            removeDecoObjects(array);
+        if (m_optimizedGroups) {
+            for (auto array : m_optimizedGroups)
+                removeDecoObjects(array);
+        }
+        if (m_staticGroups) {
+            for (auto array : m_staticGroups)
+                removeDecoObjects(array);
+        }
     }
 };
 
