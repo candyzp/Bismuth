@@ -6,6 +6,7 @@
 #include <Geode/binding/GameObject.hpp>
 #include <Geode/binding/PlayLayer.hpp>
 #include <Geode/cocos/sprite_nodes/CCSprite.h>
+#include <unordered_set>
 #include <vector>
 
 class ResolvedStateLayer {
@@ -23,6 +24,13 @@ public:
         usize staticObjects = 0;
         usize dynamicObjects = 0;
         usize safeSprites = 0;
+
+        // Only records actually consumed by the visible GPU path are walked on
+        // the per-frame hot path. Merely-safe-but-stock records stay out of the
+        // poll loop so scaling ownership does not create bookkeeping soup.
+        usize activeGPUObjects = 0;
+        usize activeGPUSprites = 0;
+        usize activeStaticObjects = 0;
 
         usize dirtyTransforms = 0;
         usize dirtyAppearance = 0;
@@ -47,6 +55,11 @@ public:
     bool init(PlayLayer* layer);
     void resync();
     void update(bool detailedProbe);
+
+    // Called once after renderer ownership is resolved. This compiles the exact
+    // object/sprite index lists the GPU consumes so update() never has to scan
+    // thousands of safe-but-unowned records every frame.
+    void setGPUOwnedSprites(const std::unordered_set<cocos2d::CCSprite*>& ownedSprites);
 
     inline const Stats& getStats() const { return stats; }
     inline const std::vector<ShadowCandidate>& getShadowCandidates() const { return shadowCandidates; }
@@ -187,6 +200,9 @@ private:
     std::vector<ShadowCandidate> shadowCandidates;
     std::vector<glm::vec4> objectTexels;
     std::vector<glm::vec4> spriteTexels;
+
+    std::vector<usize> activeObjectIndices;
+    std::vector<usize> activeSpriteIndices;
 
     DataTexture* objectStateTexture = nullptr;
     DataTexture* spriteStateTexture = nullptr;
