@@ -2,9 +2,9 @@ cmake_minimum_required(VERSION 3.21)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Bismuth is now an iOS-only renderer experiment. The desktop renderer was the
-# original architecture; keeping a second platform backend made the new
-# GD-authoritative/GPU-assist design harder to reason about and test.
+# Bismuth is now an iOS-only renderer experiment. The desktop backend has been
+# retired so the GD-authoritative/GPU-assist architecture has one platform and
+# one set of rendering assumptions to maintain.
 if (NOT ("${CMAKE_SYSTEM_NAME}" STREQUAL "iOS" OR IOS))
     message(FATAL_ERROR "Bismuth now targets iOS only")
 endif()
@@ -22,16 +22,6 @@ if (DEFINED ENV{CMAKE_CXX_COMPILER})
 endif()
 
 file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS src/*.cpp)
-
-# Keep only the OpenGL ES 2 implementations. These desktop source files remain
-# in history for reference, but are no longer part of the supported product.
-list(REMOVE_ITEM SOURCES
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/renderer/Buffer.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/renderer/Shader.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/renderer/Renderer.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/renderer/DifferenceMode.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/renderer/OverdrawView.cpp"
-)
 
 add_library(${PROJECT_NAME} SHARED ${SOURCES})
 set(CMAKE_BUILD_TYPE Release)

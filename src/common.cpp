@@ -10,21 +10,9 @@ $on_mod(Loaded) {
     modStartTime = std::chrono::high_resolution_clock::now();
 }
 
-using ProcGlObjectLabel = void(*)(GLenum, GLuint, GLsizei, const char*);
-
-ProcGlObjectLabel glObjectLabelProc = nullptr;
-
-void glObjectLabel(GLenum id, GLuint name, GLsizei length, const char* label) {
-    #ifdef GEODE_IS_WINDOWS
-    if (!glObjectLabelProc) {
-        HMODULE mod = LoadLibraryA("opengl32.dll");
-        if (mod)
-            glObjectLabelProc = (ProcGlObjectLabel)GetProcAddress(mod, "glObjectLabel");
-    }
-    if (glObjectLabelProc)
-        glObjectLabelProc(id, name, length, label);
-    #endif
-}
+// OpenGL ES 2 does not expose the desktop debug-label entry point used by the
+// original renderer. Keep the shared helper as a harmless no-op on iOS.
+void glObjectLabel(GLenum, GLuint, GLsizei, const char*) {}
 
 static float fullscreenQuad[] = {
     -1.0, -1.0,

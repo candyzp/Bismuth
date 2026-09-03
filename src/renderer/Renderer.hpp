@@ -6,11 +6,9 @@
 #include "ObjectBatch.hpp"
 #include "ObjectSorter.hpp"
 #include "ObjectUtils.hpp"
-#include "OverdrawView.hpp"
 #include "Shader.hpp"
 #include <unordered_map>
 
-#include "DifferenceMode.hpp"
 #include "GroupManager.hpp"
 #include "ObjectBatchNode.hpp"
 #include "../../resources/shaders/shared.h"
@@ -20,8 +18,7 @@ using namespace geode;
 class Renderer : public cocos2d::CCNode {
 private:
     inline Renderer()
-        : objectBatch(*this), groupManager(*this), differenceMode(*this),
-          overdrawView(*this) {}
+        : objectBatch(*this), groupManager(*this) {}
     ~Renderer() override;
 
     bool init(PlayLayer* layer);
@@ -71,18 +68,8 @@ public:
 
     inline bool isEnabled() { return enabled; }
 
-    inline DifferenceMode* getDifferenceMode() {
-        if (!differenceModeEnabled) return nullptr;
-        return &differenceMode;
-    }
-
     inline void toggleDebugText() {
         debugTextEnabled = !debugTextEnabled;
-    }
-
-    inline bool isDifferenceModeEnabled() const { return differenceModeEnabled; }
-    inline void setDifferenceModeEnabled(bool enabled) {
-        differenceModeEnabled = enabled;
     }
 
     inline bool canEnableDisableIngame() const { return ingameEnableDisable; }
@@ -152,10 +139,6 @@ private:
 
     RendererUniformBuffer uniforms;
     Buffer* uniformBuffer = nullptr;
-
-    bool differenceModeEnabled = false;
-    DifferenceMode differenceMode;
-    OverdrawView overdrawView;
 
     float gameTimer = 0.0;
 
