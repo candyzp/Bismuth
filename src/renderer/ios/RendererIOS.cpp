@@ -55,8 +55,15 @@ struct IOSRendererState {
     usize standaloneObjectCandidates = 0;
     usize standaloneObjectEligible = 0;
     usize standaloneMixedRejected = 0;
+    usize standaloneDuplicateRejected = 0;
+    usize standaloneSharedRejected = 0;
     usize standaloneExternalRejected = 0;
-    usize standaloneOtherRejected = 0;
+    usize standaloneExternalGlowObjects = 0;
+    usize standaloneExternalColorObjects = 0;
+    usize standaloneExternalOtherObjects = 0;
+    usize standaloneInvalidVisualRejected = 0;
+    usize standaloneMissingParentRejected = 0;
+    usize standaloneRootBatchRejected = 0;
     usize standaloneParentCount = 0;
     usize standaloneRunCount = 0;
 
@@ -232,8 +239,11 @@ bool Renderer::init(PlayLayer* playLayer) {
 
             std::unordered_set<cocos2d::CCSpriteBatchNode*> candidateBatches;
             std::unordered_map<GameObject*, std::vector<ResolvedStateLayer::ShadowCandidate>> candidatesByObject;
+            std::unordered_map<cocos2d::CCSprite*, GameObject*> firstSpriteOwner;
+            std::unordered_set<GameObject*> sharedVisualObjects;
             candidateBatches.reserve(64);
             candidatesByObject.reserve(state->resolvedState->getStats().safeObjects);
+            firstSpriteOwner.reserve(candidates.size());
 
             // First establish the real render home of every safe visual sprite.
             // This is also used to prove that a standalone object is complete
@@ -245,6 +255,12 @@ bool Renderer::init(PlayLayer* playLayer) {
                     continue;
 
                 candidatesByObject[object].push_back(candidate);
+
+                const auto [ownerIt, insertedOwner] = firstSpriteOwner.emplace(sprite, object);
+                if (!insertedOwner && ownerIt->second != object) {
+                    sharedVisualObjects.insert(object);
+                    sharedVisualObjects.insert(ownerIt->second);
+                }
 
                 if (auto batch = sprite->getBatchNode()) {
                     ++state->candidatesWithBatch;
@@ -268,22 +284,41 @@ bool Renderer::init(PlayLayer* playLayer) {
                 bool anyStandalone = false;
                 bool anyAtlas = false;
                 bool externalVisual = false;
+                bool externalGlow = false;
+                bool externalColor = false;
+                bool externalOther = false;
                 bool invalidVisual = false;
+                bool duplicateVisual = false;
+                std::unordered_set<cocos2d::CCSprite*> objectSprites;
+                objectSprites.reserve(objectCandidates.size());
 
                 for (const auto& candidate : objectCandidates) {
                     auto sprite = candidate.sprite;
-                    if (!sprite || !sprite->getTexture()) {
+                    if (!sprite) {
                         invalidVisual = true;
-                        break;
+                        continue;
                     }
+
+                    if (!objectSprites.insert(sprite).second)
+                        duplicateVisual = true;
 
                     if (sprite->getBatchNode())
                         anyAtlas = true;
                     else
                         anyStandalone = true;
 
-                    if (!isDescendantOf(sprite, object))
+                    if (!sprite->getTexture())
+                        invalidVisual = true;
+
+                    if (!isDescendantOf(sprite, object)) {
                         externalVisual = true;
+                        if (sprite == object->m_glowSprite)
+                            externalGlow = true;
+                        else if (sprite == object->m_colorSprite)
+                            externalColor = true;
+                        else
+                            externalOther = true;
+                    }
                 }
 
                 if (!anyStandalone)
@@ -299,16 +334,43 @@ bool Renderer::init(PlayLayer* playLayer) {
                     continue;
                 }
 
-                // Color/glow sprites parented outside the GameObject cannot be
-                // hidden by skipping the root visit, so leave the object stock.
+                if (duplicateVisual) {
+                    ++state->standaloneDuplicateRejected;
+                    continue;
+                }
+
+                if (sharedVisualObjects.contains(object)) {
+                    ++state->standaloneSharedRejected;
+                    continue;
+                }
+
+                // External color/glow sprites are legitimate GD arrangements,
+                // but skipping only the GameObject root cannot suppress them.
+                // Keep them stock for now and report exactly what kind they are.
                 if (externalVisual) {
                     ++state->standaloneExternalRejected;
+                    if (externalGlow)
+                        ++state->standaloneExternalGlowObjects;
+                    if (externalColor)
+                        ++state->standaloneExternalColorObjects;
+                    if (externalOther)
+                        ++state->standaloneExternalOtherObjects;
+                    continue;
+                }
+
+                if (invalidVisual) {
+                    ++state->standaloneInvalidVisualRejected;
                     continue;
                 }
 
                 auto parent = object->getParent();
-                if (invalidVisual || !parent || object->getBatchNode()) {
-                    ++state->standaloneOtherRejected;
+                if (!parent) {
+                    ++state->standaloneMissingParentRejected;
+                    continue;
+                }
+
+                if (object->getBatchNode()) {
+                    ++state->standaloneRootBatchRejected;
                     continue;
                 }
 
@@ -397,15 +459,22 @@ bool Renderer::init(PlayLayer* playLayer) {
             state->resolvedState->setGPUOwnedSprites(state->ownedSprites);
 
             log::info(
-                "Bismuth iOS ownership: {} sprite candidates ({} atlas / {} standalone); standalone objects {} candidates, {} eligible, {} mixed reject, {} external reject, {} other reject; {} atlas GPU nodes + {} standalone runs; {} roots / {} standalone visual sprites owned",
+                "Bismuth iOS ownership: {} sprite candidates ({} atlas / {} standalone); standalone {} candidates / {} eligible; rejects mixed {} / duplicate {} / shared {} / external {} (glow {} / color {} / other {}) / invalid {} / no-parent {} / root-batched {}; {} atlas GPU nodes + {} standalone runs; {} roots / {} standalone visual sprites owned",
                 state->gpuCandidateSprites,
                 state->candidatesWithBatch,
                 state->candidatesWithoutBatch,
                 state->standaloneObjectCandidates,
                 state->standaloneObjectEligible,
                 state->standaloneMixedRejected,
+                state->standaloneDuplicateRejected,
+                state->standaloneSharedRejected,
                 state->standaloneExternalRejected,
-                state->standaloneOtherRejected,
+                state->standaloneExternalGlowObjects,
+                state->standaloneExternalColorObjects,
+                state->standaloneExternalOtherObjects,
+                state->standaloneInvalidVisualRejected,
+                state->standaloneMissingParentRejected,
+                state->standaloneRootBatchRejected,
                 state->gpuBatches.size(),
                 state->standaloneBatches.size(),
                 state->standaloneOwnedRoots.size(),
@@ -569,8 +638,10 @@ void Renderer::updateDebugText() {
                 "Resolved GPU state: {} | transform shader: {}\n"
                 "Safe objects: {} ({} static / {} dynamic)\n"
                 "Stock animation/complex: {} | safe sprite records: {}\n"
+                "Collection safety: {} unsafe object(s) | {} non-sprite child | {} duplicate | {} invalid | init retained {} obj / {} sprites | revalidate {}\n"
                 "Discovery: {} sprites | {} atlas | {} standalone\n"
-                "Standalone objects: {} candidates | {} eligible | reject {} mixed / {} external / {} other\n"
+                "Standalone objects: {} candidates | {} eligible\n"
+                "Reject: {} mixed | {} duplicate | {} shared | {} external [glow {} / color {} / other {}] | {} invalid | {} no-parent | {} root-batched\n"
                 "GPU nodes: {} atlas + {} standalone runs | owned roots: {} | visual sprites: {} ({} atlas + {} standalone)\n"
                 "Active GPU state: {} objects | {} sprites\n"
                 "Dirty: {} transform | {} appearance | {} visibility | {} UV\n"
@@ -588,14 +659,28 @@ void Renderer::updateDebugText() {
                 stats.dynamicObjects,
                 stats.stockObjects,
                 stats.safeSprites,
+                stats.unsafeCollectionObjects,
+                stats.invalidChildNodes,
+                stats.duplicateSpriteRecords,
+                stats.invalidSpriteRecords,
+                stats.retainedInitObjects,
+                stats.retainedInitSprites,
+                stats.initRevalidationFailures,
                 state ? state->gpuCandidateSprites : 0,
                 state ? state->candidatesWithBatch : 0,
                 state ? state->candidatesWithoutBatch : 0,
                 state ? state->standaloneObjectCandidates : 0,
                 state ? state->standaloneObjectEligible : 0,
                 state ? state->standaloneMixedRejected : 0,
+                state ? state->standaloneDuplicateRejected : 0,
+                state ? state->standaloneSharedRejected : 0,
                 state ? state->standaloneExternalRejected : 0,
-                state ? state->standaloneOtherRejected : 0,
+                state ? state->standaloneExternalGlowObjects : 0,
+                state ? state->standaloneExternalColorObjects : 0,
+                state ? state->standaloneExternalOtherObjects : 0,
+                state ? state->standaloneInvalidVisualRejected : 0,
+                state ? state->standaloneMissingParentRejected : 0,
+                state ? state->standaloneRootBatchRejected : 0,
                 atlasBatchCount,
                 standaloneBatchCount,
                 standaloneRoots,

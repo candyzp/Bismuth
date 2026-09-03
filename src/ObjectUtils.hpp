@@ -77,6 +77,11 @@ struct UnpackedSprite {
 
 using ReceiveUnpackedSpriteFunc = std::function<void(const UnpackedSprite&)>;
 
+struct SpriteUnpackStats {
+    usize nonSpriteChildren = 0;
+    usize duplicateSprites = 0;
+};
+
 class ObjectUtils {
 public:
     static inline SpriteSheet getSpritesheetOfObject(GameObject* object, SpriteType type) {
@@ -201,15 +206,23 @@ public:
         This function unpacks GameObject and turns them into
         individual sprites and calls func for every sprite
         in draw order.
+
+        Returns false if the visual tree contains an unsupported non-sprite
+        child or duplicate sprite. On failure, func is not called at all.
     */
-    static void unpackObjectIntoSprites(GameObject* object, ReceiveUnpackedSpriteFunc func);
+    static bool unpackObjectIntoSprites(
+        GameObject* object,
+        ReceiveUnpackedSpriteFunc func,
+        SpriteUnpackStats* stats = nullptr
+    );
 
 private:
-    static void unpackSpriteRecursively(
+    static bool unpackSpriteRecursively(
         GameObject* object,
         cocos2d::CCSprite* sprite,
         cocos2d::CCAffineTransform transform,
         ReceiveUnpackedSpriteFunc func,
+        SpriteUnpackStats* stats,
         SpriteType type = SpriteType::BASE
     );
 };

@@ -25,6 +25,16 @@ public:
         usize dynamicObjects = 0;
         usize safeSprites = 0;
 
+        // Collection/lifetime safety diagnostics. Unsupported visual trees fail
+        // closed before any GPU record is committed.
+        usize unsafeCollectionObjects = 0;
+        usize invalidChildNodes = 0;
+        usize duplicateSpriteRecords = 0;
+        usize invalidSpriteRecords = 0;
+        usize retainedInitObjects = 0;
+        usize retainedInitSprites = 0;
+        usize initRevalidationFailures = 0;
+
         // Only records actually consumed by the visible GPU path are walked on
         // the per-frame hot path. Merely-safe-but-stock records stay out of the
         // poll loop so scaling ownership does not create bookkeeping soup.
@@ -173,7 +183,18 @@ private:
         SpriteState state;
     };
 
-    SafetyClass classifyObject(GameObject* object, std::vector<cocos2d::CCSprite*>& sprites) const;
+    struct CollectionDiagnostics {
+        usize invalidChildNodes = 0;
+        usize duplicateSprites = 0;
+        usize invalidSprites = 0;
+        bool unsafeCollection = false;
+    };
+
+    SafetyClass classifyObject(
+        GameObject* object,
+        std::vector<cocos2d::CCSprite*>& sprites,
+        CollectionDiagnostics& diagnostics
+    ) const;
     bool isShadowValidationCandidate(
         GameObject* object,
         SafetyClass safety,

@@ -4,6 +4,7 @@
 #include "../../ObjectUtils.hpp"
 
 #include <Geode/binding/CheckpointGameObject.hpp>
+#include <Geode/utils/cocos.hpp>
 #include <algorithm>
 #include <cmath>
 #include <vector>
@@ -90,7 +91,8 @@ void ResolvedStateLayer::destroyTextures() {
 
 ResolvedStateLayer::SafetyClass ResolvedStateLayer::classifyObject(
     GameObject* object,
-    std::vector<cocos2d::CCSprite*>& outSprites
+    std::vector<cocos2d::CCSprite*>& outSprites,
+    CollectionDiagnostics& diagnostics
 ) const {
     if (!object || object->isTrigger() || object->m_isHide || object->m_isInvisible)
         return SafetyClass::StockOnly;
@@ -110,15 +112,30 @@ ResolvedStateLayer::SafetyClass ResolvedStateLayer::classifyObject(
         return SafetyClass::StockOnly;
 
     bool invalidSprite = false;
-    ObjectUtils::unpackObjectIntoSprites(object, [&](const UnpackedSprite& unpacked) {
-        if (!unpacked.sprite || !unpacked.sprite->getTexture()) {
-            invalidSprite = true;
-            return;
-        }
-        outSprites.push_back(unpacked.sprite);
-    });
+    SpriteUnpackStats unpackStats;
+    const bool collectionSafe = ObjectUtils::unpackObjectIntoSprites(
+        object,
+        [&](const UnpackedSprite& unpacked) {
+            if (!unpacked.sprite || !unpacked.sprite->getTexture()) {
+                invalidSprite = true;
+                ++diagnostics.invalidSprites;
+                return;
+            }
+            outSprites.push_back(unpacked.sprite);
+        },
+        &unpackStats
+    );
 
-    if (invalidSprite || outSprites.empty() || outSprites.size() > MAX_SAFE_SPRITES_PER_OBJECT)
+    diagnostics.invalidChildNodes += unpackStats.nonSpriteChildren;
+    diagnostics.duplicateSprites += unpackStats.duplicateSprites;
+
+    if (!collectionSafe || invalidSprite) {
+        outSprites.clear();
+        diagnostics.unsafeCollection = true;
+        return SafetyClass::StockOnly;
+    }
+
+    if (outSprites.empty() || outSprites.size() > MAX_SAFE_SPRITES_PER_OBJECT)
         return SafetyClass::StockOnly;
 
     // DynamicSafe is still GD-owned state. It only means the final transform is
@@ -284,6 +301,13 @@ bool ResolvedStateLayer::init(PlayLayer* playLayer) {
     if (!layer || !layer->m_objects)
         return false;
 
+    // Retain accepted records only across initial collection -> texture creation
+    // -> resync. This closes the init lifetime window without pinning visual parts
+    // for the whole level or interfering with normal GD ownership afterward.
+    std::vector<Ref<GameObject>> initObjectRetains;
+    std::vector<Ref<cocos2d::CCSprite>> initSpriteRetains;
+    initObjectRetains.reserve(layer->m_objects->count());
+
     for (auto object : CCArrayExt<GameObject*>(layer->m_objects)) {
         if (!object || object == layer->m_anticheatSpike || object->isTrigger() || object->m_isHide)
             continue;
@@ -291,18 +315,52 @@ bool ResolvedStateLayer::init(PlayLayer* playLayer) {
         ++stats.renderableObjects;
 
         std::vector<cocos2d::CCSprite*> objectSprites;
-        const SafetyClass safety = classifyObject(object, objectSprites);
+        CollectionDiagnostics diagnostics;
+        const SafetyClass safety = classifyObject(object, objectSprites, diagnostics);
+
+        stats.invalidChildNodes += diagnostics.invalidChildNodes;
+        stats.duplicateSpriteRecords += diagnostics.duplicateSprites;
+        stats.invalidSpriteRecords += diagnostics.invalidSprites;
+        if (diagnostics.unsafeCollection)
+            ++stats.unsafeCollectionObjects;
+
         if (safety == SafetyClass::StockOnly) {
             ++stats.stockObjects;
             continue;
         }
+
+        // Convert the freshly type-checked raw pointers into strong refs before
+        // committing any state records. Revalidate the texture while retained.
+        std::vector<Ref<cocos2d::CCSprite>> objectSpriteRetains;
+        objectSpriteRetains.reserve(objectSprites.size());
+        bool revalidationFailed = false;
+        for (auto sprite : objectSprites) {
+            if (!sprite) {
+                revalidationFailed = true;
+                break;
+            }
+
+            objectSpriteRetains.emplace_back(sprite);
+            auto retainedSprite = objectSpriteRetains.back().data();
+            if (!retainedSprite || !retainedSprite->getTexture()) {
+                revalidationFailed = true;
+                break;
+            }
+        }
+
+        if (revalidationFailed || objectSpriteRetains.size() != objectSprites.size()) {
+            ++stats.initRevalidationFailures;
+            ++stats.stockObjects;
+            continue;
+        }
+
+        initObjectRetains.emplace_back(object);
 
         ObjectRecord record;
         record.object = object;
         record.safety = safety;
         record.firstSprite = sprites.size();
         record.spriteCount = objectSprites.size();
-        record.state = captureObjectState(object);
 
         const usize objectIndex = objects.size();
         const usize firstSpriteIndex = sprites.size();
@@ -314,12 +372,15 @@ bool ResolvedStateLayer::init(PlayLayer* playLayer) {
         else
             ++stats.dynamicObjects;
 
-        for (auto sprite : objectSprites) {
+        for (auto& spriteRef : objectSpriteRetains) {
+            auto sprite = spriteRef.data();
             SpriteRecord spriteRecord;
             spriteRecord.sprite = sprite;
             spriteRecord.objectIndex = objectIndex;
-            spriteRecord.state = captureSpriteState(sprite);
+            // Initial state is captured once, inside resync(), while every
+            // accepted object and sprite is still strongly retained.
             sprites.push_back(spriteRecord);
+            initSpriteRetains.emplace_back(sprite);
             ++stats.safeSprites;
         }
 
@@ -333,10 +394,17 @@ bool ResolvedStateLayer::init(PlayLayer* playLayer) {
         }
     }
 
+    stats.retainedInitObjects = initObjectRetains.size();
+    stats.retainedInitSprites = initSpriteRetains.size();
+
     if (objects.empty() || sprites.empty()) {
         log::info(
-            "Bismuth iOS state layer: no conservative GPU-safe objects ({} stock)",
-            stats.stockObjects
+            "Bismuth iOS state layer: no conservative GPU-safe objects ({} stock); collection rejected {} object(s), {} non-sprite child node(s), {} duplicate sprite(s), {} invalid sprite record(s)",
+            stats.stockObjects,
+            stats.unsafeCollectionObjects,
+            stats.invalidChildNodes,
+            stats.duplicateSpriteRecords,
+            stats.invalidSpriteRecords
         );
         return true;
     }
@@ -361,15 +429,25 @@ bool ResolvedStateLayer::init(PlayLayer* playLayer) {
         return false;
     }
 
+    // This is the first state capture for accepted records. initObjectRetains and
+    // initSpriteRetains remain alive until init() returns, so resync cannot see a
+    // sprite that disappeared after classification.
     resync();
 
     log::info(
-        "Bismuth iOS state layer: {} safe objects ({} static, {} dynamic), {} stock, {} sprite records",
+        "Bismuth iOS state layer: {} safe objects ({} static, {} dynamic), {} stock, {} sprite records; collection rejected {} object(s) / {} non-sprite child node(s) / {} duplicate sprite(s) / {} invalid sprite record(s); init retained {} object(s) / {} sprite(s), {} revalidation failure(s)",
         stats.safeObjects,
         stats.staticObjects,
         stats.dynamicObjects,
         stats.stockObjects,
-        stats.safeSprites
+        stats.safeSprites,
+        stats.unsafeCollectionObjects,
+        stats.invalidChildNodes,
+        stats.duplicateSpriteRecords,
+        stats.invalidSpriteRecords,
+        stats.retainedInitObjects,
+        stats.retainedInitSprites,
+        stats.initRevalidationFailures
     );
     return true;
 }
