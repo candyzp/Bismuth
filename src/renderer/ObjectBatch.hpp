@@ -180,6 +180,10 @@ public:
         u32 vertexBegin = 0;
         cocos2d::CCAffineTransform bakedTransform {};
         cocos2d::CCAffineTransform bakedObjectTransform {};
+        // True when this sprite was actually inside the GameObject's child tree
+        // at bake time. If animation later detaches/replaces it, the old GPU quad
+        // must be hidden instead of continuing to draw as a stale ghost part.
+        bool bakedInObjectTree = false;
         std::array<ObjectVertex, VERTICIES_PER_QUAD> vertices {};
     };
 
