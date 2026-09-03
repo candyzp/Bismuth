@@ -9,10 +9,11 @@ class $modify(RendererStandaloneOwnedCCSprite, cocos2d::CCSprite) {
     void visit() {
         auto renderer = Renderer::get();
         if (renderer && renderer->isGPUOwnedStandaloneSprite(this)) {
-            // Standalone ownership is only granted to leaf sprites. Their GD
-            // state/actions were already updated; skipping visit removes Cocos'
-            // per-sprite matrix setup, shader setup and draw call while the GPU
-            // sibling run draws the same resolved sprite in the same parent slot.
+            // This returns true only for a GameObject root whose COMPLETE safe
+            // visual subtree was accepted by a standalone GPU batch. GD already
+            // ran gameplay/state/animation updates; skipping the root visit now
+            // removes the stock subtree render traversal without touching those
+            // lifecycle systems.
             return;
         }
 
