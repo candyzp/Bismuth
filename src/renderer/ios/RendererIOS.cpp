@@ -25,6 +25,16 @@ struct IOSRendererState {
     std::vector<Ref<AssistShadowBatch>> gpuBatches;
     std::unordered_set<cocos2d::CCSprite*> ownedSprites;
 
+    // Discovery statistics are intentionally separate from the safety
+    // classifier. A sprite may be completely safe for GPU math but not currently
+    // live inside a CCSpriteBatchNode. This tells us where the remaining CPU work
+    // actually lives instead of silently treating it as a renderer rejection.
+    usize gpuCandidateSprites = 0;
+    usize candidatesWithBatch = 0;
+    usize candidatesWithoutBatch = 0;
+    usize candidateBatchNodes = 0;
+    usize batchesWithoutParent = 0;
+
     ~IOSRendererState() {
         if (assistShader)
             Shader::destroy(assistShader);
@@ -114,15 +124,44 @@ bool Renderer::init(PlayLayer* playLayer) {
         state->assistShader = Shader::create("assist_ios.vert", "assist_ios.frag");
         if (!state->assistShader) {
             log::warn("Bismuth iOS assist shader unavailable");
-        } else if (layer->m_batchNodes) {
-            for (auto node : CCArrayExt<cocos2d::CCNode*>(layer->m_batchNodes)) {
-                auto batch = static_cast<cocos2d::CCSpriteBatchNode*>(node);
+        } else {
+            // Do not discover ownership from PlayLayer::m_batchNodes anymore.
+            // The authoritative relationship is already on every live safe
+            // CCSprite. Bucket by sprite->getBatchNode() so nested/alternate GD
+            // batch nodes are not invisible to Bismuth simply because they are
+            // absent from that one PlayLayer array.
+            const auto candidates = state->resolvedState->getGPUCandidates();
+            state->gpuCandidateSprites = candidates.size();
+
+            std::unordered_set<cocos2d::CCSpriteBatchNode*> candidateBatches;
+            candidateBatches.reserve(64);
+
+            for (const auto& candidate : candidates) {
+                auto sprite = candidate.sprite;
+                if (!sprite)
+                    continue;
+
+                auto batch = sprite->getBatchNode();
+                if (!batch) {
+                    ++state->candidatesWithoutBatch;
+                    continue;
+                }
+
+                ++state->candidatesWithBatch;
+                candidateBatches.insert(batch);
+            }
+
+            state->candidateBatchNodes = candidateBatches.size();
+
+            for (auto batch : candidateBatches) {
                 if (!batch)
                     continue;
 
                 auto parent = batch->getParent();
-                if (!parent)
+                if (!parent) {
+                    ++state->batchesWithoutParent;
                     continue;
+                }
 
                 auto gpuBatch = AssistShadowBatch::create(
                     state->resolvedState.get(),
@@ -143,7 +182,11 @@ bool Renderer::init(PlayLayer* playLayer) {
             }
 
             log::info(
-                "Bismuth iOS mixed ownership: {} GPU batch node(s), {} individually owned sprite(s)",
+                "Bismuth iOS direct discovery: {} candidates, {} batched, {} unbatched, {} unique batch nodes, {} GPU nodes, {} owned sprites",
+                state->gpuCandidateSprites,
+                state->candidatesWithBatch,
+                state->candidatesWithoutBatch,
+                state->candidateBatchNodes,
                 state->gpuBatches.size(),
                 state->ownedSprites.size()
             );
@@ -189,7 +232,7 @@ bool Renderer::init(PlayLayer* playLayer) {
     setVisible(false);
     rendererStartTime = getTime();
 
-    log::info("Bismuth iOS initialized: per-sprite GPU math ownership + stock animation lifecycle");
+    log::info("Bismuth iOS initialized: direct per-sprite GPU batch discovery + stock animation lifecycle");
     return true;
 }
 
@@ -281,9 +324,10 @@ void Renderer::updateDebugText() {
                 "Resolved GPU state: {} | transform shader: {}\n"
                 "Safe objects: {} ({} static / {} dynamic)\n"
                 "Stock animation/complex objects: {} | safe sprite records: {}\n"
+                "Discovery: {} candidates | {} batched | {} no-batch | {} batch nodes\n"
                 "Dirty: {} transform | {} appearance | {} visibility | {} UV\n"
                 "Static reused: {}/{} | uploads: {} in {} call(s)\n"
-                "GPU assist batches: {} | owned sprites: {} | rejected: {}\n"
+                "GPU assist batches: {} | owned sprites: {} | rejected: {} | parentless batches: {}\n"
                 "Resident verts: {} | GPU draws: {} / frame | indices: {} | ranges: {}\n"
                 "Stock CPU quad transforms skipped: {}\n"
                 "Framebuffer writes: {}\n"
@@ -297,6 +341,10 @@ void Renderer::updateDebugText() {
                 stats.dynamicObjects,
                 stats.stockObjects,
                 stats.safeSprites,
+                state ? state->gpuCandidateSprites : 0,
+                state ? state->candidatesWithBatch : 0,
+                state ? state->candidatesWithoutBatch : 0,
+                state ? state->candidateBatchNodes : 0,
                 stats.dirtyTransforms,
                 stats.dirtyAppearance,
                 stats.dirtyVisibility,
@@ -308,6 +356,7 @@ void Renderer::updateDebugText() {
                 gpuBatchCount,
                 ownedSprites,
                 rejectedSprites,
+                state ? state->batchesWithoutParent : 0,
                 residentVertices,
                 gpuDraws,
                 gpuIndices,
