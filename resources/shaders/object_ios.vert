@@ -32,6 +32,8 @@ const float PI = 3.1415926535897932384626433832795;
 const float COLOR_CHANNEL_BG = 1000.0;
 const float COLOR_CHANNEL_LBG = 1007.0;
 const float SPRITE_SHEET_GLOW = 5.0;
+const float COLOR_DETAIL_FLAG = 4096.0;
+const float COLOR_DIRECT_FLAG = 8192.0;
 
 vec4 fetchData(sampler2D textureSampler, vec2 textureSize, float index) {
     float x = mod(index, textureSize.x);
@@ -50,6 +52,16 @@ vec2 rotatePointAroundOrigin(vec2 point, float angleInRadians) {
         point.x * rotCos - point.y * rotSin,
         point.x * rotSin + point.y * rotCos
     );
+}
+
+vec3 unpackRGB24(float packedColor) {
+    float packed = floor(packedColor + 0.5);
+    float r = mod(packed, 256.0);
+    packed = floor(packed / 256.0);
+    float g = mod(packed, 256.0);
+    packed = floor(packed / 256.0);
+    float b = mod(packed, 256.0);
+    return vec3(r, g, b) / 255.0;
 }
 
 vec3 rgb2hsv(vec3 c) {
@@ -119,12 +131,16 @@ vec2 calculateInvisibleBlockOpacity(vec2 objectPosition, float fadeMargin) {
 
 void main() {
     float objectIndex = floor(a_srbIndex + 0.5);
-    float objectBase = objectIndex * 5.0;
+    float objectBase = objectIndex * 6.0;
     vec4 s0 = fetchData(u_staticDataTexture, u_staticDataTextureSize, objectBase + 0.0);
     vec4 s1 = fetchData(u_staticDataTexture, u_staticDataTextureSize, objectBase + 1.0);
     vec4 s2 = fetchData(u_staticDataTexture, u_staticDataTextureSize, objectBase + 2.0);
     vec4 s3 = fetchData(u_staticDataTexture, u_staticDataTextureSize, objectBase + 3.0);
     vec4 s4 = fetchData(u_staticDataTexture, u_staticDataTextureSize, objectBase + 4.0);
+    // s5.xy are exact 24-bit packed base/detail RGB values captured from GD's
+    // fully initialized sprites. They are used only for legacy/direct color
+    // mode, so normal channel-driven objects keep the existing fast path.
+    vec4 s5 = fetchData(u_staticDataTexture, u_staticDataTextureSize, objectBase + 5.0);
 
     // Runtime state shares the static object texture so the ES2 backend does
     // not consume another vertex texture unit. Three contiguous texels per
@@ -188,9 +204,17 @@ void main() {
     gl_Position = u_mvp * vec4(objectPosition + vertexOffset, 0.0, 1.0);
     t_texCoord = a_texCoord;
 
-    float detailFlag = step(4096.0, a_colorChannel);
-    float colorChannel = floor(a_colorChannel - detailFlag * 4096.0 + 0.5);
-    t_color = fetchData(u_colorDataTexture, u_colorDataTextureSize, colorChannel);
+    float encodedColor = floor(a_colorChannel + 0.5);
+    float detailFlag = hasFlag(encodedColor, COLOR_DETAIL_FLAG);
+    float directColorFlag = hasFlag(encodedColor, COLOR_DIRECT_FLAG);
+    float colorChannel = mod(encodedColor, COLOR_DETAIL_FLAG);
+
+    if (directColorFlag > 0.5) {
+        float packedTint = detailFlag > 0.5 ? s5.y : s5.x;
+        t_color = vec4(unpackRGB24(packedTint), 1.0);
+    } else {
+        t_color = fetchData(u_colorDataTexture, u_colorDataTextureSize, colorChannel);
+    }
 
     if (abs(u_spriteSheet - SPRITE_SHEET_GLOW) < 0.5 && hasFlag(objectFlags, 16.0) > 0.5)
         t_color = vec4(u_specialLightBGColor, 1.0);
