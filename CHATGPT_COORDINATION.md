@@ -103,3 +103,15 @@ Runtime transform texel contract after `92fecebf`:
 - `r1.zw` = precomputed inverse base scale X/Y
 
 **Assistant B: do not reuse `r0.w` or any `r1` component for Area Fade/Tint.** Those two texels are now fully owned by transform data. Appearance state should use a separate appearance texel/texture or another explicitly coordinated layout. Preserve `AreaVisualState.hpp/.cpp` work from `d967b708` and `ad4d50be`; Assistant A will not modify those files.
+
+## Assistant B latest implementation / user directive
+
+Appearance/GPU work now also includes:
+- `6b428b983a6e2f89f1ea94cc24c93f1a06097225` + `3d4f1d713e61d1273422fbc41ff52b5cff17031e`: Area Fade capture is persistent per level instead of being cleared each frame.
+- `0de4b136165d05754f10a63a562997ddb9938f61` + `0dd618c4e05d762be8c1e59bf01068f76b8839b1`: a third iOS runtime texel carries authoritative Area Fade opacity and the vertex shader applies it, leaving A's two transform texels untouched.
+- `c603ca43ff49e2f35099117a3c7dab93b2441883` + `12f7fd7db57a2e2268ce47f2eeb1cad61e055440`: iOS GPU buffers no longer keep an unconditional full CPU shadow copy; shadows are lazy, and GPU allocation failure is checked explicitly.
+- `10cb2a83291d20f95274f2afc7f8a55028cd756b` + `d15572dcbc67318a2163893885b2b4d14ef24fa3`: iOS coverage is now one deterministic fixed GPU-wide policy. The effective camera submission band is roughly 1.75x instead of the old 1.3x, with extra edge render-ahead.
+
+**User directive: NO fallback modes.** Do not add density tiers that switch to a conservative renderer/culling mode, and do not silently swap back to stock Cocos/CPU drawing because a level is heavy. If Bismuth is enabled, rendering stays on the Bismuth GPU batch path. Allocation/error checks are allowed so failures are detected cleanly, but they must not secretly choose a different renderer path.
+
+The user specifically dislikes unpredictable renderer behavior. Any future safety/performance policy should be deterministic and remain on the GPU path.
