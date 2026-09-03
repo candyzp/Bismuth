@@ -34,10 +34,6 @@ public:
         usize uploadCalls = 0;
     };
 
-    // Shadow candidates are renderer-only records. GD remains authoritative for
-    // gameplay, triggers, animation lifecycle, and the final resolved state.
-    // The assist batch may consume these records to exercise GPU transform math
-    // and texture sampling without mutating the source GameObjects.
     struct ShadowCandidate {
         GameObject* object = nullptr;
         cocos2d::CCSprite* sprite = nullptr;
@@ -50,21 +46,11 @@ public:
 
     bool init(PlayLayer* layer);
     void resync();
-
-    // Detailed probing intentionally runs only for the debug overlay until the
-    // new GPU draw path starts consuming these textures. Normal hybrid play pays
-    // no per-frame state-walk cost from this layer yet.
     void update(bool detailedProbe);
 
     inline const Stats& getStats() const { return stats; }
     inline const std::vector<ShadowCandidate>& getShadowCandidates() const { return shadowCandidates; }
 
-    // The original validation list was restricted to single-root static solids.
-    // On iOS that can legitimately produce zero candidates even when thousands
-    // of static-safe sprite records are available. Build a renderer-only view of
-    // every sprite already admitted by the conservative StaticSafe classifier.
-    // This does not broaden animation/trigger ownership: animated, interactive,
-    // synced-animation, checkpoint, and other StockOnly objects never enter it.
     inline std::vector<ShadowCandidate> getStaticShadowCandidates() const {
         std::vector<ShadowCandidate> candidates;
         candidates.reserve(stats.safeSprites);
@@ -72,6 +58,41 @@ public:
         for (usize objectIndex = 0; objectIndex < objects.size(); ++objectIndex) {
             const auto& objectRecord = objects[objectIndex];
             if (!objectRecord.object || objectRecord.safety != SafetyClass::StaticSafe)
+                continue;
+
+            for (usize localSprite = 0; localSprite < objectRecord.spriteCount; ++localSprite) {
+                const usize spriteIndex = objectRecord.firstSprite + localSprite;
+                if (spriteIndex >= sprites.size())
+                    break;
+
+                const auto& spriteRecord = sprites[spriteIndex];
+                if (!spriteRecord.sprite || !spriteRecord.sprite->getTexture())
+                    continue;
+
+                candidates.push_back({
+                    objectRecord.object,
+                    spriteRecord.sprite,
+                    objectIndex,
+                    spriteIndex
+                });
+            }
+        }
+
+        return candidates;
+    }
+
+    // This is the real iOS assist ownership list. Both StaticSafe and
+    // DynamicSafe objects are allowed because Geometry Dash still owns their
+    // gameplay, triggers, animation lifecycle, color resolution, visibility,
+    // and final root state. Bismuth only consumes that already-resolved state to
+    // replace repetitive Cocos quad transform work on the GPU.
+    inline std::vector<ShadowCandidate> getGPUCandidates() const {
+        std::vector<ShadowCandidate> candidates;
+        candidates.reserve(stats.safeSprites);
+
+        for (usize objectIndex = 0; objectIndex < objects.size(); ++objectIndex) {
+            const auto& objectRecord = objects[objectIndex];
+            if (!objectRecord.object || objectRecord.safety == SafetyClass::StockOnly)
                 continue;
 
             for (usize localSprite = 0; localSprite < objectRecord.spriteCount; ++localSprite) {
