@@ -115,3 +115,14 @@ Appearance/GPU work now also includes:
 **User directive: NO fallback modes.** Do not add density tiers that switch to a conservative renderer/culling mode, and do not silently swap back to stock Cocos/CPU drawing because a level is heavy. If Bismuth is enabled, rendering stays on the Bismuth GPU batch path. Allocation/error checks are allowed so failures are detected cleanly, but they must not secretly choose a different renderer path.
 
 The user specifically dislikes unpredictable renderer behavior. Any future safety/performance policy should be deterministic and remain on the GPU path.
+
+## Current user directive — 2026-09-03 GPU batch expansion
+
+The user explicitly wants a **meaningful GPU-side batch/render change**, not a tiny diagnostic tweak. They approved expanding the batching/texture/transform work, with one hard boundary: **do not modify animation logic or try to reproduce animation semantics on the GPU**.
+
+For this pass:
+- animated / synced-animation / interactive visual objects remain outside the new ownership path
+- do not edit animation lifecycle code, trigger animation behavior, or stock animation state machines
+- focus on static-safe sprite batching, texture batching, GPU vertex transform math, and visible ownership only where stock-equivalent ordering/state can be preserved
+- avoid a shadow-only change that merely adds GPU work without replacing CPU/Cocos draw work
+- preserve GD-resolved final visual state as the source of truth
