@@ -1,14 +1,13 @@
 {
 	"geode": "5.10.1",
 	"gd": {
-		"win": "2.2081",
 		"ios": "2.2081"
 	},
 	"id": "iliashdz.bismuth",
 	"name": "Bismuth (experimental)",
 	"version": "v0.1.1-alpha",
 	"developer": "IliasHDZ",
-	"description": "Rendering optimization mod",
+	"description": "iOS rendering optimization experiment: Geometry Dash stays authoritative while Bismuth prepares resolved sprite state for GPU-side transform and batching work.",
 	"dependencies": {
 		"geode.node-ids": ">=v1.20.0"
 	},
@@ -16,7 +15,7 @@
 		"performance"
 	],
 	"links": {
-		"source": "https://github.com/IliasHDZ/Bismuth",
+		"source": "https://github.com/candyzp/Bismuth",
 		"community": "https://discord.gg/B6H6ZVJx9C"
 	},
 	"resources": {
@@ -34,17 +33,11 @@
 			"type": "bool",
 			"default": true
 		},
-		"ingame_enable": {
-			"name": "In-game enable/disable",
-			"type": "bool",
-			"default": false,
-			"description": "Allows you to enable and disable Bismuth while playing by pressing F8. It also allows you to use Difference Mode by pressing F9 (Difference Mode is very unstable).\n\n WARNING: This option effectively removes any optimization."
-		},
 		"ios_gpu_debug": {
-			"name": "iOS GPU debug overlay",
+			"name": "iOS GPU assist debug",
 			"type": "bool",
 			"default": false,
-			"description": "Shows an on-screen iOS diagnostic that verifies Bismuth is submitting its OpenGL ES GPU draw path with the shader and texture-backed object/group/color state. Debug only; enabling it adds a small amount of diagnostic overhead."
+			"description": "Shows resolved-state classification, dirty-state activity, GPU state uploads, and the current stock/GPU-assist status. Detailed probing adds diagnostic CPU overhead and should be disabled for normal play."
 		}
 	}
 }

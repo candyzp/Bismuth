@@ -2,24 +2,11 @@
 
 #include "../Renderer.hpp"
 #include "../AreaVisualState.hpp"
-#include "DataTexture.hpp"
-#include "../SpriteMeshDictionary.hpp"
-#include "../VisibilityManager.hpp"
-#include "../ObjectBatchNode.hpp"
-#include "../ObjectSorter.hpp"
-#include "../GroupManager.hpp"
-#include "BProfiler.hpp"
-#include "profiler.hpp"
+#include "ResolvedStateLayer.hpp"
 
 #include "Geode/cocos/CCDirector.h"
-#include "Geode/cocos/kazmath/include/kazmath/mat4.h"
 #include "Geode/cocos/sprite_nodes/CCSpriteBatchNode.h"
-#include <Geode/binding/GJBaseGameLayer.hpp>
-#include <Geode/binding/GameObject.hpp>
-#include <Geode/binding/RingObject.hpp>
 
-#include <algorithm>
-#include <cmath>
 #include <cstring>
 #include <memory>
 #include <unordered_map>
@@ -27,21 +14,9 @@
 using namespace geode::prelude;
 
 namespace {
-constexpr i32 IOS_STATIC_TEXTURE_UNIT = 1;
-constexpr i32 IOS_GROUP_TEXTURE_UNIT = 2;
-constexpr i32 IOS_COLOR_TEXTURE_UNIT = 3;
-
 struct IOSRendererState {
-    DataTexture* staticDataTexture = nullptr;
-    DataTexture* groupDataTexture = nullptr;
-    DataTexture* colorDataTexture = nullptr;
     std::unique_ptr<ColorChannelBuffer> colorChannels = std::make_unique<ColorChannelBuffer>();
-
-    ~IOSRendererState() {
-        if (staticDataTexture) DataTexture::destroy(staticDataTexture);
-        if (groupDataTexture) DataTexture::destroy(groupDataTexture);
-        if (colorDataTexture) DataTexture::destroy(colorDataTexture);
-    }
+    std::unique_ptr<ResolvedStateLayer> resolvedState;
 };
 
 static std::unordered_map<Renderer*, std::unique_ptr<IOSRendererState>> g_iosStates;
@@ -51,31 +26,43 @@ static IOSRendererState* iosState(Renderer* renderer) {
     auto it = g_iosStates.find(renderer);
     return it == g_iosStates.end() ? nullptr : it->second.get();
 }
+
+static std::string byteSizeToString(usize size) {
+    if (size < 1024)
+        return fmt::format("{} B", size);
+    if (size < 1024 * 1024)
+        return fmt::format("{:.2f} KiB", (double)size / 1024.0);
+    return fmt::format("{:.2f} MiB", (double)size / (1024.0 * 1024.0));
+}
 } // namespace
 
 Renderer::~Renderer() { terminate(); }
 
-bool Renderer::init(PlayLayer* layer) {
+bool Renderer::init(PlayLayer* playLayer) {
     if (currentRenderer)
         return false;
 
     currentRenderer = this;
-    this->layer = layer;
+    layer = playLayer;
     AreaVisualState::reset();
 
     if (!Mod::get()->getSettingValue<bool>("enabled"))
         return false;
 
-    // iOS hybrid mode deliberately leaves Geometry Dash's sprite renderer,
-    // culling, colors and animation lifecycle untouched. This removes Bismuth's
-    // static sprite replacement path, which was the source of seams, white art
-    // and frozen/detached animation children on 2.2081.
+    // iOS is intentionally GD-authoritative. Bismuth may observe final state and
+    // prepare GPU resources, but it does not replace stock visuals until a
+    // conservative batch has been independently validated.
     g_iosStates[this] = std::make_unique<IOSRendererState>();
     auto state = iosState(this);
     colorChannelBuffer = state->colorChannels.get();
     std::memset(colorChannelBuffer, 0, sizeof(ColorChannelBuffer));
 
-    ingameEnableDisable = Mod::get()->getSettingValue<bool>("ingame_enable");
+    state->resolvedState = std::make_unique<ResolvedStateLayer>();
+    if (!state->resolvedState->init(layer)) {
+        log::warn("Bismuth iOS resolved-state layer unavailable; continuing with pure stock GD rendering");
+    }
+
+    ingameEnableDisable = false;
     useIndexCulling = false;
 
     debugText = CCLabelBMFont::create("", "chatFont.fnt");
@@ -105,9 +92,10 @@ bool Renderer::init(PlayLayer* layer) {
     layer->addChild(debugTextOutline2, 999);
 
     enabled = true;
-    setVisible(false); // no replacement GPU draw node in hybrid mode
+    setVisible(false);
     rendererStartTime = getTime();
-    log::info("Bismuth iOS hybrid initialized: stock GD rendering + GPU math helper");
+
+    log::info("Bismuth iOS initialized: GD-authoritative resolved-state GPU assist architecture");
     return true;
 }
 
@@ -125,6 +113,7 @@ void Renderer::terminate() {
     colorChannelBufferObject = nullptr;
     srbBuffer = nullptr;
     uniformBuffer = nullptr;
+
     AreaVisualState::reset();
     g_iosStates.erase(this);
     if (currentRenderer == this)
@@ -136,7 +125,8 @@ void Renderer::prepareColorChannelBuffer() {}
 void Renderer::generateStaticRenderingBuffer(ObjectSorter&) {}
 
 void Renderer::draw() {
-    // Geometry Dash owns drawing in hybrid mode.
+    // Stock Geometry Dash remains the only visible draw path in this validation
+    // stage. The assist state/textures are deliberately side-band resources.
 }
 
 void Renderer::updateDebugText() {
@@ -146,15 +136,49 @@ void Renderer::updateDebugText() {
     std::string text;
     if (Mod::get()->getSettingValue<bool>("ios_gpu_debug")) {
         const char* gpuRenderer = reinterpret_cast<const char*>(glGetString(GL_RENDERER));
-        text = fmt::format(
-            "Bismuth iOS Hybrid\n"
-            "Render path: STOCK GD / CPU-managed sprites\n"
-            "GPU: {}\n"
-            "GPU math helper: ACTIVE\n"
-            "Bismuth batch drawing: OFF\n"
-            "Animations/colors/culling: STOCK GD",
-            gpuRenderer ? gpuRenderer : "unknown"
-        );
+        auto state = iosState(this);
+        auto resolved = state ? state->resolvedState.get() : nullptr;
+
+        if (resolved) {
+            const auto& stats = resolved->getStats();
+            text = fmt::format(
+                "Bismuth iOS GPU Assist\n"
+                "Render output: STOCK GD (authoritative)\n"
+                "GPU: {}\n"
+                "Resolved GPU state: {}\n"
+                "Safe objects: {} ({} static / {} dynamic)\n"
+                "Stock fallback: {} | safe sprite records: {}\n"
+                "Dirty: {} transform | {} appearance | {} visibility | {} UV\n"
+                "Static reused: {}/{}\n"
+                "State uploads: {} / frame in {} call(s)\n"
+                "GPU transform shader: STAGED\n"
+                "GPU batch drawing: OFF until visual validation",
+                gpuRenderer ? gpuRenderer : "unknown",
+                resolved->isGPUStateReady() ? "READY" : "UNAVAILABLE",
+                stats.safeObjects,
+                stats.staticObjects,
+                stats.dynamicObjects,
+                stats.stockObjects,
+                stats.safeSprites,
+                stats.dirtyTransforms,
+                stats.dirtyAppearance,
+                stats.dirtyVisibility,
+                stats.dirtyUVs,
+                stats.staticObjectsReused,
+                stats.staticObjects,
+                byteSizeToString(stats.bytesUploaded),
+                stats.uploadCalls
+            );
+        } else {
+            text = fmt::format(
+                "Bismuth iOS GPU Assist\n"
+                "Render output: STOCK GD (authoritative)\n"
+                "GPU: {}\n"
+                "Resolved GPU state: UNAVAILABLE\n"
+                "GPU batch drawing: OFF",
+                gpuRenderer ? gpuRenderer : "unknown"
+            );
+        }
     }
 
     debugText->setString(text.c_str());
@@ -167,6 +191,11 @@ void Renderer::finishDraw() {}
 
 void Renderer::update(float dt) {
     gameTimer += dt;
+
+    const bool detailedProbe = Mod::get()->getSettingValue<bool>("ios_gpu_debug");
+    if (auto state = iosState(this); state && state->resolvedState)
+        state->resolvedState->update(detailedProbe);
+
     updateDebugText();
 }
 
@@ -181,9 +210,9 @@ CCSpriteBatchNode* Renderer::getSpriteBatchNodeWithLayerId(LayerKey id) {
     return static_cast<CCSpriteBatchNode*>(node);
 }
 
-Ref<Renderer> Renderer::create(PlayLayer* layer) {
+Ref<Renderer> Renderer::create(PlayLayer* playLayer) {
     auto ren = new Renderer;
-    if (ren->init(layer)) {
+    if (ren->init(playLayer)) {
         ren->autorelease();
         return ren;
     }
@@ -194,20 +223,29 @@ Ref<Renderer> Renderer::create(PlayLayer* layer) {
 Ref<Renderer> Renderer::get() { return currentRenderer; }
 
 bool Renderer::useOptimizations() {
-    // Never replace GD's visual lifecycle on iOS hybrid mode.
+    // The old replacement lifecycle is permanently disabled on iOS. Future
+    // optimization is opt-in per safe batch, not a global renderer takeover.
     return false;
 }
 
 void Renderer::setEnabled(bool value) {
     enabled = value;
-    // Stock Cocos batch nodes always stay visible. Bismuth no longer owns draw.
+
+    // Stock Cocos batch nodes stay authoritative and visible. Never hide the
+    // whole GD renderer just because Bismuth's assist layer is enabled.
     for (auto batch : CCArrayExt<CCNode*>(layer->m_batchNodes))
         batch->setVisible(true);
+
     setVisible(false);
     updateDebugText();
 }
 
-void Renderer::reset() { AreaVisualState::reset(); }
+void Renderer::reset() {
+    AreaVisualState::reset();
+    if (auto state = iosState(this); state && state->resolvedState)
+        state->resolvedState->resync();
+}
+
 void Renderer::drawLine(const glm::vec2&, const glm::vec2&, const glm::vec4&) {}
 
 void storeGLStates() {}
