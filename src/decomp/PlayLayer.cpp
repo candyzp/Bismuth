@@ -333,7 +333,11 @@ void decomp_PlayLayer::virtual_updateVisibility(float delta) {
 }
     
 void decomp_PlayLayer::optimized_updateVisibility(float delta) {
-    // preUpdateVisibility(delta);
+    // Keep Bismuth's own visibility/culling path, but do not skip Geometry
+    // Dash's visual-effect simulation. updateEnterEffects drives the 2.2
+    // Area Move/Rotate/Scale style effects used by levels such as Dash, while
+    // processAreaVisualActions advances Area Fade/Tint. Rendering remains in
+    // Bismuth's GPU path; these calls only keep the live visual state current.
     m_effectManager->processColors();
     m_effectManager->calculateLightBGColor(m_effectManager->activeColorForIndex(COLOR_P1));
 
@@ -348,4 +352,11 @@ void decomp_PlayLayer::optimized_updateVisibility(float delta) {
 
     m_player1->m_audioScale = audioScale;
     m_player2->m_audioScale = audioScale;
+
+    updateEnterEffects(delta);
+    processAreaVisualActions(delta);
+    updateParticles(delta);
+
+    m_resetActiveObjects = false;
+    m_blendingColors.clear();
 }
