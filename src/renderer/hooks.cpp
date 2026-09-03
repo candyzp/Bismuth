@@ -210,14 +210,13 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
         if (!renderer || !renderer->useOptimizations())
             return;
 
-        if (m_optimizedGroups) {
-            for (auto array : m_optimizedGroups)
-                removeDecoObjects(array);
-        }
-        if (m_staticGroups) {
-            for (auto array : m_staticGroups)
-                removeDecoObjects(array);
-        }
+        // These are vectors, not nullable container pointers. Individual group
+        // slots can still be null while GD is rebuilding optimization state, so
+        // removeDecoObjects() owns the per-entry null check.
+        for (auto array : m_optimizedGroups)
+            removeDecoObjects(array);
+        for (auto array : m_staticGroups)
+            removeDecoObjects(array);
     }
 };
 
