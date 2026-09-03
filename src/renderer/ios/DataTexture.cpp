@@ -38,7 +38,23 @@ bool DataTexture::init(const char* name, usize texelCount, Type type) {
     pixelType = type == Type::FloatRGBA ? GL_FLOAT : GL_UNSIGNED_BYTE;
     bytesPerTexel = type == Type::FloatRGBA ? sizeof(float) * 4 : sizeof(u8) * 4;
 
+    // DataTexture can be created immediately after Bismuth's VBO/VAO setup.
+    // OpenGL's error flag is sticky, so an unrelated earlier error must not be
+    // blamed on this texture allocation. Drain it before issuing our own calls,
+    // then the error read below belongs specifically to this allocation.
+    GLenum staleError = GL_NO_ERROR;
+    bool hadStaleError = false;
+    while ((staleError = glGetError()) != GL_NO_ERROR) {
+        hadStaleError = true;
+        log::warn("Ignoring pre-existing GL error 0x{:X} before allocating {} data texture", (u32)staleError, name);
+    }
+
     glGenTextures(1, &id);
+    if (!id) {
+        log::error("Failed to create {} data texture object", name);
+        return false;
+    }
+
     glBindTexture(GL_TEXTURE_2D, id);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
@@ -58,10 +74,20 @@ bool DataTexture::init(const char* name, usize texelCount, Type type) {
 
     GLenum error = glGetError();
     if (error != GL_NO_ERROR) {
-        log::error("Failed to allocate {} data texture (GL error {})", name, (u32)error);
+        log::error(
+            "Failed to allocate {} data texture ({}x{}, {} texels, GL error 0x{:X})",
+            name,
+            width,
+            height,
+            texelCount,
+            (u32)error
+        );
+        glDeleteTextures(1, &id);
+        id = 0;
         return false;
     }
 
+    (void)hadStaleError;
     return true;
 }
 
