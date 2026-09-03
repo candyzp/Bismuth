@@ -14,6 +14,7 @@ uniform sampler2D u_colorDataTexture;
 uniform vec2 u_staticDataTextureSize;
 uniform vec2 u_groupDataTextureSize;
 uniform vec2 u_colorDataTextureSize;
+uniform float u_runtimeDataOffset;
 
 uniform mat4 u_mvp;
 uniform float u_timer;
@@ -117,12 +118,20 @@ vec2 calculateInvisibleBlockOpacity(vec2 objectPosition, float fadeMargin) {
 }
 
 void main() {
-    float objectBase = floor(a_srbIndex + 0.5) * 5.0;
+    float objectIndex = floor(a_srbIndex + 0.5);
+    float objectBase = objectIndex * 5.0;
     vec4 s0 = fetchData(u_staticDataTexture, u_staticDataTextureSize, objectBase + 0.0);
     vec4 s1 = fetchData(u_staticDataTexture, u_staticDataTextureSize, objectBase + 1.0);
     vec4 s2 = fetchData(u_staticDataTexture, u_staticDataTextureSize, objectBase + 2.0);
     vec4 s3 = fetchData(u_staticDataTexture, u_staticDataTextureSize, objectBase + 3.0);
     vec4 s4 = fetchData(u_staticDataTexture, u_staticDataTextureSize, objectBase + 4.0);
+
+    // Runtime state shares the static object texture so the ES2 backend does
+    // not consume another vertex texture unit. Two contiguous texels per object
+    // are refreshed each frame: move/rotate/opacity and scale.
+    float runtimeBase = u_runtimeDataOffset + objectIndex * 2.0;
+    vec4 r0 = fetchData(u_staticDataTexture, u_staticDataTextureSize, runtimeBase + 0.0);
+    vec4 r1 = fetchData(u_staticDataTexture, u_staticDataTextureSize, runtimeBase + 1.0);
 
     vec2 objectPosition = s0.xy;
     float rotationSpeed = s0.z;
@@ -141,11 +150,21 @@ void main() {
     mat2 positionalTransform = mat2(g0.x, g0.y, g0.z, g0.w);
     mat2 localTransform = mat2(g1.x, g1.y, g1.z, g1.w);
     objectPosition = positionalTransform * objectPosition + g2.xy;
-    objectOpacity *= g2.z;
+
+    // GD calculates 2.2 Area / enter effects on the CPU, but Bismuth keeps the
+    // heavy vertex work here. The position delta is already in world space.
+    objectPosition += r0.xy;
+    objectOpacity *= g2.z * r0.w;
 
     vec2 vertexOffset = a_positionOffset;
     if (hasFlag(objectFlags, 128.0) < 0.5)
         vertexOffset = localTransform * vertexOffset;
+
+    // Runtime Area Scale and Area Rotate are local object transforms. Apply
+    // them after the group transform, matching GD's visual-update ordering.
+    vertexOffset *= r1.xy;
+    if (abs(r0.z) > 0.00001)
+        vertexOffset = rotatePointAroundOrigin(vertexOffset, -r0.z / 180.0 * PI);
 
     if (abs(rotationSpeed) > 0.00001)
         vertexOffset = rotatePointAroundOrigin(vertexOffset, -rotationSpeed * u_timer / 180.0 * PI);
