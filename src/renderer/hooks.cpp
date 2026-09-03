@@ -15,11 +15,6 @@ class $modify(RendererPlayLayer, PlayLayer) {
         newPlayLayer = false;
     }
 
-    // This gets called from inside PlayLayer::setupHasCompleted(). On the first
-    // reset, let Geometry Dash finish resetting/initializing every object before
-    // Bismuth snapshots sprite geometry, colors and animation children. Baking
-    // before the stock reset captured stale startup state on iOS, which could
-    // leave old-level colors white and dynamic child hierarchies frozen/glitched.
     void resetLevel() {
         if (newPlayLayer && Renderer::get() == nullptr) {
             PlayLayer::resetLevel();
@@ -33,13 +28,6 @@ class $modify(RendererPlayLayer, PlayLayer) {
             auto renderer = Renderer::create(this);
             if (renderer) {
                 batchLayer->addChild(renderer, -100000);
-
-                // Do not force optimizeMoveGroups() again while setupHasCompleted
-                // is still unwinding. On iOS some of GD's optimized/static group
-                // arrays are not guaranteed to exist at this point, so the extra
-                // rebuild could call CCArray::count() through a null pointer.
-                // Normal GD lifecycle calls will hit our optimizeMoveGroups hook
-                // later when those arrays are actually ready.
                 renderer->reset();
             }
             return;
@@ -53,13 +41,20 @@ class $modify(RendererPlayLayer, PlayLayer) {
     }
 
     void updateVisibility(float dt) {
+#ifdef GEODE_IS_IOS
+        // Hybrid iOS mode: Geometry Dash owns the actual sprite renderer and
+        // therefore keeps its complete visibility, color and animation lifecycle.
+        // Bismuth still exists as a GPU math/state helper, but no longer replaces
+        // the stock visual update path that caused frozen animations and seams.
+        PlayLayer::updateVisibility(dt);
+#else
         auto renderer = Renderer::get();
         if (renderer && renderer->useOptimizations()) {
             ((decomp_PlayLayer*)this)->optimized_updateVisibility(dt);
             return;
         }
-
         PlayLayer::updateVisibility(dt);
+#endif
     }
 };
 
@@ -89,6 +84,13 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
     }
 
     void processMoveActions() {
+#ifdef GEODE_IS_IOS
+        // Keep stock object transforms authoritative in hybrid mode. The GPU
+        // helper can observe/pack state, but must not remove CPU-rendered deco
+        // from GD's normal movement lifecycle.
+        GJBaseGameLayer::processMoveActions();
+        return;
+#else
         auto renderer = Renderer::get();
         if (renderer == nullptr) {
             GJBaseGameLayer::processMoveActions();
@@ -101,7 +103,6 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
                 continue;
 
             int groupId = node->getTag();
-
             renderer->getGroupManager().moveGroup(groupId, node->m_unk038, node->m_unk040);
 
             CCArray* objects = getStaticGroup(groupId);
@@ -112,9 +113,14 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
             if (objects)
                 moveObjects(objects, node->m_unk090, node->m_unk098, 0);
         }
+#endif
     }
 
     void processRotationActions() {
+#ifdef GEODE_IS_IOS
+        GJBaseGameLayer::processRotationActions();
+        return;
+#else
         auto renderer = Renderer::get();
         if (renderer == nullptr) {
             GJBaseGameLayer::processRotationActions();
@@ -123,7 +129,7 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
 
         auto eman = m_effectManager;
         for (auto cmdObj : eman->m_unkVector5b0) {
-            if (/* cmdObj->m_unkInt204 != m_gameState.m_unkUint2 ||*/ cmdObj->m_someInterpValue1RelatedFalse)
+            if (cmdObj->m_someInterpValue1RelatedFalse)
                 continue;
 
             i32 targetId = cmdObj->m_targetGroupID;
@@ -146,10 +152,6 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
                 for (auto obj : eman->m_unkMap770[{ targetId, centerId }]) {
                     if (obj->m_someInterpValue1RelatedFalse)
                         continue;
-
-                    // Accumulate this command's own delta. Using cmdObj here
-                    // repeatedly over-counted the current command and made
-                    // complex rotating decoration drift farther apart over time.
                     if (hasStaticGroup)
                         rotation += obj->m_someInterpValue1RelatedOne - obj->m_someInterpValue1RelatedZero;
                     else
@@ -166,9 +168,14 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
         }
 
         GJBaseGameLayer::processRotationActions();
+#endif
     }
 
     void processFollowActions() {
+#ifdef GEODE_IS_IOS
+        GJBaseGameLayer::processFollowActions();
+        return;
+#else
         auto renderer = Renderer::get();
         if (renderer == nullptr) {
             GJBaseGameLayer::processFollowActions();
@@ -186,37 +193,43 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
 
             double moveX = 0.0, moveY = 0.0;
             if (mainObject->m_unk4C4 == m_gameState.m_commandIndex) {
-                moveX = (mainObject->m_positionX - mainObject->m_lastPosition.x) * node->m_unk080; /* followXMod */
-                moveY = (mainObject->m_positionY - mainObject->m_lastPosition.y) * node->m_unk088; /* followYMod */
+                moveX = (mainObject->m_positionX - mainObject->m_lastPosition.x) * node->m_unk080;
+                moveY = (mainObject->m_positionY - mainObject->m_lastPosition.y) * node->m_unk088;
             }
 
             renderer->getGroupManager().moveGroup(targetGroupId, moveX, moveY);
         }
 
         GJBaseGameLayer::processFollowActions();
+#endif
     }
 
     void toggleGroup(int id, bool activate) {
         GJBaseGameLayer::toggleGroup(id, activate);
+#ifndef GEODE_IS_IOS
         auto renderer = Renderer::get();
         if (renderer)
             renderer->getGroupManager().toggleGroup(id, activate);
+#endif
     }
 
     void optimizeMoveGroups() {
         GJBaseGameLayer::optimizeMoveGroups();
 
+#ifdef GEODE_IS_IOS
+        // Do not strip decoration from GD's CPU groups in hybrid mode. Stock GD
+        // owns rendering/animation correctness on iOS now.
+        return;
+#else
         auto renderer = Renderer::get();
         if (!renderer || !renderer->useOptimizations())
             return;
 
-        // These are vectors, not nullable container pointers. Individual group
-        // slots can still be null while GD is rebuilding optimization state, so
-        // removeDecoObjects() owns the per-entry null check.
         for (auto array : m_optimizedGroups)
             removeDecoObjects(array);
         for (auto array : m_staticGroups)
             removeDecoObjects(array);
+#endif
     }
 };
 
