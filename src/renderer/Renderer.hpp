@@ -84,6 +84,11 @@ public:
 
     bool useOptimizations();
 
+    // iOS-only render handoff query used from CCSprite::updateTransform. This is
+    // intentionally a render-stage decision. It does not change GD animation,
+    // triggers, visibility, colors, or the GameObject lifecycle.
+    bool isGPUOwnedSprite(cocos2d::CCSprite* sprite) const;
+
     void setEnabled(bool enabled);
 
     inline GroupManager& getGroupManager() { return groupManager; }
