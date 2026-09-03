@@ -4,6 +4,7 @@
 #include <common.hpp>
 #include <Geode/Geode.hpp>
 #include <array>
+#include <cmath>
 #include <vector>
 
 #include "Buffer.hpp"
@@ -133,7 +134,24 @@ public:
     }
 
     inline void trackRuntimeVisualObject(GameObject* object) {
-        visibilityManager.trackRuntimeVisualObject(object);
+        if (!object)
+            return;
+
+        // Do not let stale stock Cocos opacity turn an otherwise static object
+        // into a permanently live-culling object. Bismuth intentionally skips
+        // GD's normal visibility loop, so displayed opacity is not authoritative
+        // for ordinary baked geometry. Only the dedicated 2.2 transform deltas
+        // qualify an object for the live-position culling path.
+        const bool hasRuntimeTransform =
+            std::abs(object->m_positionXOffset) > 0.001f ||
+            std::abs(object->m_positionYOffset) > 0.001f ||
+            std::abs(object->m_unk2A8) > 0.001f ||
+            std::abs(object->m_unk2B0) > 0.001f ||
+            std::abs(object->m_unk2BC) > 0.0001f ||
+            std::abs(object->m_unk2C0) > 0.0001f;
+
+        if (hasRuntimeTransform)
+            visibilityManager.trackRuntimeVisualObject(object);
     }
 
     void predraw(const CameraView& view);
