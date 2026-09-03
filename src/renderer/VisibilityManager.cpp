@@ -364,6 +364,14 @@ void VisibilityManager::markObjectAsVisible(Object* object) {
 
     updateVisibleAnimatedObject(object);
 
+    // The stock active-object loop also activates gameplay-interactive objects
+    // such as orbs, pads, portals and coins. Bismuth skips that CPU visibility
+    // loop, so restore only this tiny lifecycle step for interactive objects
+    // that are already inside Bismuth's GPU camera band. Drawing still remains
+    // entirely in the GPU batch.
+    if (!object->isAnimated && ObjectUtils::isInteractiveVisualObject(object->gameObject))
+        object->gameObject->activateObject();
+
     for (auto& sprite : object->sprites) {
         // Bismuth's optimized PlayLayer::updateVisibility bypasses GD's normal
         // activate/deactivate loop. As a result, stock sprites outside the
