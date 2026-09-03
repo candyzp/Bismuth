@@ -2,6 +2,7 @@
 
 #include "StandaloneAssistBatch.hpp"
 
+#include "Geode/cocos/cocoa/CCAffineTransform.h"
 #include "Geode/cocos/kazmath/include/kazmath/mat4.h"
 #include <algorithm>
 #include <cstddef>
@@ -13,6 +14,30 @@ constexpr usize MAX_BATCH_SPRITES = 16383;
 
 static glm::vec2 quadUV(const cocos2d::ccV3F_C4B_T2F& vertex) {
     return { vertex.texCoords.u, vertex.texCoords.v };
+}
+
+// Convert a sprite in a safe GameObject visual subtree into coordinates local to
+// the root GameObject. This is the same hierarchy transform model used by the
+// atlas-assist path that already fixed the detached-spike regression.
+static bool getSpriteLocalTransform(
+    GameObject* object,
+    cocos2d::CCSprite* sprite,
+    cocos2d::CCAffineTransform& out
+) {
+    out = cocos2d::CCAffineTransformMakeIdentity();
+    if (!object || !sprite)
+        return false;
+
+    if (sprite == static_cast<cocos2d::CCSprite*>(object))
+        return true;
+
+    auto node = static_cast<cocos2d::CCNode*>(sprite);
+    while (node && node != object) {
+        out = cocos2d::CCAffineTransformConcat(out, node->nodeToParentTransform());
+        node = node->getParent();
+    }
+
+    return node == object;
 }
 } // namespace
 
@@ -50,14 +75,6 @@ bool StandaloneAssistBatch::initWithCandidates(
     if (vertexTextureUnits < 2)
         return false;
 
-    auto firstSprite = candidates.front().sprite;
-    if (!firstSprite)
-        return false;
-
-    const auto blend = firstSprite->getBlendFunc();
-    blendSrc = (u32)blend.src;
-    blendDst = (u32)blend.dst;
-
     if (!buildGeometry(candidates))
         return false;
 
@@ -86,61 +103,89 @@ void StandaloneAssistBatch::destroyGL() {
 bool StandaloneAssistBatch::buildGeometry(
     const std::vector<ResolvedStateLayer::ShadowCandidate>& candidates
 ) {
+    // RendererIOS splits runs on whole-object boundaries before this point. Never
+    // truncate a run here, because doing so could suppress a root while leaving
+    // part of its visual subtree undrawn.
+    if (candidates.empty() || candidates.size() > MAX_BATCH_SPRITES)
+        return false;
+
     std::vector<Vertex> vertices;
     std::vector<u16> indices;
-    vertices.reserve(std::min<usize>(candidates.size(), MAX_BATCH_SPRITES) * 4);
-    indices.reserve(std::min<usize>(candidates.size(), MAX_BATCH_SPRITES) * 6);
+    vertices.reserve(candidates.size() * 4);
+    indices.reserve(candidates.size() * 6);
     ownedSprites.clear();
     drawRanges.clear();
 
     u32 activeTexture = 0;
+    u32 activeBlendSrc = 0;
+    u32 activeBlendDst = 0;
     DrawRange* activeRange = nullptr;
 
     for (const auto& candidate : candidates) {
-        if (ownedSprites.size() >= MAX_BATCH_SPRITES)
-            break;
-
         auto object = candidate.object;
         auto sprite = candidate.sprite;
-        if (!object || !sprite || sprite != static_cast<cocos2d::CCSprite*>(object))
-            continue;
-        if (sprite->getBatchNode() || sprite->getChildrenCount() != 0)
-            continue;
+        if (!object || !sprite || sprite->getBatchNode())
+            return false;
 
         auto texture = sprite->getTexture();
         if (!texture || !texture->getName())
-            continue;
+            return false;
 
-        const auto blend = sprite->getBlendFunc();
-        if ((u32)blend.src != blendSrc || (u32)blend.dst != blendDst)
-            continue;
+        cocos2d::CCAffineTransform localTransform;
+        if (!getSpriteLocalTransform(object, sprite, localTransform))
+            return false;
 
         const auto crop = sprite->getTextureRect();
-        const auto offset = sprite->getOffsetPosition();
-        const auto anchor = object->getAnchorPointInPoints();
+        const auto localBottomLeftPoint = cocos2d::CCPointApplyAffineTransform(
+            sprite->getOffsetPosition(),
+            localTransform
+        );
 
-        // The assist node is an identity sibling under the same parent. The
-        // shader receives the GameObject position/rotation/scale, so geometry is
-        // authored relative to the root anchor exactly like the batched path.
-        const glm::vec2 bottomLeft = {
-            offset.x - anchor.x,
-            offset.y - anchor.y
+        // Root rotation/scale happens in the A15 shader around the root anchor.
+        // Child transforms are baked once into local geometry because the safe
+        // classifier has already excluded animation lifecycles that mutate that
+        // subtree structure over time.
+        const glm::vec2 rootAnchor = ccPointToGLM(object->getAnchorPointInPoints());
+        const glm::vec2 bottomLeft = ccPointToGLM(localBottomLeftPoint) - rootAnchor;
+        const glm::vec2 right = {
+            localTransform.a * crop.size.width,
+            localTransform.b * crop.size.width
         };
-        const glm::vec2 right = { crop.size.width, 0.f };
-        const glm::vec2 up = { 0.f, crop.size.height };
+        const glm::vec2 up = {
+            localTransform.c * crop.size.height,
+            localTransform.d * crop.size.height
+        };
 
-        // Standalone CCSprite already owns the authoritative Cocos quad. Reuse
-        // its final UV corners rather than recreating rotated/flip rules.
+        // Reuse Cocos' already-resolved UV corners so rotated/trimmed/flipped
+        // frames remain identical to stock Geometry Dash.
         const auto quad = sprite->getQuad();
         const glm::vec2 uvBL = quadUV(quad.bl);
         const glm::vec2 uvBR = quadUV(quad.br);
         const glm::vec2 uvTL = quadUV(quad.tl);
         const glm::vec2 uvTR = quadUV(quad.tr);
 
-        if (!activeRange || activeTexture != texture->getName()) {
-            drawRanges.push_back({ texture->getName(), (u32)indices.size(), 0 });
+        const auto blend = sprite->getBlendFunc();
+        const u32 textureId = texture->getName();
+        const u32 blendSrc = (u32)blend.src;
+        const u32 blendDst = (u32)blend.dst;
+
+        // Preserve sprite order exactly. A new range is created whenever texture
+        // or blend changes, rather than sorting by texture and breaking z order.
+        if (!activeRange ||
+            activeTexture != textureId ||
+            activeBlendSrc != blendSrc ||
+            activeBlendDst != blendDst) {
+            drawRanges.push_back({
+                textureId,
+                blendSrc,
+                blendDst,
+                (u32)indices.size(),
+                0
+            });
             activeRange = &drawRanges.back();
-            activeTexture = texture->getName();
+            activeTexture = textureId;
+            activeBlendSrc = blendSrc;
+            activeBlendDst = blendDst;
         }
 
         const u16 baseVertex = (u16)vertices.size();
@@ -163,7 +208,7 @@ bool StandaloneAssistBatch::buildGeometry(
         ownedSprites.push_back(sprite);
     }
 
-    if (vertices.empty() || indices.empty() || drawRanges.empty())
+    if (ownedSprites.size() != candidates.size() || vertices.empty() || indices.empty() || drawRanges.empty())
         return false;
 
     vertexBuffer = Buffer::createStaticDraw(
@@ -284,7 +329,6 @@ void StandaloneAssistBatch::draw() {
 
     glBindVertexArray(vao);
     glEnable(GL_BLEND);
-    glBlendFunc((GLenum)blendSrc, (GLenum)blendDst);
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
     glDepthMask(GL_FALSE);
     glStencilMask(0);
@@ -293,6 +337,7 @@ void StandaloneAssistBatch::draw() {
         if (!range.textureId || !range.indexCount)
             continue;
 
+        glBlendFunc((GLenum)range.blendSrc, (GLenum)range.blendDst);
         shader->setTexture("u_spriteSheetTexture", 0, range.textureId);
         glDrawElements(
             GL_TRIANGLES,
