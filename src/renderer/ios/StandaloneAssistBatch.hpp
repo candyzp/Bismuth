@@ -8,10 +8,10 @@
 #include <Geode/Geode.hpp>
 #include <vector>
 
-// Replaces a consecutive run of standalone safe CCSprites that share the same
-// parent/z/blend slot. The original sprites remain alive so Geometry Dash keeps
-// resolving gameplay, triggers, colors, visibility and other state; their stock
-// render visits are skipped while this node submits the persistent GPU geometry.
+// Replaces consecutive, fully-owned standalone GameObject visual subtrees.
+// Geometry Dash keeps every object/sprite alive and continues resolving gameplay,
+// triggers, colors, visibility and animation state. Only the final render visit
+// of roots whose entire safe visual subtree was accepted is skipped.
 class StandaloneAssistBatch : public cocos2d::CCNode {
 public:
     struct Stats {
@@ -46,6 +46,8 @@ private:
 
     struct DrawRange {
         u32 textureId = 0;
+        u32 blendSrc = GL_SRC_ALPHA;
+        u32 blendDst = GL_ONE_MINUS_SRC_ALPHA;
         u32 startIndex = 0;
         u32 indexCount = 0;
     };
@@ -65,9 +67,6 @@ private:
     Buffer* vertexBuffer = nullptr;
     Buffer* indexBuffer = nullptr;
     u32 vao = 0;
-
-    u32 blendSrc = GL_SRC_ALPHA;
-    u32 blendDst = GL_ONE_MINUS_SRC_ALPHA;
 
     std::vector<DrawRange> drawRanges;
     std::vector<cocos2d::CCSprite*> ownedSprites;
