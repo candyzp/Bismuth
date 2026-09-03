@@ -30,7 +30,9 @@ void Buffer::write(void* data, usize size, usize offset) {
     glBindBuffer(GL_ARRAY_BUFFER, previouslyBoundBuffer);
 }
 
-Buffer* Buffer::create(const char* name, usize size, GLenum usage) {
+Buffer* Buffer::create(const char* name, usize size, GLenum usage, bool keepShadow) {
+    (void)keepShadow;
+
     u32 buffer;
     glGenBuffers(1, &buffer);
 
