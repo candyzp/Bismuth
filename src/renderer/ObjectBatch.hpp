@@ -32,7 +32,7 @@ using namespace geode;
     ATTRIB(0, vec2, positionOffset) \
     ATTRIB(1, vec2, texCoord) \
     ATTRIB(2, u32,  srbIndex) \
-    ATTRIB(3, u16,  colorChannel) \
+    ATTRIB(3, u16, colorChannel) \
 
 #endif
 
@@ -40,7 +40,7 @@ using namespace geode;
     TYPE NAME;
 
 #define VERTICIES_PER_QUAD 4
-#define INDICIES_PER_QUAD  6
+#define INDICIES_PER_QUAD 6
 
 struct ObjectVertex {
     OBJECT_VERTEX_ATTRIBUTES(VERTEX_ATTRIBUTE_AS_STRUCT_MEMBER);
@@ -170,7 +170,9 @@ public:
 
     void draw(LayerDrawCall* drawCall);
 
-private:
+    // Public only so the translation-unit live-state helper can inspect one
+    // record without duplicating the refresh logic. It remains an internal
+    // renderer implementation detail and is not part of the mod API.
     struct LiveSpriteRecord {
         GameObject* object = nullptr;
         cocos2d::CCSprite* sprite = nullptr;
@@ -181,6 +183,7 @@ private:
         std::array<ObjectVertex, VERTICIES_PER_QUAD> vertices {};
     };
 
+private:
     void prepareVAO();
     bool shouldTrackLiveSpriteObject(GameObject* object) const;
     cocos2d::CCAffineTransform getLiveSpriteTransform(const LiveSpriteRecord& record) const;
@@ -200,7 +203,7 @@ private:
     u32 vertexCount = 0;
 
     std::vector<u32> indicies;
-    u32 indexCount = 0;
+    u32 indexCount  = 0;
 
     std::vector<u32> culledIndicies;
     u32 culledIndexCount = 0;
