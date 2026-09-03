@@ -268,16 +268,29 @@ void VisibilityManager::updateVisibleAnimatedObject(Object* object) {
     if (!object->isAnimated || object->animatedVisibleThisFrame)
         return;
 
+    // visibleAnimatedObjects still contains last frame's set until the end of
+    // calculateVisibilitiesForCameraView(). That lets us distinguish a true
+    // offscreen -> visible transition from an object that is simply continuing
+    // to animate, without storing another per-object lifecycle flag.
+    const bool wasVisibleLastFrame = std::find(
+        visibleAnimatedObjects.begin(), visibleAnimatedObjects.end(), object
+    ) != visibleAnimatedObjects.end();
+
     object->animatedVisibleThisFrame = true;
     nextVisibleAnimatedObjects.push_back(object);
 
-    // AnimatedGameObject::activateObject() starts SpriteAnimationManager when
-    // the underlying GameObject changes from inactive to active. Calling it
-    // once per visible frame matches GD's active-object loop; it does not
-    // restart an animation that is already active.
+    auto animatedObject = static_cast<AnimatedGameObject*>(object->gameObject);
+
+    // AnimatedGameObject has a dedicated animation setup path. Calling only
+    // GameObject::activateObject() is not enough for objects whose Cocos part
+    // animation was never started because Bismuth skipped preUpdateVisibility.
+    // Start/setup it once when the object enters the GPU camera set, not every
+    // frame, so we preserve the animation timeline and keep CPU overhead tiny.
+    if (!wasVisibleLastFrame)
+        animatedObject->updateObjectAnimation();
+
     object->gameObject->activateObject();
 
-    auto animatedObject = static_cast<AnimatedGameObject*>(object->gameObject);
     auto renderer = Renderer::get();
     auto playLayer = renderer ? renderer->getPlayLayer() : nullptr;
 
