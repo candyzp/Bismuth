@@ -3,6 +3,7 @@
 #include "AssistShadowBatch.hpp"
 
 #include "Geode/cocos/CCDirector.h"
+#include "Geode/cocos/cocoa/CCAffineTransform.h"
 #include "Geode/cocos/kazmath/include/kazmath/mat4.h"
 
 #include <algorithm>
@@ -11,12 +12,46 @@
 using namespace geode::prelude;
 
 namespace {
-constexpr usize MAX_SHADOW_SPRITES = 8192;
+// Four vertices per sprite with a u16 index buffer. Keep one slot of headroom
+// under 65535 so a visible ownership batch can never silently truncate.
+constexpr usize MAX_BATCH_SPRITES = 16383;
 
 struct CandidateWithTexture {
     ResolvedStateLayer::ShadowCandidate candidate;
     u32 textureId = 0;
+    i32 objectZOrder = 0;
+    usize originalOrder = 0;
 };
+
+static bool isDescendantOf(cocos2d::CCNode* node, cocos2d::CCNode* ancestor) {
+    for (auto current = node; current; current = current->getParent()) {
+        if (current == ancestor)
+            return true;
+    }
+    return false;
+}
+
+// Build only the child-to-GameObject transform. The assist vertex shader owns
+// the root GameObject translation/rotation/scale math from the resolved-state
+// texture, so including the root transform here would apply it twice.
+static bool getSpriteLocalTransform(
+    GameObject* object,
+    cocos2d::CCSprite* sprite,
+    cocos2d::CCAffineTransform& out
+) {
+    out = cocos2d::CCAffineTransformMakeIdentity();
+    if (!object || !sprite)
+        return false;
+    if (sprite == static_cast<cocos2d::CCSprite*>(object))
+        return true;
+
+    auto node = static_cast<cocos2d::CCNode*>(sprite);
+    while (node && node != object) {
+        out = cocos2d::CCAffineTransformConcat(out, node->nodeToParentTransform());
+        node = node->getParent();
+    }
+    return node == object;
+}
 } // namespace
 
 AssistShadowBatch::~AssistShadowBatch() {
@@ -25,10 +60,11 @@ AssistShadowBatch::~AssistShadowBatch() {
 
 geode::Ref<AssistShadowBatch> AssistShadowBatch::create(
     ResolvedStateLayer* state,
-    Shader* assistShader
+    Shader* assistShader,
+    cocos2d::CCSpriteBatchNode* sourceBatch
 ) {
     auto node = new AssistShadowBatch();
-    if (node->initWithState(state, assistShader)) {
+    if (node->initWithState(state, assistShader, sourceBatch)) {
         node->autorelease();
         return node;
     }
@@ -36,28 +72,38 @@ geode::Ref<AssistShadowBatch> AssistShadowBatch::create(
     return nullptr;
 }
 
-bool AssistShadowBatch::initWithState(ResolvedStateLayer* state, Shader* assistShader) {
-    if (!CCNode::init() || !state || !assistShader || !state->isGPUStateReady())
+bool AssistShadowBatch::initWithState(
+    ResolvedStateLayer* state,
+    Shader* assistShader,
+    cocos2d::CCSpriteBatchNode* sourceBatch
+) {
+    if (!CCNode::init() || !state || !assistShader || !sourceBatch || !state->isGPUStateReady())
         return false;
 
     resolvedState = state;
     shader = assistShader;
+    stockBatch = sourceBatch;
 
     GLint vertexTextureUnits = 0;
     glGetIntegerv(GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS, &vertexTextureUnits);
     if (vertexTextureUnits < 2) {
         log::warn(
-            "Bismuth iOS shadow batch needs 2 vertex texture units; device reports {}",
+            "Bismuth iOS static batch needs 2 vertex texture units; device reports {}",
             vertexTextureUnits
         );
         return false;
     }
+
+    const auto blend = stockBatch->getBlendFunc();
+    blendSrc = (u32)blend.src;
+    blendDst = (u32)blend.dst;
 
     if (!buildGeometry())
         return false;
 
     setVisible(true);
     stats.ready = true;
+    stats.visibleOwnership = true;
     return true;
 }
 
@@ -75,35 +121,64 @@ void AssistShadowBatch::destroyGL() {
 
     drawRanges.clear();
     stats.ready = false;
+    stats.visibleOwnership = false;
 }
 
 bool AssistShadowBatch::buildGeometry() {
-    const auto& sourceCandidates = resolvedState->getShadowCandidates();
-    stats.eligibleSprites = sourceCandidates.size();
+    const auto sourceCandidates = resolvedState->getStaticShadowCandidates();
 
     std::vector<CandidateWithTexture> candidates;
-    candidates.reserve(std::min<usize>(sourceCandidates.size(), MAX_SHADOW_SPRITES));
+    candidates.reserve(std::min<usize>(sourceCandidates.size(), MAX_BATCH_SPRITES));
 
+    usize ordinal = 0;
     for (const auto& candidate : sourceCandidates) {
-        if (candidates.size() >= MAX_SHADOW_SPRITES)
-            break;
         if (!candidate.object || !candidate.sprite)
             continue;
-        auto texture = candidate.sprite->getTexture();
-        if (!texture || texture->getName() == 0)
+        if (!isDescendantOf(candidate.sprite, stockBatch))
             continue;
-        candidates.push_back({ candidate, texture->getName() });
+
+        ++stats.eligibleSprites;
+        if (stats.eligibleSprites > MAX_BATCH_SPRITES) {
+            log::warn(
+                "Bismuth iOS static batch refused {}+ sprites: u16 ownership batch would truncate",
+                MAX_BATCH_SPRITES
+            );
+            return false;
+        }
+
+        auto texture = candidate.sprite->getTexture();
+        if (!texture || texture->getName() == 0) {
+            log::warn("Bismuth iOS static batch refused a sprite with no live texture");
+            return false;
+        }
+
+        cocos2d::CCAffineTransform localTransform;
+        if (!getSpriteLocalTransform(candidate.object, candidate.sprite, localTransform)) {
+            // A reparented color/glow sprite must remain in its stock batch. The
+            // renderer only creates visible ownership for batches made entirely
+            // of normal GameObject trees, so reaching this is a hard safety stop.
+            log::warn("Bismuth iOS static batch refused detached/reparented sprite geometry");
+            return false;
+        }
+
+        candidates.push_back({
+            candidate,
+            texture->getName(),
+            candidate.object->getObjectZOrder(),
+            ordinal++
+        });
     }
 
-    if (candidates.empty()) {
-        log::info("Bismuth iOS shadow batch: no single-sprite static solid candidates");
+    if (candidates.empty())
         return false;
-    }
 
-    // Group only by the already-resolved backing texture. Draw ordering is not
-    // part of this validation pass because all framebuffer writes are disabled.
+    // Preserve the stock batch's object ordering. We intentionally do NOT sort
+    // by texture now that this pass owns visible pixels; texture changes split a
+    // draw range in place instead of reordering translucent geometry.
     std::stable_sort(candidates.begin(), candidates.end(), [](const auto& a, const auto& b) {
-        return a.textureId < b.textureId;
+        if (a.objectZOrder != b.objectZOrder)
+            return a.objectZOrder < b.objectZOrder;
+        return a.originalOrder < b.originalOrder;
     });
 
     std::vector<Vertex> vertices;
@@ -117,16 +192,31 @@ bool AssistShadowBatch::buildGeometry() {
     DrawRange* activeRange = nullptr;
 
     for (const auto& entry : candidates) {
+        auto object = entry.candidate.object;
         auto sprite = entry.candidate.sprite;
         auto texture = sprite->getTexture();
-        if (!texture)
-            continue;
+        if (!object || !texture)
+            return false;
+
+        cocos2d::CCAffineTransform localTransform;
+        if (!getSpriteLocalTransform(object, sprite, localTransform))
+            return false;
 
         const auto crop = sprite->getTextureRect();
+        const auto localBottomLeftPoint = cocos2d::CCPointApplyAffineTransform(
+            sprite->getOffsetPosition(),
+            localTransform
+        );
 
-        glm::vec2 posBottomLeft = ccPointToGLM(sprite->getOffsetPosition());
-        glm::vec2 posRight = { crop.size.width, 0.f };
-        glm::vec2 posUp = { 0.f, crop.size.height };
+        glm::vec2 posBottomLeft = ccPointToGLM(localBottomLeftPoint);
+        glm::vec2 posRight = {
+            localTransform.a * crop.size.width,
+            localTransform.b * crop.size.width
+        };
+        glm::vec2 posUp = {
+            localTransform.c * crop.size.height,
+            localTransform.d * crop.size.height
+        };
 
         glm::vec2 texBottomLeft;
         glm::vec2 texRight;
@@ -141,8 +231,6 @@ bool AssistShadowBatch::buildGeometry() {
             texUp = { crop.size.height, 0.f };
         }
 
-        // Match Cocos' quad construction. Flips reverse local geometry while UVs
-        // stay attached to their original corners.
         if (sprite->isFlipX()) {
             posBottomLeft += posRight;
             posRight = -posRight;
@@ -174,24 +262,9 @@ bool AssistShadowBatch::buildGeometry() {
         const float objectIndex = (float)entry.candidate.objectStateIndex;
         const float spriteIndex = (float)entry.candidate.spriteStateIndex;
 
-        vertices.push_back({
-            posBottomLeft,
-            texBottomLeft,
-            objectIndex,
-            spriteIndex
-        });
-        vertices.push_back({
-            posBottomLeft + posRight,
-            texBottomLeft + texRight,
-            objectIndex,
-            spriteIndex
-        });
-        vertices.push_back({
-            posBottomLeft + posUp,
-            texBottomLeft + texUp,
-            objectIndex,
-            spriteIndex
-        });
+        vertices.push_back({ posBottomLeft, texBottomLeft, objectIndex, spriteIndex });
+        vertices.push_back({ posBottomLeft + posRight, texBottomLeft + texRight, objectIndex, spriteIndex });
+        vertices.push_back({ posBottomLeft + posUp, texBottomLeft + texUp, objectIndex, spriteIndex });
         vertices.push_back({
             posBottomLeft + posRight + posUp,
             texBottomLeft + texRight + texUp,
@@ -209,16 +282,16 @@ bool AssistShadowBatch::buildGeometry() {
         ++stats.batchedSprites;
     }
 
-    if (vertices.empty() || indices.empty() || drawRanges.empty())
+    if (stats.batchedSprites != stats.eligibleSprites || vertices.empty() || indices.empty() || drawRanges.empty())
         return false;
 
     vertexBuffer = Buffer::createStaticDraw(
-        "Resolved assist shadow vertices",
+        "Resolved static ownership vertices",
         vertices.data(),
         vertices.size() * sizeof(Vertex)
     );
     indexBuffer = Buffer::createStaticDraw(
-        "Resolved assist shadow indices",
+        "Resolved static ownership indices",
         indices.data(),
         indices.size() * sizeof(u16)
     );
@@ -261,7 +334,7 @@ bool AssistShadowBatch::buildGeometry() {
     stats.verticesResident = vertices.size();
 
     log::info(
-        "Bismuth iOS shadow batch: {} static sprites, {} texture batch(es), {} vertices",
+        "Bismuth iOS visible static batch: {} sprites, {} draw range(s), {} vertices",
         stats.batchedSprites,
         stats.textureBatches,
         stats.verticesResident
@@ -273,10 +346,7 @@ void AssistShadowBatch::draw() {
     stats.drawCallsLastFrame = 0;
     stats.indicesLastFrame = 0;
 
-    // This is deliberately tied to the diagnostic toggle. Normal gameplay still
-    // pays zero shadow-draw cost until the first visible ownership handoff is
-    // validated and can replace equivalent stock CPU rendering work.
-    if (!stats.ready || !Mod::get()->getSettingValue<bool>("ios_gpu_debug"))
+    if (!stats.ready || !isVisible())
         return;
     if (!resolvedState || !resolvedState->isGPUStateReady() || !shader || !vao)
         return;
@@ -299,6 +369,11 @@ void AssistShadowBatch::draw() {
     GLint previousProgram = 0;
     GLint previousActiveTexture = GL_TEXTURE0;
     GLint previousTextures[3] = {0, 0, 0};
+    GLint previousBlendSrcRGB = GL_SRC_ALPHA;
+    GLint previousBlendDstRGB = GL_ONE_MINUS_SRC_ALPHA;
+    GLint previousBlendSrcAlpha = GL_SRC_ALPHA;
+    GLint previousBlendDstAlpha = GL_ONE_MINUS_SRC_ALPHA;
+    GLboolean previousBlendEnabled = glIsEnabled(GL_BLEND);
     GLboolean previousColorMask[4] = {GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE};
     GLboolean previousDepthMask = GL_TRUE;
     GLint previousStencilMask = 0;
@@ -308,6 +383,10 @@ void AssistShadowBatch::draw() {
     glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &previousIBO);
     glGetIntegerv(GL_CURRENT_PROGRAM, &previousProgram);
     glGetIntegerv(GL_ACTIVE_TEXTURE, &previousActiveTexture);
+    glGetIntegerv(GL_BLEND_SRC_RGB, &previousBlendSrcRGB);
+    glGetIntegerv(GL_BLEND_DST_RGB, &previousBlendDstRGB);
+    glGetIntegerv(GL_BLEND_SRC_ALPHA, &previousBlendSrcAlpha);
+    glGetIntegerv(GL_BLEND_DST_ALPHA, &previousBlendDstAlpha);
     glGetBooleanv(GL_COLOR_WRITEMASK, previousColorMask);
     glGetBooleanv(GL_DEPTH_WRITEMASK, &previousDepthMask);
     glGetIntegerv(GL_STENCIL_WRITEMASK, &previousStencilMask);
@@ -330,10 +409,13 @@ void AssistShadowBatch::draw() {
 
     glBindVertexArray(vao);
 
-    // The GPU genuinely executes vertex expansion/transforms and fragment
-    // texture sampling, but this validation stage cannot alter a single visible
-    // pixel or depth/stencil value. Stock GD is still the sole visual owner.
-    glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+    // Visible ownership is intentionally restricted to whole stock batch nodes
+    // that contain only StaticSafe GameObjects. Animation-heavy/mixed batches
+    // remain untouched in Cocos, while these batches actually replace Cocos draw
+    // work instead of adding a no-op shadow pass on top of it.
+    glEnable(GL_BLEND);
+    glBlendFunc((GLenum)blendSrc, (GLenum)blendDst);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
     glDepthMask(GL_FALSE);
     glStencilMask(0);
 
@@ -360,6 +442,14 @@ void AssistShadowBatch::draw() {
     );
     glDepthMask(previousDepthMask);
     glStencilMask((u32)previousStencilMask);
+    glBlendFuncSeparate(
+        (GLenum)previousBlendSrcRGB,
+        (GLenum)previousBlendDstRGB,
+        (GLenum)previousBlendSrcAlpha,
+        (GLenum)previousBlendDstAlpha
+    );
+    if (!previousBlendEnabled)
+        glDisable(GL_BLEND);
 
     glBindVertexArray((u32)previousVAO);
     glBindBuffer(GL_ARRAY_BUFFER, (u32)previousVBO);
