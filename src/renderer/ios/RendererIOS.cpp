@@ -181,6 +181,11 @@ bool Renderer::init(PlayLayer* playLayer) {
                 }
             }
 
+            // Compile the exact per-frame state walk only after ownership is
+            // final. Safe-but-unowned objects remain stock and are no longer
+            // polled every frame merely because they passed classification.
+            state->resolvedState->setGPUOwnedSprites(state->ownedSprites);
+
             log::info(
                 "Bismuth iOS direct discovery: {} candidates, {} batched, {} unbatched, {} unique batch nodes, {} GPU nodes, {} owned sprites",
                 state->gpuCandidateSprites,
@@ -325,8 +330,9 @@ void Renderer::updateDebugText() {
                 "Safe objects: {} ({} static / {} dynamic)\n"
                 "Stock animation/complex objects: {} | safe sprite records: {}\n"
                 "Discovery: {} candidates | {} batched | {} no-batch | {} batch nodes\n"
+                "Active GPU state: {} objects | {} sprites\n"
                 "Dirty: {} transform | {} appearance | {} visibility | {} UV\n"
-                "Static reused: {}/{} | uploads: {} in {} call(s)\n"
+                "Static GPU reused: {}/{} | uploads: {} in {} call(s)\n"
                 "GPU assist batches: {} | owned sprites: {} | rejected: {} | parentless batches: {}\n"
                 "Resident verts: {} | GPU draws: {} / frame | indices: {} | ranges: {}\n"
                 "Stock CPU quad transforms skipped: {}\n"
@@ -345,12 +351,14 @@ void Renderer::updateDebugText() {
                 state ? state->candidatesWithBatch : 0,
                 state ? state->candidatesWithoutBatch : 0,
                 state ? state->candidateBatchNodes : 0,
+                stats.activeGPUObjects,
+                stats.activeGPUSprites,
                 stats.dirtyTransforms,
                 stats.dirtyAppearance,
                 stats.dirtyVisibility,
                 stats.dirtyUVs,
                 stats.staticObjectsReused,
-                stats.staticObjects,
+                stats.activeStaticObjects,
                 byteSizeToString(stats.bytesUploaded),
                 stats.uploadCalls,
                 gpuBatchCount,
