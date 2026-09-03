@@ -128,12 +128,14 @@ void main() {
 
     // Runtime state shares the static object texture so the ES2 backend does
     // not consume another vertex texture unit. Two contiguous texels per object
-    // are refreshed each frame: move/rotate plus scale. The fourth component of
-    // r0 is intentionally ignored until Area Fade is tracked independently;
-    // stock Cocos opacity is not authoritative when Bismuth skips GD culling.
+    // are refreshed each frame. The CPU only packs raw 2.2 deltas; combining
+    // Area Rotate and converting Area Scale into a factor happens on the GPU.
+    // Area Fade still needs dedicated tracked state and is intentionally absent.
     float runtimeBase = u_runtimeDataOffset + objectIndex * 2.0;
     vec4 r0 = fetchData(u_staticDataTexture, u_staticDataTextureSize, runtimeBase + 0.0);
     vec4 r1 = fetchData(u_staticDataTexture, u_staticDataTextureSize, runtimeBase + 1.0);
+    float runtimeRotation = (r0.z + r0.w) * 0.5;
+    vec2 runtimeScale = vec2(1.0) + r1.xy * r1.zw;
 
     vec2 objectPosition = s0.xy;
     float rotationSpeed = s0.z;
@@ -153,8 +155,8 @@ void main() {
     mat2 localTransform = mat2(g1.x, g1.y, g1.z, g1.w);
     objectPosition = positionalTransform * objectPosition + g2.xy;
 
-    // GD calculates 2.2 Area / enter effects on the CPU, but Bismuth keeps the
-    // heavy vertex work here. The position delta is already in world space.
+    // GD calculates 2.2 Area / enter effect state on the CPU, while the GPU
+    // performs the repetitive per-vertex transform work.
     objectPosition += r0.xy;
     objectOpacity *= g2.z;
 
@@ -164,9 +166,9 @@ void main() {
 
     // Runtime Area Scale and Area Rotate are local object transforms. Apply
     // them after the group transform, matching GD's visual-update ordering.
-    vertexOffset *= r1.xy;
-    if (abs(r0.z) > 0.00001)
-        vertexOffset = rotatePointAroundOrigin(vertexOffset, -r0.z / 180.0 * PI);
+    vertexOffset *= runtimeScale;
+    if (abs(runtimeRotation) > 0.00001)
+        vertexOffset = rotatePointAroundOrigin(vertexOffset, -runtimeRotation / 180.0 * PI);
 
     if (abs(rotationSpeed) > 0.00001)
         vertexOffset = rotatePointAroundOrigin(vertexOffset, -rotationSpeed * u_timer / 180.0 * PI);

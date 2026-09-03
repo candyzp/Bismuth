@@ -43,7 +43,7 @@ struct IOSRendererState {
     std::vector<glm::vec4> runtimeTexels;
     std::vector<glm::vec4> groupTexels;
     std::vector<GameObject*> objects;
-    std::vector<glm::vec2> baseScales;
+    std::vector<glm::vec2> inverseBaseScales;
     usize runtimeDataOffset = 0;
     std::unique_ptr<ColorChannelBuffer> colorChannels = std::make_unique<ColorChannelBuffer>();
 
@@ -145,47 +145,47 @@ static void packRuntimeObjectStateTexture(Renderer* renderer) {
     for (usize i = 0; i < objectCount; ++i) {
         auto object = state->objects[i];
         if (!object) {
-            state->runtimeTexels[i * 2 + 0] = { 0.f, 0.f, 0.f, 1.f };
-            state->runtimeTexels[i * 2 + 1] = { 1.f, 1.f, 0.f, 0.f };
+            state->runtimeTexels[i * 2 + 0] = { 0.f, 0.f, 0.f, 0.f };
+            state->runtimeTexels[i * 2 + 1] = { 0.f, 0.f, 0.f, 0.f };
             continue;
         }
 
-        const glm::vec2 baseScale = state->baseScales[i];
-        const float runtimeScaleX = std::abs(baseScale.x) > 0.0001f
-            ? 1.f + object->m_unk2BC / baseScale.x
-            : 1.f;
-        const float runtimeScaleY = std::abs(baseScale.y) > 0.0001f
-            ? 1.f + object->m_unk2C0 / baseScale.y
-            : 1.f;
+        // Keep the CPU side as a thin state packer. The vertex shader combines
+        // the two Area Rotate contributions and converts raw Area Scale offsets
+        // into final scale factors. Inverse base scales are precomputed once.
+        const glm::vec2 inverseBaseScale = state->inverseBaseScales[i];
+        const float runtimeRotationX = object->m_unk2A8;
+        const float runtimeRotationY = object->m_unk2B0;
+        const float runtimeScaleOffsetX = object->m_unk2BC;
+        const float runtimeScaleOffsetY = object->m_unk2C0;
 
         // 2.2 Area / enter effects keep their temporary visual contribution in
         // these fields. Old Move/Rotate group state remains in GroupManager, so
         // feeding only these deltas avoids applying the normal trigger path twice.
-        const float runtimeRotation = (object->m_unk2A8 + object->m_unk2B0) * 0.5f;
-        const float runtimeOpacity = std::clamp((float)object->getOpacity() / 255.f, 0.f, 1.f);
-
         const bool hasRuntimeVisualState =
             std::abs(object->m_positionXOffset) > 0.001f ||
             std::abs(object->m_positionYOffset) > 0.001f ||
-            std::abs(runtimeRotation) > 0.001f ||
-            std::abs(runtimeScaleX - 1.f) > 0.0001f ||
-            std::abs(runtimeScaleY - 1.f) > 0.0001f ||
-            runtimeOpacity < 0.999f;
+            std::abs(runtimeRotationX) > 0.001f ||
+            std::abs(runtimeRotationY) > 0.001f ||
+            std::abs(runtimeScaleOffsetX) > 0.0001f ||
+            std::abs(runtimeScaleOffsetY) > 0.0001f;
 
         if (hasRuntimeVisualState)
             renderer->getObjectBatch().trackRuntimeVisualObject(object);
 
+        // r0 = world move XY + raw Area Rotate contributions XY.
         state->runtimeTexels[i * 2 + 0] = {
             object->m_positionXOffset,
             object->m_positionYOffset,
-            runtimeRotation,
-            runtimeOpacity
+            runtimeRotationX,
+            runtimeRotationY
         };
+        // r1 = raw Area Scale offsets XY + precomputed inverse base scale XY.
         state->runtimeTexels[i * 2 + 1] = {
-            runtimeScaleX,
-            runtimeScaleY,
-            0.f,
-            0.f
+            runtimeScaleOffsetX,
+            runtimeScaleOffsetY,
+            inverseBaseScale.x,
+            inverseBaseScale.y
         };
     }
 
@@ -414,9 +414,9 @@ void Renderer::generateStaticRenderingBuffer(ObjectSorter& sorter) {
 
     auto state = iosState(this);
     state->objects.clear();
-    state->baseScales.clear();
+    state->inverseBaseScales.clear();
     state->objects.reserve(renderedGameObjectCount);
-    state->baseScales.reserve(renderedGameObjectCount);
+    state->inverseBaseScales.reserve(renderedGameObjectCount);
 
     usize index = 0;
     for (auto it = sorter.iterator(); !it.isEnd(); it.next()) {
@@ -458,7 +458,10 @@ void Renderer::generateStaticRenderingBuffer(ObjectSorter& sorter) {
 
         objectSRBIndicies[object] = index;
         state->objects.push_back(object);
-        state->baseScales.push_back({ object->m_scaleX, object->m_scaleY });
+        state->inverseBaseScales.push_back({
+            std::abs(object->m_scaleX) > 0.0001f ? 1.f / object->m_scaleX : 0.f,
+            std::abs(object->m_scaleY) > 0.0001f ? 1.f / object->m_scaleY : 0.f
+        });
         index++;
     }
 
@@ -492,8 +495,8 @@ void Renderer::generateStaticRenderingBuffer(ObjectSorter& sorter) {
         };
 
         const usize runtimeBase = state->runtimeDataOffset + i * IOS_RUNTIME_TEXELS_PER_OBJECT;
-        state->staticTexels[runtimeBase + 0] = { 0.f, 0.f, 0.f, 1.f };
-        state->staticTexels[runtimeBase + 1] = { 1.f, 1.f, 0.f, 0.f };
+        state->staticTexels[runtimeBase + 0] = { 0.f, 0.f, 0.f, 0.f };
+        state->staticTexels[runtimeBase + 1] = { 0.f, 0.f, 0.f, 0.f };
     }
 
     state->staticDataTexture = DataTexture::create(
@@ -559,6 +562,7 @@ void Renderer::updateDebugText() {
         text += fmt::format("Object data: {}\n", byteSizeToString(objectDataSize));
         text += fmt::format("Group data: {}\n", byteSizeToString(groupManager.getGroupStateBufferSize()));
         text += fmt::format("Color data: {}\n", byteSizeToString(sizeof(ColorChannelBuffer)));
+        text += "Runtime transform math: GPU\n";
         text += "\n" + BProfiler::toString();
     }
 
