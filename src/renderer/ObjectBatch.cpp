@@ -3,6 +3,7 @@
 #include "Renderer.hpp"
 #include "SpriteMeshDictionary.hpp"
 #include "common.hpp"
+#include "glm/common.hpp"
 #include "glm/fwd.hpp"
 #include "math/ConvexList.hpp"
 #include "math/ConvexPolygon.hpp"
@@ -101,6 +102,19 @@ void ObjectBatch::prepareSpriteMeshWrite(
 
     currentSpriteVertexTransforms    = getSpriteVertexTransform(sprite, transform, spriteSheet);
     currentSpriteObjectStartPosition = ccPointToGLM(object->m_startPosition);
+
+    // Measure the actual baked quad before section culling is built. The old
+    // path registered the entire GameObject only at m_startPosition, so large
+    // decoration could cross one or more 100-unit section boundaries and get
+    // chopped into vertical strips while its anchor sat outside the camera set.
+    const auto& t = currentSpriteVertexTransforms;
+    const glm::vec2 p0 = t.positionBottomLeft;
+    const glm::vec2 p1 = p0 + t.positionRight;
+    const glm::vec2 p2 = p0 + t.positionUp;
+    const glm::vec2 p3 = p0 + t.positionRight + t.positionUp;
+    const glm::vec2 visualMin = glm::min(glm::min(p0, p1), glm::min(p2, p3));
+    const glm::vec2 visualMax = glm::max(glm::max(p0, p1), glm::max(p2, p3));
+    visibilityManager.includeCurrentObjectVisualBounds(visualMin, visualMax);
 
     currentSpriteSRBIndex     = renderer.getObjectSRBIndex(object);
     currentSpriteColorChannel = colorChannel;
@@ -231,6 +245,10 @@ void ObjectBatch::writeGameObject(GameObject* object) {
     ObjectUtils::unpackObjectIntoSprites(object, [&](const UnpackedSprite& sprite) {
         addSprite(sprite.parentObject, sprite.sprite, sprite.type, sprite.transform);
     });
+
+    // Section registration is deliberately delayed until every child/glow/
+    // detail sprite has contributed its baked visual bounds.
+    visibilityManager.finishObject();
 
     object->setScaleX(originalScaleX);
     object->setScaleY(originalScaleY);
