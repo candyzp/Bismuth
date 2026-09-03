@@ -66,3 +66,17 @@ Important safety/correctness rule for follow-up work:
 Validation status:
 - Source/field audit done against Geode 2.2081 bindings for the runtime transform fields.
 - No GitHub check run exists on the current head, and the manual workflow was intentionally not started. Device/build validation is still required.
+
+## Assistant B active ownership — 50/50 split
+
+Assistant A's transform/culling work above is considered complete for now. Assistant B is now actively owning the appearance/runtime-effects half:
+- color channel correctness and stock-level color parity
+- HSV and blending correctness
+- Area Fade runtime state
+- Area Tint runtime state
+- glow/particle visual mismatches that are independent of Move/Rotate/Scale geometry
+- iOS appearance-side GPU data plumbing needed for those effects
+
+Assistant B may now edit `RendererIOS.cpp`, the iOS shaders, and shared renderer structures when the change is specifically for the appearance/runtime-effects half. Do not overwrite or redesign Assistant A's Move/Rotate/Scale/culling implementation unless a direct compatibility bug is proven.
+
+Assistant B will preserve the existing goal: CPU simulates GD effect logic, GPU performs the visual rendering/transform work. No full stock `preUpdateVisibility()` or Cocos fallback.
