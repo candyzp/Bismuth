@@ -17,6 +17,7 @@ public:
     static void destroy(DataTexture* texture) { delete texture; }
 
     bool upload(const void* data, usize texelCount);
+    bool uploadRange(const void* data, usize startTexel, usize texelCount);
     void bind(i32 unit) const;
 
     inline u32 getId() const { return id; }
