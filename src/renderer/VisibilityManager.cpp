@@ -7,6 +7,7 @@
 #include "glm/common.hpp"
 #include <Geode/binding/AnimatedGameObject.hpp>
 #include <Geode/binding/GameObject.hpp>
+#include <algorithm>
 
 using namespace geode::prelude;
 
@@ -14,6 +15,8 @@ VisibilityManager::~VisibilityManager() {
     for (auto obj : allObjects)
         delete obj;
     allObjects.clear();
+    objectLookup.clear();
+    runtimeVisualObjects.clear();
     for (auto layer : visibleSpriteLayers)
         delete layer;
     visibleSpriteLayers.clear();
@@ -21,14 +24,18 @@ VisibilityManager::~VisibilityManager() {
 
 void VisibilityManager::prepareForObject(GameObject* gameObject) {
     // log::info("NEW GAMEOBJECT {}", (void*)gameObject);
-    allObjects.push_back(new Object {
+    auto object = new Object {
         .gameObject = gameObject,
         .isAnimated = gameObject->m_classType == GameObjectClassType::Animated,
+        .groupCombinationIndex = Renderer::get()->getGroupManager().getGroupCombinationIndexForObject(gameObject),
         .destinationLayerIfGlow        = getSpriteLayer(LayerKey::getFromGlowSpriteObject(gameObject)),
         .destinationLayerIfBlending    = getSpriteLayer(LayerKey::getFromObject(gameObject, true)),
         .destinationLayerIfNotBlending = getSpriteLayer(LayerKey::getFromObject(gameObject, false))
-    });
-    currentObject = allObjects.back();
+    };
+
+    allObjects.push_back(object);
+    objectLookup[gameObject] = object;
+    currentObject = object;
     addObjectToSectionStructure(currentObject);
 }
 
@@ -69,11 +76,6 @@ inline static float maxOf4(float a, float b, float c, float d) {
     if (d > a) a = d;
     return a;
 }
-
-// volatile float minX;
-// volatile float minY;
-// volatile float maxX;
-// volatile float maxY;
 
 void VisibilityManager::calculateVisibilitiesForCameraView(const CameraView& view) {
     clearObjectVisibilities();
@@ -123,47 +125,30 @@ void VisibilityManager::calculateVisibilitiesForCameraView(const CameraView& vie
         }
 
 #ifdef GEODE_IS_IOS
-        // Keep CPU culling coarse on iOS and let the GPU render a small edge band.
-        // This slightly shifts rendering work toward the GPU and makes fast-moving
-        // or transformed decoration less likely to pop out at the camera boundary.
-        constexpr float IOS_GPU_ASSIST_MARGIN = 18.0f;
+        // Deliberately keep a wider GPU-side edge band on iOS. This is cheaper
+        // than making the CPU chase every rotated/scaled sprite boundary and it
+        // prevents ordinary fast decoration from being chopped at section edges.
+        constexpr float IOS_GPU_ASSIST_MARGIN = 72.0f;
         min -= glm::vec2(IOS_GPU_ASSIST_MARGIN);
         max += glm::vec2(IOS_GPU_ASSIST_MARGIN);
 #endif
 
-        // auto ssize = glm::vec2 DEFAULT_SECTION_SIZE;
-        
-        // glm::vec2 minc = glm::floor(glm::vec2 { minX, minY } / ssize + glm::vec2(0, 0)) * ssize;
-        // glm::vec2 maxc = glm::floor(glm::vec2 { maxX, maxY } / ssize + glm::vec2(1, 1)) * ssize;
-
-        // glm::vec2 bl = state.positionalTransform * glm::vec2(minc.x, minc.y) + state.offset;
-        // glm::vec2 br = state.positionalTransform * glm::vec2(maxc.x, minc.y) + state.offset;
-        // glm::vec2 tl = state.positionalTransform * glm::vec2(minc.x, maxc.y) + state.offset;
-        // glm::vec2 tr = state.positionalTransform * glm::vec2(maxc.x, maxc.y) + state.offset;
-
-        if (transformId == 0) {
-            Renderer* ren = Renderer::get();
-            // ren->drawLine(bl, br, glm::vec4(1, 0, 1, 1));
-            // ren->drawLine(br, tr, glm::vec4(1, 0, 1, 1));
-            // ren->drawLine(tr, tl, glm::vec4(1, 0, 1, 1));
-            // ren->drawLine(tl, bl, glm::vec4(1, 0, 1, 1));
-        }
-
-//        minX = min.x;
-//        minY = min.y;
-//        maxX = max.x;
-//        maxY = max.y;
-
         Rect rect = { min, max };
 
         sectionSet.forEachSectionInRect(rect, [&](const auto& section) {
-            for (Object* object : section) {
+            for (Object* object : section)
                 markObjectAsVisible(object);
-            }
         });
 
         transformId++;
     }
+
+    // 2.2 Area/enter effects can move an individual object independently of
+    // its baked section and independently of its normal group transform. Those
+    // objects get a second, very small live-position pass so something that was
+    // authored off-screen can move into view without being rejected by its old
+    // section. The draw itself is still entirely the GPU batch.
+    markRuntimeVisualObjects(cameraNormalMin, cameraNormalMax);
 
     finishAnimatedObjectVisibilities();
 }
@@ -175,6 +160,22 @@ void VisibilityManager::markAllObjectsVisible() {
         markObjectAsVisible(object);
 
     finishAnimatedObjectVisibilities();
+}
+
+void VisibilityManager::trackRuntimeVisualObject(GameObject* gameObject) {
+    if (!gameObject)
+        return;
+
+    auto it = objectLookup.find(gameObject);
+    if (it == objectLookup.end() || !it->second)
+        return;
+
+    auto object = it->second;
+    if (object->runtimeVisualTracked)
+        return;
+
+    object->runtimeVisualTracked = true;
+    runtimeVisualObjects.push_back(object);
 }
 
 VisibilityManager::Layer VisibilityManager::getLayer(const LayerKey& id) {
@@ -209,9 +210,15 @@ std::vector<LayerKey> VisibilityManager::getUsedLayerIds() {
 }
 
 void VisibilityManager::clearObjectVisibilities() {
-    for (auto layer : visibleSpriteLayers) {
-        layer->clear();
+    ++visibilityGeneration;
+    if (visibilityGeneration == 0) {
+        visibilityGeneration = 1;
+        for (auto object : allObjects)
+            object->lastVisibleGeneration = 0;
     }
+
+    for (auto layer : visibleSpriteLayers)
+        layer->clear();
 
     // Only the animated objects that were on screen last frame need their
     // visibility marker reset. This keeps the lifecycle work proportional to
@@ -266,6 +273,53 @@ void VisibilityManager::updateVisibleAnimatedObject(Object* object) {
     }
 }
 
+void VisibilityManager::markRuntimeVisualObjects(const glm::vec2& cameraMin, const glm::vec2& cameraMax) {
+    if (runtimeVisualObjects.empty())
+        return;
+
+    auto renderer = Renderer::get();
+    if (!renderer)
+        return;
+
+    auto& groupManager = renderer->getGroupManager();
+    auto groupStates = groupManager.getGroupStates();
+
+    constexpr float RUNTIME_EDGE_PADDING = 96.0f;
+
+    for (auto object : runtimeVisualObjects) {
+        if (!object || !object->gameObject || object->gameObject->m_isInvisible)
+            continue;
+        if (object->groupCombinationIndex >= groupStates.size())
+            continue;
+
+        auto gameObject = object->gameObject;
+        const auto& state = groupStates[object->groupCombinationIndex];
+
+        // Match object_ios.vert: normal group transform first, then the 2.2
+        // per-object world-space Area Move offset.
+        glm::vec2 center = state.positionalTransform * ccPointToGLM(gameObject->m_startPosition) + state.offset;
+        center += glm::vec2(gameObject->m_positionXOffset, gameObject->m_positionYOffset);
+
+        // The CPU object rectangle is useful for its current visual size even
+        // though its center may not contain Bismuth's GPU-only group transform.
+        // Add a fixed edge pad for glow, sprite children, and rotated corners.
+        auto liveRect = gameObject->getObjectRect();
+        const float extentX = std::max(32.0f, liveRect.size.width * 0.5f) + RUNTIME_EDGE_PADDING;
+        const float extentY = std::max(32.0f, liveRect.size.height * 0.5f) + RUNTIME_EDGE_PADDING;
+
+        if (
+            center.x + extentX < cameraMin.x ||
+            center.x - extentX > cameraMax.x ||
+            center.y + extentY < cameraMin.y ||
+            center.y - extentY > cameraMax.y
+        ) {
+            continue;
+        }
+
+        markObjectAsVisible(object);
+    }
+}
+
 bool VisibilityManager::isAnimatedSpriteVisible(Object* object, cocos2d::CCSprite* sprite) {
     if (!sprite || !sprite->isVisible())
         return false;
@@ -300,6 +354,13 @@ bool VisibilityManager::isAnimatedSpriteVisible(Object* object, cocos2d::CCSprit
 void VisibilityManager::markObjectAsVisible(Object* object) {
     if (!object || !object->gameObject || object->gameObject->m_isInvisible)
         return;
+
+    // Normal section culling and the live 2.2 pass can find the same object in
+    // one frame. A generation marker keeps the intrusive sprite lists valid and
+    // makes duplicate submission essentially free.
+    if (object->lastVisibleGeneration == visibilityGeneration)
+        return;
+    object->lastVisibleGeneration = visibilityGeneration;
 
     updateVisibleAnimatedObject(object);
 
