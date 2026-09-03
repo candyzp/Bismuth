@@ -50,12 +50,16 @@ Shader* Shader::create(const ShaderSources& sources) {
     glAttachShader(linkedProgram, vertex);
     glAttachShader(linkedProgram, fragment);
 
-    // ES2 has no layout(location = N) syntax, so pin Bismuth's shared
-    // ObjectBatch attribute locations before linking.
+    // ES2 has no layout(location = N) syntax. Pin both the retired ObjectBatch
+    // naming and the new resolved-state assist naming to the same compact VAO
+    // layout; only the attributes declared by a given shader become active.
     glBindAttribLocation(linkedProgram, 0, "a_positionOffset");
+    glBindAttribLocation(linkedProgram, 0, "a_localPosition");
     glBindAttribLocation(linkedProgram, 1, "a_texCoord");
     glBindAttribLocation(linkedProgram, 2, "a_srbIndex");
+    glBindAttribLocation(linkedProgram, 2, "a_objectStateIndex");
     glBindAttribLocation(linkedProgram, 3, "a_colorChannel");
+    glBindAttribLocation(linkedProgram, 3, "a_spriteStateIndex");
 
     glLinkProgram(linkedProgram);
 

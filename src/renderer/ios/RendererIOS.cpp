@@ -17,6 +17,12 @@ namespace {
 struct IOSRendererState {
     std::unique_ptr<ColorChannelBuffer> colorChannels = std::make_unique<ColorChannelBuffer>();
     std::unique_ptr<ResolvedStateLayer> resolvedState;
+    Shader* assistShader = nullptr;
+
+    ~IOSRendererState() {
+        if (assistShader)
+            Shader::destroy(assistShader);
+    }
 };
 
 static std::unordered_map<Renderer*, std::unique_ptr<IOSRendererState>> g_iosStates;
@@ -60,6 +66,15 @@ bool Renderer::init(PlayLayer* playLayer) {
     state->resolvedState = std::make_unique<ResolvedStateLayer>();
     if (!state->resolvedState->init(layer)) {
         log::warn("Bismuth iOS resolved-state layer unavailable; continuing with pure stock GD rendering");
+    }
+
+    // Compile the new math-only shader now so device testing can prove that the
+    // A15/ES2 backend accepts the future transform pipeline before it owns a
+    // single visible sprite. Shader failure never disables stock rendering.
+    if (state->resolvedState && state->resolvedState->isGPUStateReady()) {
+        state->assistShader = Shader::create("assist_ios.vert", "assist_ios.frag");
+        if (!state->assistShader)
+            log::warn("Bismuth iOS assist shader unavailable; stock GD rendering remains active");
     }
 
     ingameEnableDisable = false;
@@ -151,7 +166,7 @@ void Renderer::updateDebugText() {
                 "Dirty: {} transform | {} appearance | {} visibility | {} UV\n"
                 "Static reused: {}/{}\n"
                 "State uploads: {} / frame in {} call(s)\n"
-                "GPU transform shader: STAGED\n"
+                "GPU transform shader: {}\n"
                 "GPU batch drawing: OFF until visual validation",
                 gpuRenderer ? gpuRenderer : "unknown",
                 resolved->isGPUStateReady() ? "READY" : "UNAVAILABLE",
@@ -167,7 +182,8 @@ void Renderer::updateDebugText() {
                 stats.staticObjectsReused,
                 stats.staticObjects,
                 byteSizeToString(stats.bytesUploaded),
-                stats.uploadCalls
+                stats.uploadCalls,
+                state && state->assistShader ? "READY" : "UNAVAILABLE"
             );
         } else {
             text = fmt::format(
@@ -175,6 +191,7 @@ void Renderer::updateDebugText() {
                 "Render output: STOCK GD (authoritative)\n"
                 "GPU: {}\n"
                 "Resolved GPU state: UNAVAILABLE\n"
+                "GPU transform shader: UNAVAILABLE\n"
                 "GPU batch drawing: OFF",
                 gpuRenderer ? gpuRenderer : "unknown"
             );
