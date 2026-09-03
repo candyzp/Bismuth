@@ -9,16 +9,17 @@
 #include <Geode/cocos/sprite_nodes/CCSpriteBatchNode.h>
 #include <vector>
 
-// Despite the historical name, this node is now the conservative visible
-// ownership unit on iOS. One instance replaces exactly one stock
-// CCSpriteBatchNode, and only when RendererIOS proves that every direct object
-// in that stock batch belongs to the StaticSafe set. Animated/interactive
-// batches never enter this path.
+// One assist node mirrors only the safe sprites that live inside a stock
+// CCSpriteBatchNode. The stock batch itself stays alive for animation/complex
+// sprites. Safe sprite quads are suppressed individually by the CCSprite
+// updateTransform hook, so one animated child can no longer disable GPU work for
+// thousands of unrelated static/dynamic-safe sprites.
 class AssistShadowBatch : public cocos2d::CCNode {
 public:
     struct Stats {
         usize eligibleSprites = 0;
         usize batchedSprites = 0;
+        usize rejectedSprites = 0;
         usize textureBatches = 0;
         usize drawCallsLastFrame = 0;
         usize indicesLastFrame = 0;
@@ -39,6 +40,7 @@ public:
 
     inline const Stats& getStats() const { return stats; }
     inline cocos2d::CCSpriteBatchNode* getStockBatch() const { return stockBatch; }
+    inline const std::vector<cocos2d::CCSprite*>& getOwnedSprites() const { return ownedSprites; }
 
 private:
     struct Vertex {
@@ -75,6 +77,7 @@ private:
     u32 blendDst = GL_ONE_MINUS_SRC_ALPHA;
 
     std::vector<DrawRange> drawRanges;
+    std::vector<cocos2d::CCSprite*> ownedSprites;
     Stats stats;
 };
 
