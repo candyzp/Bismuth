@@ -4,6 +4,7 @@
 #include "ObjectUtils.hpp"
 #include <utils/SectionSet.hpp>
 #include <common.hpp>
+#include <unordered_map>
 
 struct CameraView {
     // Bottom-left position of the camera
@@ -42,6 +43,9 @@ private:
 
         bool isAnimated;
         bool animatedVisibleThisFrame = false;
+        bool runtimeVisualTracked = false;
+        u32 lastVisibleGeneration = 0;
+        u32 groupCombinationIndex = 0;
 
         VisibleSpriteLayer* destinationLayerIfGlow;
         VisibleSpriteLayer* destinationLayerIfBlending;
@@ -121,6 +125,8 @@ public:
 
     void markAllObjectsVisible();
 
+    void trackRuntimeVisualObject(GameObject* object);
+
     using Layer = void*;
 
     Layer getLayer(const LayerKey& id);
@@ -136,12 +142,10 @@ private:
 
     void updateVisibleAnimatedObject(Object* object);
 
+    void markRuntimeVisualObjects(const glm::vec2& cameraMin, const glm::vec2& cameraMax);
+
     static bool isAnimatedSpriteVisible(Object* object, cocos2d::CCSprite* sprite);
 
-    /*
-        This can only be called once for every object
-        after clearObjectVisibilities has been called.
-    */
     void markObjectAsVisible(Object* object);
 
     VisibleSpriteLayer* getSpriteLayer(LayerKey labelayerId);
@@ -152,9 +156,12 @@ private:
 
 private:
     std::vector<Object*> allObjects;
+    std::unordered_map<GameObject*, Object*> objectLookup;
     std::vector<VisibleSpriteLayer*> visibleSpriteLayers;
     std::vector<Object*> visibleAnimatedObjects;
     std::vector<Object*> nextVisibleAnimatedObjects;
+    std::vector<Object*> runtimeVisualObjects;
+    u32 visibilityGeneration = 0;
 
     using SectionSet = SectionSet<Object*>;
 
