@@ -143,17 +143,36 @@ public:
             ? object->m_activeDetailColorID
             : object->m_activeMainColorID;
 
-        // Geometry Dash uses active color ID 0 as "use this sprite color's
-        // authored/default channel" rather than as an ordinary color-table
-        // lookup. The optimized renderer skipped that distinction and could
-        // therefore turn stock level art white or otherwise sample the wrong
-        // slot. Resolve the stored default before sanitizing for the GPU table.
+        bool useDirectSpriteColor = false;
         auto spriteColor = detail ? object->m_detailColor : object->m_baseColor;
+
+#ifdef GEODE_IS_IOS
+        // In Geometry Dash's legacy/default color mode, active color ID 0 is
+        // not a normal entry in the effect-manager color table. The resolved
+        // tint lives on the initialized sprite itself. Sampling table slot 0 or
+        // forcing WHITE loses that tint, which is especially visible in stock
+        // levels such as Stereo Madness. Mark those vertices to use the baked
+        // direct sprite tint stored in the iOS object-data texture instead.
+        if (rawColorChannel == 0) {
+            useDirectSpriteColor = true;
+            rawColorChannel = COLOR_CHANNEL_WHITE;
+        } else if (rawColorChannel < 0 || rawColorChannel >= COLOR_CHANNEL_COUNT) {
+            const i32 defaultColor = spriteColor ? spriteColor->m_defaultColorID : 0;
+            if (defaultColor > 0 && defaultColor < COLOR_CHANNEL_COUNT)
+                rawColorChannel = defaultColor;
+            else {
+                useDirectSpriteColor = true;
+                rawColorChannel = COLOR_CHANNEL_WHITE;
+            }
+        }
+#else
+        // Preserve the desktop renderer's existing channel semantics.
         if ((rawColorChannel <= 0 || rawColorChannel >= COLOR_CHANNEL_COUNT) && spriteColor) {
             const i32 defaultColor = spriteColor->m_defaultColorID;
             if (defaultColor > 0 && defaultColor < COLOR_CHANNEL_COUNT)
                 rawColorChannel = defaultColor;
         }
+#endif
 
         u32 colorChannel = sanitizeColorChannel(rawColorChannel);
 
@@ -170,6 +189,11 @@ public:
             return COLOR_CHANNEL_BLACK;
         if (type == SpriteType::GLOW && object->m_glowColorIsLBG)
             return COLOR_CHANNEL_LBG;
+
+#ifdef GEODE_IS_IOS
+        if (useDirectSpriteColor)
+            colorChannel |= A_COLOR_CHANNEL_USE_DIRECT;
+#endif
         return colorChannel;
     }
 
