@@ -40,6 +40,8 @@ public:
 
     inline void* mapWriteOnly() {
 #ifdef GEODE_IS_IOS
+        if (shadowData.empty())
+            shadowData.resize(size);
         mapped = true;
         return shadowData.data();
 #else
@@ -50,6 +52,10 @@ public:
 
     inline void* mapReadWrite() {
 #ifdef GEODE_IS_IOS
+        // iOS ES2 has no portable glGetBufferSubData equivalent. Buffers that
+        // need CPU read/write mapping must opt into a shadow at creation time.
+        if (shadowData.empty())
+            shadowData.resize(size);
         mapped = true;
         return shadowData.data();
 #else
@@ -71,27 +77,29 @@ public:
     }
 
 public:
-    static Buffer* create(const char* name, usize size, GLenum usage);
+    static Buffer* create(const char* name, usize size, GLenum usage, bool keepShadow = false);
 
     inline static void destroy(Buffer* buffer) {
         delete buffer;
     }
 
     inline static Buffer* createStaticDraw(const char* name, void* data, usize size) {
-        auto ret = create(name, size, GL_STATIC_DRAW);
+        auto ret = create(name, size, GL_STATIC_DRAW, false);
+        if (!ret)
+            return nullptr;
         ret->write(data, size);
         return ret;
     }
 
     inline static Buffer* createDynamicDraw(const char* name, usize size) {
-        return create(name, size, GL_DYNAMIC_DRAW);
+        return create(name, size, GL_DYNAMIC_DRAW, false);
     }
 
     inline static Buffer* createDynamicCopy(const char* name, usize size) {
 #ifdef GEODE_IS_IOS
-        return create(name, size, GL_DYNAMIC_DRAW);
+        return create(name, size, GL_DYNAMIC_DRAW, true);
 #else
-        return create(name, size, GL_DYNAMIC_COPY);
+        return create(name, size, GL_DYNAMIC_COPY, false);
 #endif
     }
 
