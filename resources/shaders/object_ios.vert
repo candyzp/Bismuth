@@ -127,15 +127,17 @@ void main() {
     vec4 s4 = fetchData(u_staticDataTexture, u_staticDataTextureSize, objectBase + 4.0);
 
     // Runtime state shares the static object texture so the ES2 backend does
-    // not consume another vertex texture unit. Two contiguous texels per object
-    // are refreshed each frame. The CPU only packs raw 2.2 deltas; combining
-    // Area Rotate and converting Area Scale into a factor happens on the GPU.
-    // Area Fade still needs dedicated tracked state and is intentionally absent.
-    float runtimeBase = u_runtimeDataOffset + objectIndex * 2.0;
+    // not consume another vertex texture unit. Three contiguous texels per
+    // object are refreshed each frame: r0/r1 hold raw Move/Rotate/Scale data,
+    // while r2 is appearance-side state. Area Fade currently occupies r2.x;
+    // the remaining components are reserved for Area Tint/related effects.
+    float runtimeBase = u_runtimeDataOffset + objectIndex * 3.0;
     vec4 r0 = fetchData(u_staticDataTexture, u_staticDataTextureSize, runtimeBase + 0.0);
     vec4 r1 = fetchData(u_staticDataTexture, u_staticDataTextureSize, runtimeBase + 1.0);
+    vec4 r2 = fetchData(u_staticDataTexture, u_staticDataTextureSize, runtimeBase + 2.0);
     float runtimeRotation = (r0.z + r0.w) * 0.5;
     vec2 runtimeScale = vec2(1.0) + r1.xy * r1.zw;
+    float runtimeFadeOpacity = clamp(r2.x, 0.0, 1.0);
 
     vec2 objectPosition = s0.xy;
     float rotationSpeed = s0.z;
@@ -156,9 +158,10 @@ void main() {
     objectPosition = positionalTransform * objectPosition + g2.xy;
 
     // GD calculates 2.2 Area / enter effect state on the CPU, while the GPU
-    // performs the repetitive per-vertex transform work.
+    // performs the repetitive per-vertex transform and appearance work.
     objectPosition += r0.xy;
     objectOpacity *= g2.z;
+    objectOpacity *= runtimeFadeOpacity;
 
     vec2 vertexOffset = a_positionOffset;
     if (hasFlag(objectFlags, 128.0) < 0.5)
