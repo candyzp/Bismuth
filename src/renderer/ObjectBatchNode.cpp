@@ -238,6 +238,9 @@ static void hideGPUDebugOverlay(Renderer* renderer) {
 
 bool ObjectBatchNode::init() {
     auto renderer = Renderer::get();
+    if (!renderer)
+        return false;
+
     auto batchNode = renderer->getSpriteBatchNodeWithLayerId(layerId);
     spriteSheetTexture = batchNode
         ? batchNode->getTexture()
@@ -250,7 +253,21 @@ void ObjectBatchNode::draw() {
     profiler::functionPush("ObjectBatchNode::draw");
     auto renderer = Renderer::get();
 
+    // Renderer initialization can fail after a batch node has already been
+    // attached to the scene (for example if an iOS shader fails to compile).
+    // Never call a Renderer member through a stale/null global pointer. Keep the
+    // failure GPU-side and simply skip this orphan node.
+    if (!renderer) {
+        profiler::functionPop();
+        return;
+    }
+
     auto shader = renderer->prepareDraw();
+    if (!shader) {
+        profiler::functionPop();
+        return;
+    }
+
     shader->setUInt("u_spriteSheet", (u32)layerId.spriteSheet);
     shader->setTexture("u_spriteSheetTexture", 0, spriteSheetTexture);
 
