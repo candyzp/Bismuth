@@ -277,6 +277,8 @@ bool ResolvedStateLayer::init(PlayLayer* playLayer) {
     shadowCandidates.clear();
     objectTexels.clear();
     spriteTexels.clear();
+    activeObjectIndices.clear();
+    activeSpriteIndices.clear();
     stats = {};
 
     if (!layer || !layer->m_objects)
@@ -394,18 +396,65 @@ void ResolvedStateLayer::resync() {
         spriteStateTexture->upload(spriteTexels.data(), spriteTexels.size());
 }
 
+void ResolvedStateLayer::setGPUOwnedSprites(
+    const std::unordered_set<cocos2d::CCSprite*>& ownedSprites
+) {
+    activeObjectIndices.clear();
+    activeSpriteIndices.clear();
+
+    stats.activeGPUObjects = 0;
+    stats.activeGPUSprites = 0;
+    stats.activeStaticObjects = 0;
+
+    if (ownedSprites.empty() || objects.empty() || sprites.empty())
+        return;
+
+    std::vector<bool> activeObjectMask(objects.size(), false);
+    activeSpriteIndices.reserve(std::min(ownedSprites.size(), sprites.size()));
+
+    for (usize spriteIndex = 0; spriteIndex < sprites.size(); ++spriteIndex) {
+        const auto& record = sprites[spriteIndex];
+        if (!record.sprite || !ownedSprites.contains(record.sprite))
+            continue;
+
+        activeSpriteIndices.push_back(spriteIndex);
+        if (record.objectIndex < activeObjectMask.size())
+            activeObjectMask[record.objectIndex] = true;
+    }
+
+    for (usize objectIndex = 0; objectIndex < activeObjectMask.size(); ++objectIndex) {
+        if (!activeObjectMask[objectIndex])
+            continue;
+
+        activeObjectIndices.push_back(objectIndex);
+        if (objects[objectIndex].safety == SafetyClass::StaticSafe)
+            ++stats.activeStaticObjects;
+    }
+
+    stats.activeGPUObjects = activeObjectIndices.size();
+    stats.activeGPUSprites = activeSpriteIndices.size();
+    stats.staticObjectsReused = stats.activeStaticObjects;
+
+    log::info(
+        "Bismuth iOS active state set: {} GPU objects, {} GPU sprites, {} static GPU objects",
+        stats.activeGPUObjects,
+        stats.activeGPUSprites,
+        stats.activeStaticObjects
+    );
+}
+
 void ResolvedStateLayer::update(bool detailedProbe) {
     stats.dirtyTransforms = 0;
     stats.dirtyAppearance = 0;
     stats.dirtyVisibility = 0;
     stats.dirtyUVs = 0;
-    stats.staticObjectsReused = stats.staticObjects;
+    stats.staticObjectsReused = stats.activeStaticObjects;
     stats.bytesUploaded = 0;
     stats.uploadCalls = 0;
 
-    // detailedProbe is also enabled whenever visible GPU ownership exists. In
-    // that mode these textures are live renderer input, not diagnostic data.
-    if (!detailedProbe || !objectStateTexture || !spriteStateTexture)
+    // The hot path only polls records actually consumed by visible GPU batches.
+    // Safe-but-stock sprites are classification information, not renderer input.
+    if (!detailedProbe || !objectStateTexture || !spriteStateTexture || activeSpriteIndices.empty())
         return;
 
     std::vector<usize> dirtyObjectRecords;
@@ -414,7 +463,10 @@ void ResolvedStateLayer::update(bool detailedProbe) {
     dirtySpriteRecords.reserve(64);
     std::vector<bool> staticTouched(objects.size(), false);
 
-    for (usize i = 0; i < objects.size(); ++i) {
+    for (usize i : activeObjectIndices) {
+        if (i >= objects.size())
+            continue;
+
         auto& record = objects[i];
         const ObjectState next = captureObjectState(record.object);
 
@@ -439,7 +491,10 @@ void ResolvedStateLayer::update(bool detailedProbe) {
         }
     }
 
-    for (usize i = 0; i < sprites.size(); ++i) {
+    for (usize i : activeSpriteIndices) {
+        if (i >= sprites.size())
+            continue;
+
         auto& record = sprites[i];
         const SpriteState next = captureSpriteState(record.sprite);
 
@@ -467,12 +522,12 @@ void ResolvedStateLayer::update(bool detailedProbe) {
     }
 
     usize touchedStaticCount = 0;
-    for (bool touched : staticTouched) {
-        if (touched)
+    for (usize objectIndex : activeObjectIndices) {
+        if (objectIndex < staticTouched.size() && staticTouched[objectIndex])
             ++touchedStaticCount;
     }
-    stats.staticObjectsReused = stats.staticObjects > touchedStaticCount
-        ? stats.staticObjects - touchedStaticCount
+    stats.staticObjectsReused = stats.activeStaticObjects > touchedStaticCount
+        ? stats.activeStaticObjects - touchedStaticCount
         : 0;
 
     uploadDirtyRecordSpans(
