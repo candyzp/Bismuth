@@ -1,5 +1,6 @@
 int main() {
     GameObject object;
+    object.parent=&object;
     ResolvedStateLayer state;
     state.objects.push_back({}); state.objects[0].object=&object;
     state.sprites.push_back({}); state.sprites[0].sprite=&object;
@@ -16,6 +17,11 @@ int main() {
     assert(b.x==84000.f && b.y==700.f && b.z==9 && b.w==1);
     auto old=next; next.transform.c+=0.000001f;
     assert(state.transformChanged(old,next));
+    object.parent=nullptr;
+    next=state.captureObjectState(&object);
+    state.packObjectState(0,next,ResolvedStateLayer::SafetyClass::DynamicSafe);
+    assert(state.objectTexels[1].w==0);
+    object.parent=&object;
     object.m_isInvisible=true;
     next=state.captureObjectState(&object);
     state.packObjectState(0,next,ResolvedStateLayer::SafetyClass::DynamicSafe);
@@ -48,5 +54,5 @@ int main() {
         assert(ResolvedStateLayer::getCurrent()==&temporary);
     }
     assert(ResolvedStateLayer::getCurrent()==nullptr);
-    std::cout << "PASS: exact affine state, small transform changes, visibility, mutable geometry rejection, 65,536 stock opacity/color pairs, current-state teardown\n";
+    std::cout << "PASS: exact affine state, detached visibility, small transform changes, mutable geometry rejection, 65,536 stock opacity/color pairs, current-state teardown\n";
 }
