@@ -41,7 +41,9 @@ struct GameObject : cocos2d::CCSprite {
     bool m_isInvisible=false;
     cocos2d::CCAffineTransform transform;
     float vertexZ=0;
+    GameObject* parent=nullptr;
     cocos2d::CCArray* getChildren(){return &children;}
+    GameObject* getParent(){return parent;}
     cocos2d::CCAffineTransform nodeToParentTransform(){return transform;}
     float getVertexZ(){return vertexZ;}
 };
