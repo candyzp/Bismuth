@@ -9,10 +9,11 @@
 #include <unordered_map>
 #include <vector>
 
-// Persistent standalone geometry shared by many complete safe GameObject roots.
-// Geometry Dash still owns gameplay, visibility, child lifecycle, colors and
-// animation. The stock GameObject root visit selects exactly one root slice at
-// the moment Cocos would have rendered it, preserving stock scene order.
+// Persistent GameObject-local geometry for safe non-atlas-at-init sprites.
+// In root-addressable mode, each GameObject gets an independent draw span for
+// exact stock root-visit replacement. In coalesced mode, object boundaries do
+// not force GL ranges, allowing parentless-at-init objects that later enter the
+// same stock atlas to render in a small number of shared draws.
 class StandaloneAssistBatch : public cocos2d::CCNode {
 public:
     struct Stats {
@@ -29,20 +30,18 @@ public:
     static geode::Ref<StandaloneAssistBatch> create(
         ResolvedStateLayer* resolvedState,
         Shader* shader,
-        const std::vector<ResolvedStateLayer::ShadowCandidate>& candidates
+        const std::vector<ResolvedStateLayer::ShadowCandidate>& candidates,
+        bool rootAddressable = true
     );
 
     void draw() override;
-
-    // Direct root-visit path. The caller is already inside the stock Cocos parent
-    // traversal, so drawing only this root's range preserves exact z/order without
-    // requiring the GameObject to have a parent during level initialization.
     void beginFrame();
-    bool drawRoot(GameObject* root);
     bool ownsRoot(GameObject* root) const;
+    bool drawRoot(GameObject* root);
 
     inline const Stats& getStats() const { return stats; }
     inline const std::vector<cocos2d::CCSprite*>& getOwnedSprites() const { return ownedSprites; }
+    inline bool isRootAddressable() const { return rootAddressable; }
 
 private:
     struct Vertex {
@@ -68,7 +67,8 @@ private:
     bool initWithCandidates(
         ResolvedStateLayer* resolvedState,
         Shader* shader,
-        const std::vector<ResolvedStateLayer::ShadowCandidate>& candidates
+        const std::vector<ResolvedStateLayer::ShadowCandidate>& candidates,
+        bool rootAddressable
     );
     bool buildGeometry(const std::vector<ResolvedStateLayer::ShadowCandidate>& candidates);
     bool drawRangeSpan(usize firstRange, usize rangeCount);
@@ -82,6 +82,7 @@ private:
     Buffer* indexBuffer = nullptr;
     u32 vao = 0;
 
+    bool rootAddressable = true;
     std::vector<DrawRange> drawRanges;
     std::unordered_map<GameObject*, RootDrawSpan> rootDrawSpans;
     std::vector<cocos2d::CCSprite*> ownedSprites;

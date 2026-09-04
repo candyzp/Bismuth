@@ -36,9 +36,14 @@ struct IOSRendererState {
     Shader* assistShader = nullptr;
 
     std::vector<Ref<AssistShadowBatch>> gpuBatches;
+    // This vector contains both true standalone root-visit buffers and deferred
+    // atlas buffers. Deferred buffers are attached beside their future stock
+    // batch and draw once per frame; true standalone buffers remain unparented
+    // and are addressed by root visit.
     std::vector<Ref<StandaloneAssistBatch>> standaloneBatches;
 
     std::unordered_set<cocos2d::CCSprite*> batchOwnedSprites;
+    std::unordered_set<cocos2d::CCSprite*> deferredAtlasOwnedSprites;
     std::unordered_set<cocos2d::CCSprite*> standaloneOwnedSprites;
     std::unordered_set<cocos2d::CCSprite*> ownedSprites;
     std::unordered_set<GameObject*> standaloneOwnedRoots;
@@ -65,6 +70,16 @@ struct IOSRendererState {
     usize standaloneBufferCount = 0;
     usize standaloneRootVisitsCurrentFrame = 0;
     usize standaloneRootVisitsLastFrame = 0;
+
+    usize deferredAtlasObjects = 0;
+    usize deferredAtlasUnmapped = 0;
+    usize deferredAtlasBatchNodes = 0;
+    usize deferredAtlasBufferCount = 0;
+
+    usize batchTransformSkipsCurrentFrame = 0;
+    usize batchTransformSkipsLastFrame = 0;
+    usize atlasSlotParksCurrentFrame = 0;
+    usize atlasSlotParksLastFrame = 0;
 
     ~IOSRendererState() {
         if (assistShader)
@@ -99,23 +114,38 @@ static bool isDescendantOf(cocos2d::CCNode* node, cocos2d::CCNode* ancestor) {
     return false;
 }
 
+// Returns true only when an atlas slot actually had to be changed. Reading the
+// already-resident quad first avoids turning every GPU-owned transform into an
+// atlas upload. This also handles remove/re-add lifecycle: if GD repopulates the
+// same numerical atlas index later, the nonzero quad is detected and parked
+// again automatically.
+static bool parkSpriteAtlasQuadIfNeeded(cocos2d::CCSprite* sprite) {
+    if (!sprite)
+        return false;
+
+    auto atlas = sprite->getTextureAtlas();
+    const auto atlasIndex = sprite->getAtlasIndex();
+    if (!atlas || atlasIndex == CCSpriteIndexNotInitialized || atlasIndex >= atlas->getTotalQuads())
+        return false;
+
+    cocos2d::ccV3F_C4B_T2F_Quad parked {};
+    auto quads = atlas->getQuads();
+    if (quads && std::memcmp(&quads[atlasIndex], &parked, sizeof(parked)) == 0) {
+        sprite->setDirty(false);
+        return false;
+    }
+
+    atlas->updateQuad(&parked, atlasIndex);
+    sprite->setDirty(false);
+    return true;
+}
+
 static void parkOwnedStockQuads(IOSRendererState* state) {
     if (!state)
         return;
 
-    for (auto sprite : state->batchOwnedSprites) {
-        if (!sprite)
-            continue;
-
-        auto atlas = sprite->getTextureAtlas();
-        const auto atlasIndex = sprite->getAtlasIndex();
-        if (!atlas || atlasIndex == CCSpriteIndexNotInitialized || atlasIndex >= atlas->getTotalQuads())
-            continue;
-
-        cocos2d::ccV3F_C4B_T2F_Quad parked {};
-        atlas->updateQuad(&parked, atlasIndex);
-        sprite->setDirty(false);
-    }
+    for (auto sprite : state->batchOwnedSprites)
+        parkSpriteAtlasQuadIfNeeded(sprite);
 }
 
 static void restoreOwnedStockQuads(IOSRendererState* state) {
@@ -233,7 +263,9 @@ bool Renderer::init(PlayLayer* playLayer) {
             state->candidateBatchNodes = candidateBatches.size();
 
             std::vector<StandaloneObjectDesc> standaloneObjects;
+            std::unordered_map<cocos2d::CCSpriteBatchNode*, std::vector<StandaloneObjectDesc>> deferredAtlasObjectsByBatch;
             standaloneObjects.reserve(candidatesByObject.size());
+            deferredAtlasObjectsByBatch.reserve(32);
 
             for (auto& [object, objectCandidates] : candidatesByObject) {
                 if (!object || objectCandidates.empty())
@@ -299,8 +331,8 @@ bool Renderer::init(PlayLayer* playLayer) {
                     continue;
                 }
 
-                // These are valid GD render arrangements, but a root visit cannot
-                // suppress a sibling/external glow or color node. Keep them stock.
+                // External color/glow sprites are legitimate GD arrangements,
+                // but a single root/batch handoff cannot suppress them completely.
                 if (externalVisual) {
                     ++state->standaloneExternalRejected;
                     if (externalGlow)
@@ -322,13 +354,48 @@ bool Renderer::init(PlayLayer* playLayer) {
                     continue;
                 }
 
-                // Geometry Dash intentionally removes inactive/offscreen roots
-                // from their render parent. Parentless at init is lifecycle state,
-                // not an ownership rejection. The stock root visit later supplies
-                // exact render timing/order when the object becomes active.
-                if (!object->getParent())
+                auto parent = object->getParent();
+                if (!parent) {
                     ++state->standaloneParentlessAtInit;
 
+                    // Source research + device counters showed that GD removes
+                    // these roots while inactive and later addMainSpriteToParent()
+                    // inserts them into parentForZLayer(). Only promote the simple
+                    // one-root-sprite shape here; more complex visual trees remain
+                    // stock until we have an equally exact render-home proof.
+                    const bool simpleDeferredRoot =
+                        objectCandidates.size() == 1 &&
+                        objectCandidates[0].sprite == static_cast<cocos2d::CCSprite*>(object);
+                    if (!simpleDeferredRoot || !layer->m_batchNodes) {
+                        ++state->deferredAtlasUnmapped;
+                        continue;
+                    }
+
+                    auto targetNode = layer->parentForZLayer(
+                        (i32)object->getObjectZLayer(),
+                        object->m_baseOrDetailBlending,
+                        object->getParentMode(),
+                        false
+                    );
+                    if (!targetNode || layer->m_batchNodes->indexOfObject(targetNode) == UINT_MAX) {
+                        ++state->deferredAtlasUnmapped;
+                        continue;
+                    }
+
+                    auto targetBatch = static_cast<cocos2d::CCSpriteBatchNode*>(targetNode);
+                    if (!targetBatch->getParent()) {
+                        ++state->deferredAtlasUnmapped;
+                        continue;
+                    }
+
+                    ++state->standaloneObjectEligible;
+                    ++state->deferredAtlasObjects;
+                    deferredAtlasObjectsByBatch[targetBatch].push_back({ object, objectCandidates });
+                    continue;
+                }
+
+                // A genuinely parented non-batch root can still use the root-visit
+                // path. This is separate from the parentless/deferred-atlas case.
                 ++state->standaloneObjectEligible;
                 standaloneObjects.push_back({ object, objectCandidates });
             }
@@ -361,6 +428,52 @@ bool Renderer::init(PlayLayer* playLayer) {
                 }
             }
 
+            // Parentless-at-init roots are not really standalone. Build their
+            // geometry once, grouped by the exact stock batch GD will later use,
+            // and attach one shared buffer beside that batch. The shader consumes
+            // stock visibility, so inactive/offscreen records cost no pixels.
+            state->deferredAtlasBatchNodes = deferredAtlasObjectsByBatch.size();
+            for (auto& [targetBatch, objects] : deferredAtlasObjectsByBatch) {
+                if (!targetBatch)
+                    continue;
+
+                auto parent = targetBatch->getParent();
+                if (!parent) {
+                    state->deferredAtlasUnmapped += objects.size();
+                    continue;
+                }
+
+                const auto chunks = buildStandaloneChunks(objects);
+                for (const auto& chunk : chunks) {
+                    if (chunk.candidates.empty())
+                        continue;
+
+                    auto gpuBuffer = StandaloneAssistBatch::create(
+                        state->resolvedState.get(),
+                        state->assistShader,
+                        chunk.candidates
+                    );
+                    if (!gpuBuffer || !gpuBuffer->getStats().ready)
+                        continue;
+                    if (gpuBuffer->getOwnedSprites().size() != chunk.candidates.size())
+                        continue;
+
+                    parent->addChild(gpuBuffer, targetBatch->getZOrder());
+                    state->standaloneBatches.push_back(gpuBuffer);
+                    ++state->deferredAtlasBufferCount;
+
+                    for (auto sprite : gpuBuffer->getOwnedSprites()) {
+                        if (!sprite)
+                            continue;
+                        state->deferredAtlasOwnedSprites.insert(sprite);
+                        state->batchOwnedSprites.insert(sprite);
+                        state->ownedSprites.insert(sprite);
+                    }
+                }
+            }
+
+            // Preserve the true standalone root path only for objects that were
+            // actually parented outside a batch at init.
             const auto standaloneChunks = buildStandaloneChunks(standaloneObjects);
             for (const auto& chunk : standaloneChunks) {
                 if (chunk.roots.empty() || chunk.candidates.empty())
@@ -399,7 +512,7 @@ bool Renderer::init(PlayLayer* playLayer) {
             state->resolvedState->setGPUOwnedSprites(state->ownedSprites);
 
             log::info(
-                "Bismuth iOS ownership: {} sprite candidates ({} atlas / {} standalone); standalone {} candidates / {} lifecycle-eligible; rejects mixed {} / duplicate {} / shared {} / external {} (glow {} / color {} / other {}) / invalid {} / root-batched {}; parentless-at-init {} deferred to stock root visits; {} atlas GPU nodes + {} shared standalone buffers; {} roots / {} standalone visual sprites owned",
+                "Bismuth iOS ownership: {} candidates ({} atlas-now / {} parentless-or-standalone); standalone {} candidates / {} ownership-eligible; rejects mixed {} / duplicate {} / shared {} / external {} (glow {} / color {} / other {}) / invalid {} / root-batched {}; parentless-at-init {} -> deferred atlas {} object(s), {} target batch(es), {} buffer(s), {} unmapped; {} immediate atlas node(s), {} true standalone root(s), {} total GPU sprite(s)",
                 state->gpuCandidateSprites,
                 state->candidatesWithBatch,
                 state->candidatesWithoutBatch,
@@ -415,10 +528,13 @@ bool Renderer::init(PlayLayer* playLayer) {
                 state->standaloneInvalidVisualRejected,
                 state->standaloneRootBatchRejected,
                 state->standaloneParentlessAtInit,
+                state->deferredAtlasObjects,
+                state->deferredAtlasBatchNodes,
+                state->deferredAtlasBufferCount,
+                state->deferredAtlasUnmapped,
                 state->gpuBatches.size(),
-                state->standaloneBufferCount,
                 state->standaloneOwnedRoots.size(),
-                state->standaloneOwnedSprites.size()
+                state->ownedSprites.size()
             );
         }
     }
@@ -466,7 +582,7 @@ bool Renderer::init(PlayLayer* playLayer) {
     setVisible(false);
     rendererStartTime = getTime();
 
-    log::info("Bismuth iOS initialized: stock root-order standalone GPU math + atlas GPU math, stock animation lifecycle");
+    log::info("Bismuth iOS initialized: immediate + deferred atlas GPU math, stock visibility/animation lifecycle");
     return true;
 }
 
@@ -490,6 +606,7 @@ void Renderer::terminate() {
 
         state->ownedSprites.clear();
         state->batchOwnedSprites.clear();
+        state->deferredAtlasOwnedSprites.clear();
         state->standaloneOwnedSprites.clear();
         state->standaloneOwnedRoots.clear();
         state->standaloneRootBatchIndices.clear();
@@ -562,12 +679,19 @@ void Renderer::updateDebugText() {
             }
 
             const usize atlasBatchCount = state ? state->gpuBatches.size() : 0;
-            const usize standaloneBatchCount = state ? state->standaloneBatches.size() : 0;
+            const usize allExtraBufferCount = state ? state->standaloneBatches.size() : 0;
+            const usize deferredBufferCount = state ? state->deferredAtlasBufferCount : 0;
+            const usize trueStandaloneBuffers = allExtraBufferCount >= deferredBufferCount
+                ? allExtraBufferCount - deferredBufferCount
+                : 0;
             const usize ownedSprites = state ? state->ownedSprites.size() : 0;
             const usize batchOwned = state ? state->batchOwnedSprites.size() : 0;
+            const usize deferredOwned = state ? state->deferredAtlasOwnedSprites.size() : 0;
             const usize standaloneOwned = state ? state->standaloneOwnedSprites.size() : 0;
             const usize standaloneRoots = state ? state->standaloneOwnedRoots.size() : 0;
             const usize rootVisits = state ? state->standaloneRootVisitsLastFrame : 0;
+            const usize transformSkips = state ? state->batchTransformSkipsLastFrame : 0;
+            const usize slotParks = state ? state->atlasSlotParksLastFrame : 0;
             const bool ownsPixels = enabled && ownedSprites > 0;
 
             text = fmt::format(
@@ -578,16 +702,17 @@ void Renderer::updateDebugText() {
                 "Safe objects: {} ({} static / {} dynamic)\n"
                 "Stock animation/complex: {} | safe sprite records: {}\n"
                 "Collection safety: {} unsafe object(s) | {} non-sprite child | {} duplicate | {} invalid | init retained {} obj / {} sprites | revalidate {}\n"
-                "Discovery: {} sprites | {} atlas | {} standalone\n"
-                "Standalone objects: {} candidates | {} lifecycle-eligible\n"
+                "Init discovery: {} sprites | {} atlas-now | {} parentless/standalone\n"
+                "Standalone candidates: {} | ownership-eligible {}\n"
                 "Reject: {} mixed | {} duplicate | {} shared | {} external [glow {} / color {} / other {}] | {} invalid | {} root-batched\n"
-                "Lifecycle: {} parentless at init -> stock root-visit handoff\n"
-                "GPU storage: {} atlas nodes + {} shared standalone buffers | owned roots: {} | visual sprites: {} ({} atlas + {} standalone)\n"
+                "Deferred atlas: {} parentless -> {} mapped object(s) | {} target batch(es) | {} buffer(s) | {} unmapped\n"
+                "GPU storage: {} immediate atlas + {} deferred atlas + {} true standalone buffer(s) | owned roots: {}\n"
+                "Visual sprites: {} total | {} atlas-path ({} deferred) + {} true standalone\n"
                 "Active GPU state: {} objects | {} sprites\n"
                 "Dirty: {} transform | {} appearance | {} visibility | {} UV\n"
                 "Static GPU reused: {}/{} | uploads: {} in {} call(s)\n"
                 "Resident verts: {} | GPU draws: {} / frame | indices: {} | ranges: {} | rejected: {}\n"
-                "CPU render skipped: {} atlas quad transforms | {} standalone root visits last frame\n"
+                "CPU skipped last frame: {} atlas transforms | {} slot park(s) | {} standalone root visit(s)\n"
                 "Framebuffer writes: {}\n"
                 "Animation lifecycle ownership: STOCK GD",
                 ownsPixels ? "GPU SAFE SPRITES + STOCK ANIMATION" : "STOCK GD",
@@ -621,11 +746,17 @@ void Renderer::updateDebugText() {
                 state ? state->standaloneInvalidVisualRejected : 0,
                 state ? state->standaloneRootBatchRejected : 0,
                 state ? state->standaloneParentlessAtInit : 0,
+                state ? state->deferredAtlasObjects : 0,
+                state ? state->deferredAtlasBatchNodes : 0,
+                deferredBufferCount,
+                state ? state->deferredAtlasUnmapped : 0,
                 atlasBatchCount,
-                standaloneBatchCount,
+                deferredBufferCount,
+                trueStandaloneBuffers,
                 standaloneRoots,
                 ownedSprites,
                 batchOwned,
+                deferredOwned,
                 standaloneOwned,
                 stats.activeGPUObjects,
                 stats.activeGPUSprites,
@@ -642,7 +773,8 @@ void Renderer::updateDebugText() {
                 gpuIndices,
                 textureRanges,
                 rejectedSprites,
-                batchOwned,
+                transformSkips,
+                slotParks,
                 rootVisits,
                 ownsPixels ? "ON (owned safe sprites)" : "OFF"
             );
@@ -674,6 +806,10 @@ void Renderer::update(float dt) {
     if (state) {
         state->standaloneRootVisitsLastFrame = state->standaloneRootVisitsCurrentFrame;
         state->standaloneRootVisitsCurrentFrame = 0;
+        state->batchTransformSkipsLastFrame = state->batchTransformSkipsCurrentFrame;
+        state->batchTransformSkipsCurrentFrame = 0;
+        state->atlasSlotParksLastFrame = state->atlasSlotParksCurrentFrame;
+        state->atlasSlotParksCurrentFrame = 0;
     }
 
     const bool detailedProbe = Mod::get()->getSettingValue<bool>("ios_gpu_debug");
@@ -684,8 +820,6 @@ void Renderer::update(float dt) {
 
     updateDebugText();
 
-    // Debug reads the completed previous-frame counters above. Reset direct
-    // root-visit draw counters only after that so the next render can accumulate.
     if (state) {
         for (auto& buffer : state->standaloneBatches) {
             if (buffer)
@@ -729,7 +863,32 @@ bool Renderer::isGPUOwnedSprite(cocos2d::CCSprite* sprite) const {
         return false;
 
     auto state = iosState(const_cast<Renderer*>(this));
-    return state && state->batchOwnedSprites.contains(sprite);
+    if (!state || !state->batchOwnedSprites.contains(sprite))
+        return false;
+
+    // A deferred-atlas sprite is only allowed to bypass stock matrix expansion
+    // after GD has actually inserted it into a stock batch.
+    if (state->deferredAtlasOwnedSprites.contains(sprite) && !sprite->getBatchNode())
+        return false;
+
+    return true;
+}
+
+bool Renderer::prepareGPUOwnedSprite(cocos2d::CCSprite* sprite) {
+    if (!enabled || !sprite)
+        return false;
+
+    auto state = iosState(this);
+    if (!state || !state->batchOwnedSprites.contains(sprite))
+        return false;
+
+    if (state->deferredAtlasOwnedSprites.contains(sprite) && !sprite->getBatchNode())
+        return false;
+
+    ++state->batchTransformSkipsCurrentFrame;
+    if (parkSpriteAtlasQuadIfNeeded(sprite))
+        ++state->atlasSlotParksCurrentFrame;
+    return true;
 }
 
 bool Renderer::isGPUOwnedStandaloneSprite(cocos2d::CCSprite* sprite) const {

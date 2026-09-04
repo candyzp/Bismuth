@@ -45,10 +45,11 @@ StandaloneAssistBatch::~StandaloneAssistBatch() {
 geode::Ref<StandaloneAssistBatch> StandaloneAssistBatch::create(
     ResolvedStateLayer* state,
     Shader* assistShader,
-    const std::vector<ResolvedStateLayer::ShadowCandidate>& candidates
+    const std::vector<ResolvedStateLayer::ShadowCandidate>& candidates,
+    bool addressableRoots
 ) {
     auto node = new StandaloneAssistBatch();
-    if (node->initWithCandidates(state, assistShader, candidates)) {
+    if (node->initWithCandidates(state, assistShader, candidates, addressableRoots)) {
         node->autorelease();
         return node;
     }
@@ -59,13 +60,27 @@ geode::Ref<StandaloneAssistBatch> StandaloneAssistBatch::create(
 bool StandaloneAssistBatch::initWithCandidates(
     ResolvedStateLayer* state,
     Shader* assistShader,
-    const std::vector<ResolvedStateLayer::ShadowCandidate>& candidates
+    const std::vector<ResolvedStateLayer::ShadowCandidate>& candidates,
+    bool addressableRoots
 ) {
     if (!CCNode::init() || !state || !assistShader || candidates.empty() || !state->isGPUStateReady())
         return false;
 
     resolvedState = state;
     shader = assistShader;
+
+    // Parentless-only sets are the deferred-atlas case discovered on iOS: GD
+    // will later move those roots into a stock batch. They must be coalesced now
+    // instead of reserving one GL range per future root. A genuinely parented
+    // standalone set keeps root-addressable spans.
+    bool hasParentedRoot = false;
+    for (const auto& candidate : candidates) {
+        if (candidate.object && candidate.object->getParent()) {
+            hasParentedRoot = true;
+            break;
+        }
+    }
+    rootAddressable = addressableRoots && hasParentedRoot;
 
     GLint vertexTextureUnits = 0;
     glGetIntegerv(GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS, &vertexTextureUnits);
@@ -121,7 +136,7 @@ bool StandaloneAssistBatch::buildGeometry(
     usize currentRootFirstRange = 0;
 
     auto finishRoot = [&]() {
-        if (!currentRoot)
+        if (!rootAddressable || !currentRoot)
             return;
         const usize count = drawRanges.size() - currentRootFirstRange;
         if (count > 0)
@@ -134,10 +149,12 @@ bool StandaloneAssistBatch::buildGeometry(
         if (!object || !sprite || sprite->getBatchNode())
             return false;
 
-        // RendererIOS appends complete objects contiguously. Force a draw-range
-        // boundary between roots even when texture/blend happen to match so a
-        // stock root visit can address exactly one complete object's geometry.
-        if (object != currentRoot) {
+        // Root-addressable buffers need a range boundary per object so a stock
+        // root visit can draw exactly one subtree. Deferred-atlas buffers are
+        // parentless at creation, so identical texture/blend state stays merged
+        // across object boundaries and thousands of roots do not become thousands
+        // of GL draw calls.
+        if (rootAddressable && object != currentRoot) {
             finishRoot();
             currentRoot = object;
             currentRootFirstRange = drawRanges.size();
@@ -222,18 +239,18 @@ bool StandaloneAssistBatch::buildGeometry(
 
     finishRoot();
 
-    if (ownedSprites.size() != candidates.size() || vertices.empty() || indices.empty() ||
-        drawRanges.empty() || rootDrawSpans.empty()) {
+    if (ownedSprites.size() != candidates.size() || vertices.empty() || indices.empty() || drawRanges.empty())
         return false;
-    }
+    if (rootAddressable && rootDrawSpans.empty())
+        return false;
 
     vertexBuffer = Buffer::createStaticDraw(
-        "Standalone resolved GPU vertices",
+        rootAddressable ? "Standalone resolved GPU vertices" : "Deferred atlas GPU vertices",
         vertices.data(),
         vertices.size() * sizeof(Vertex)
     );
     indexBuffer = Buffer::createStaticDraw(
-        "Standalone resolved GPU indices",
+        rootAddressable ? "Standalone resolved GPU indices" : "Deferred atlas GPU indices",
         indices.data(),
         indices.size() * sizeof(u16)
     );
@@ -284,11 +301,11 @@ void StandaloneAssistBatch::beginFrame() {
 }
 
 bool StandaloneAssistBatch::ownsRoot(GameObject* root) const {
-    return root && rootDrawSpans.contains(root);
+    return rootAddressable && root && rootDrawSpans.contains(root);
 }
 
 bool StandaloneAssistBatch::drawRoot(GameObject* root) {
-    if (!root)
+    if (!rootAddressable || !root)
         return false;
     auto it = rootDrawSpans.find(root);
     if (it == rootDrawSpans.end())

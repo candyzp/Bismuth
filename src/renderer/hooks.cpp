@@ -235,14 +235,14 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
 class $modify(RendererOwnedCCSprite, cocos2d::CCSprite) {
     void updateTransform() {
         auto renderer = Renderer::get();
-        if (!renderer || !renderer->isGPUOwnedSprite(this)) {
+        if (!renderer || !renderer->prepareGPUOwnedSprite(this)) {
             cocos2d::CCSprite::updateTransform();
             return;
         }
 
-        // The stock atlas slot was parked once when GPU ownership was enabled.
-        // Do NOT run Cocos' CPU matrix expansion and do NOT call updateQuad here:
-        // either one would dirty/re-upload the stock atlas and erase the CPU win.
+        // The GPU owns final quad expansion. prepareGPUOwnedSprite() also makes
+        // sure a stock atlas slot that GD just populated is parked once before
+        // the stock batch can draw it. No matrix expansion or updateQuad here.
         this->setDirty(false);
 
         // Stock CCSprite::updateTransform recursively visits batched children.

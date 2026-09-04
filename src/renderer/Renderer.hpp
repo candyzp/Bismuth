@@ -84,14 +84,18 @@ public:
 
     bool useOptimizations();
 
-    // iOS-only render handoff query for stock CCSpriteBatchNode children. These
-    // sprites skip Cocos' CPU atlas quad expansion while the assist shader owns
-    // their final vertex transform.
+    // iOS-only render handoff query for stock CCSpriteBatchNode children.
     bool isGPUOwnedSprite(cocos2d::CCSprite* sprite) const;
 
-    // Standalone ownership is queried at the GameObject root visit. A root only
-    // returns true after its COMPLETE safe visual subtree has been accepted by a
-    // standalone GPU batch. Gameplay/state/animation updates remain stock GD.
+    // Called from the stock CCSprite::updateTransform hook. This confirms that
+    // the sprite is currently eligible for atlas ownership and parks a stock
+    // atlas slot only when Cocos has repopulated it. Returns false to fall back
+    // to stock transform handling.
+    bool prepareGPUOwnedSprite(cocos2d::CCSprite* sprite);
+
+    // True standalone ownership is queried at the GameObject root visit. The
+    // parentless-at-init objects that GD later inserts into sprite batch nodes do
+    // NOT use this path; they are handled by deferred atlas buffers instead.
     bool isGPUOwnedStandaloneSprite(cocos2d::CCSprite* sprite) const;
 
     void setEnabled(bool enabled);
