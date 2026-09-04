@@ -12,15 +12,16 @@ The atlas test compiles the production registry and the production CCSprite / CC
 
 Coverage includes:
 
-- Ordered mixed stock/GPU output, followed by a complete stock draw when complex decoration enters the batch.
+- Ordered mixed stock/GPU output while complex stock sprites remain in the same atlas without disabling neighboring GPU runs.
 - 10,000 shuffled sprites, repeated reorderings, no redundant index upload for an unchanged order, and u16 index boundaries.
-- Failed index uploads, failed atlas synchronization, unavailable GPU state, unrelated/disabled batches, and deferred sprites migrating between batches.
+- Strict owned-batch failure behavior for failed index uploads, failed atlas synchronization, and unavailable GPU state instead of a silent full-stock redraw.
 - Preservation of texture/program bindings, each VAO's original element buffer, color/depth write masks, and separate front/back stencil masks.
 - Exact stock affine coefficients, including skew/separate-axis rotation, small transform changes and vertex Z.
 - Rejection of stale texture/crop/flip/offset geometry and newly attached child/glow parts.
+- Detached object visibility clearing so GPU geometry cannot linger after stock removes an object from its render parent.
 - All 65,536 color-byte/opacity combinations against Cocos' premultiplied-color expression.
 - Clearing the active resolved-state pointer on destruction.
 
 These are host regression tests, not an iOS build or a Geometry Dash performance benchmark. They do not measure Future Funk FPS, Apple driver behavior, or runtime Geode hook ABI compatibility. The workflow remains manual-only and was not run for this change.
 
-For device validation, build the new master and compare the same Future Funk sections with Bismuth enabled and disabled. Check overlapping decoration and fades, reset/practice restart, and exiting/re-entering the level. Use the GPU debug display to inspect actual draw counts, then turn it off for the frame-rate comparison. Multipart or changing visual geometry remains stock; GPU ownership alone is not evidence that a particular frame used GPU assist.
+For device validation, build the new master and compare the same Future Funk sections with Bismuth enabled and disabled. Check overlapping decoration and fades, reset/practice restart, exiting/re-entering the level, and both screen edges where objects enter or leave the active render set. Use the GPU debug display to verify nonzero GPU draws and skipped atlas transforms, then turn it off for the frame-rate comparison.
