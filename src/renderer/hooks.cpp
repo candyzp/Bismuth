@@ -4,6 +4,7 @@
 #include <BProfiler.hpp>
 
 #ifdef GEODE_IS_IOS
+#include "../ObjectUtils.hpp"
 #include "ios/ResolvedStateLayer.hpp"
 #endif
 
@@ -305,14 +306,55 @@ class $modify(RendererOwnedCCSprite, cocos2d::CCSprite) {
     }
 };
 
+static bool batchContainsStockSensitiveRoot(
+    Renderer* renderer,
+    cocos2d::CCSpriteBatchNode* batch
+) {
+    if (!renderer || !batch)
+        return true;
+
+    auto children = batch->getChildren();
+    if (!children)
+        return false;
+
+    for (auto child : CCArrayExt<cocos2d::CCNode*>(children)) {
+        auto object = typeinfo_cast<GameObject*>(child);
+        if (!object || renderer->isGPUOwnedSprite(object))
+            continue;
+
+        const bool complexStockVisual =
+            object->m_classType == GameObjectClassType::Animated ||
+            ObjectUtils::isInteractiveVisualObject(object) ||
+            object->getHasSyncedAnimation() ||
+            object->m_isInvisibleBlock ||
+            object->m_glowSprite != nullptr ||
+            object->m_colorSprite != nullptr ||
+            (object->getChildren() && object->getChildren()->count() != 0);
+
+        if (complexStockVisual)
+            return true;
+    }
+
+    return false;
+}
+
 #include <Geode/modify/CCSpriteBatchNode.hpp>
 class $modify(RendererInterleavedSpriteBatchNode, cocos2d::CCSpriteBatchNode) {
     void draw() {
-        // Startup safety is deliberate. Before a live, enabled Bismuth PlayLayer
-        // recognizes this exact gameplay batch, go directly to stock Cocos. The
-        // gate performs no custom GL work and never reads raw atlas storage.
+        // Startup and teardown safety: before a live enabled Bismuth PlayLayer
+        // recognizes this exact gameplay batch, go directly to stock Cocos. Do
+        // not inspect descendants or atlas state while the renderer is disabled.
         auto renderer = Renderer::get();
-        if (!renderer || !renderer->isGPUInterleavedBatch(this)) {
+        if (!renderer || !renderer->isEnabled()) {
+            cocos2d::CCSpriteBatchNode::draw();
+            return;
+        }
+
+        // Portals, animations and other multi-part stock roots must stay inside
+        // one uninterrupted stock atlas submission. GPU-owned sprites in these
+        // mixed batches still use the existing sibling GPU fallback afterward.
+        if (batchContainsStockSensitiveRoot(renderer.data(), this) ||
+            !renderer->isGPUInterleavedBatch(this)) {
             cocos2d::CCSpriteBatchNode::draw();
             return;
         }
