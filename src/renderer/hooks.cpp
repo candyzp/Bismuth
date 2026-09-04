@@ -308,9 +308,9 @@ class $modify(RendererOwnedCCSprite, cocos2d::CCSprite) {
 #include <Geode/modify/CCSpriteBatchNode.hpp>
 class $modify(RendererInterleavedSpriteBatchNode, cocos2d::CCSpriteBatchNode) {
     void draw() {
-        // Startup safety is deliberate: before a Bismuth PlayLayer exists this
-        // hook does nothing except tail straight into stock Cocos. Do not inspect
-        // atlas members, descendants, or GL state before this exact-batch gate.
+        // Startup safety is deliberate. Before a live, enabled Bismuth PlayLayer
+        // recognizes this exact gameplay batch, go directly to stock Cocos. The
+        // gate performs no custom GL work and never reads raw atlas storage.
         auto renderer = Renderer::get();
         if (!renderer || !renderer->isGPUInterleavedBatch(this)) {
             cocos2d::CCSpriteBatchNode::draw();
@@ -318,8 +318,10 @@ class $modify(RendererInterleavedSpriteBatchNode, cocos2d::CCSpriteBatchNode) {
         }
 
         auto atlas = this->getTextureAtlas();
-        if (!atlas || atlas->getTotalQuads() == 0)
+        if (!atlas || atlas->getTotalQuads() == 0) {
+            cocos2d::CCSpriteBatchNode::draw();
             return;
+        }
 
         // Keep the old child-cast crash fix: validate as CCNode first and only
         // call CCSprite methods after a checked RTTI cast. Any unexpected child
@@ -346,8 +348,9 @@ class $modify(RendererInterleavedSpriteBatchNode, cocos2d::CCSpriteBatchNode) {
         const auto blend = this->getBlendFunc();
         ccGLBlendFunc(blend.src, blend.dst);
 
-        // drawGPUInterleavedBatch returns false only before any framebuffer draw
-        // was issued, so this stock-only fail-closed path cannot double-blend.
+        // A false result is possible only before the first visible split draw.
+        // The dirty-atlas synchronization draw is color/depth/stencil masked, so
+        // this stock fallback cannot double-blend visible content.
         if (!renderer->drawGPUInterleavedBatch(this))
             atlas->drawQuads();
     }
