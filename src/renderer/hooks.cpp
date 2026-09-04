@@ -350,11 +350,17 @@ class $modify(RendererInterleavedSpriteBatchNode, cocos2d::CCSpriteBatchNode) {
             return;
         }
 
+        // First prove this is an exact Bismuth gameplay batch. Unrelated menu,
+        // loading-screen and Geode UI batches never reach the child/visual scan.
+        if (!renderer->isGPUInterleavedBatch(this)) {
+            cocos2d::CCSpriteBatchNode::draw();
+            return;
+        }
+
         // Portals, animations and other multi-part stock roots must stay inside
         // one uninterrupted stock atlas submission. GPU-owned sprites in these
         // mixed batches still use the existing sibling GPU fallback afterward.
-        if (batchContainsStockSensitiveRoot(renderer.data(), this) ||
-            !renderer->isGPUInterleavedBatch(this)) {
+        if (batchContainsStockSensitiveRoot(renderer.data(), this)) {
             cocos2d::CCSpriteBatchNode::draw();
             return;
         }
