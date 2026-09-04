@@ -87,19 +87,15 @@ public:
     // iOS-only render handoff query for stock CCSpriteBatchNode children.
     bool isGPUOwnedSprite(cocos2d::CCSprite* sprite) const;
 
-    // Called from the stock CCSprite::updateTransform hook. This confirms that
-    // the sprite is currently eligible for atlas ownership and parks a stock
-    // atlas slot only when Cocos has repopulated it. Returns false to fall back
-    // to stock transform handling.
+    // Skip expansion only while a validated atlas plan owns this exact slot.
     bool prepareGPUOwnedSprite(cocos2d::CCSprite* sprite);
 
     // Fast gate for the single CCSpriteBatchNode::draw hook. This only checks
     // renderer-owned bookkeeping; it intentionally touches no atlas/GL state.
     bool isGPUInterleavedBatch(cocos2d::CCSpriteBatchNode* batch) const;
 
-    // Called only after stock batch draw setup + child updateTransform have run
-    // for an exact registered gameplay atlas. Emits stock/GPU runs in live atlas
-    // order. Returns false only before any framebuffer draw has been submitted.
+    // Validate the live atlas, update stock children, then emit ordered runs.
+    // A rejection occurs before visible output and leaves stock quads restorable.
     bool drawGPUInterleavedBatch(cocos2d::CCSpriteBatchNode* batch);
 
     // True standalone ownership is queried at the GameObject root visit. The

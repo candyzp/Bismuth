@@ -8,8 +8,8 @@ attribute vec2 a_texCoord;
 attribute float a_objectStateIndex;
 attribute float a_spriteStateIndex;
 
-uniform sampler2D u_objectStateTexture;
-uniform sampler2D u_spriteStateTexture;
+uniform highp sampler2D u_objectStateTexture;
+uniform highp sampler2D u_spriteStateTexture;
 uniform vec2 u_objectStateTextureSize;
 uniform vec2 u_spriteStateTextureSize;
 uniform mat4 u_mvp;
@@ -17,9 +17,7 @@ uniform mat4 u_mvp;
 varying vec2 t_texCoord;
 varying vec4 t_color;
 
-const float PI = 3.1415926535897932384626433832795;
-
-vec4 fetchData(sampler2D textureSampler, vec2 textureSize, float index) {
+vec4 fetchData(highp sampler2D textureSampler, vec2 textureSize, float index) {
     float x = mod(index, textureSize.x);
     float y = floor(index / textureSize.x);
     return texture2D(textureSampler, (vec2(x, y) + vec2(0.5)) / textureSize);
@@ -31,26 +29,20 @@ void main() {
     vec4 o0 = fetchData(u_objectStateTexture, u_objectStateTextureSize, objectBase + 0.0);
     vec4 o1 = fetchData(u_objectStateTexture, u_objectStateTextureSize, objectBase + 1.0);
 
-    // o0 = resolved position.xy, rotation, scaleX
-    // o1 = scaleY, resolved root opacity, resolved visibility, dynamic marker
-    if (o1.z < 0.5) {
+    // Stock affine matrix includes separate axis rotations, skew and anchor.
+    // o0 = a,b,c,d; o1 = tx,ty,vertexZ,visibility.
+    if (o1.w < 0.5) {
         gl_Position = vec4(4.0, 4.0, 4.0, 1.0);
         t_texCoord = a_texCoord;
         t_color = vec4(0.0);
         return;
     }
 
-    vec2 local = a_localPosition * vec2(o0.w, o1.x);
-    float radians = -o0.z * PI / 180.0;
-    float s = sin(radians);
-    float c = cos(radians);
-    vec2 rotated = vec2(
-        local.x * c - local.y * s,
-        local.x * s + local.y * c
+    vec2 worldPosition = vec2(
+        a_localPosition.x * o0.x + a_localPosition.y * o0.z + o1.x,
+        a_localPosition.x * o0.y + a_localPosition.y * o0.w + o1.y
     );
-
-    vec2 worldPosition = o0.xy + rotated;
-    gl_Position = u_mvp * vec4(worldPosition, 0.0, 1.0);
+    gl_Position = u_mvp * vec4(worldPosition, o1.z, 1.0);
     t_texCoord = a_texCoord;
 
     float spriteIndex = floor(a_spriteStateIndex + 0.5);

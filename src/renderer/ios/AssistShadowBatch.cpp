@@ -224,12 +224,7 @@ bool AssistShadowBatch::buildGeometry() {
             localTransform
         );
 
-        // Cocos' root nodeToParentTransform rotates/scales around the root
-        // anchor point. The assist shader uses the GameObject position itself as
-        // that pivot, so express all child/root geometry relative to the same
-        // anchor before the GPU applies the root transform.
-        const glm::vec2 rootAnchor = ccPointToGLM(object->getAnchorPointInPoints());
-        glm::vec2 posBottomLeft = ccPointToGLM(localBottomLeftPoint) - rootAnchor;
+        glm::vec2 posBottomLeft = ccPointToGLM(localBottomLeftPoint);
         glm::vec2 posRight = {
             localTransform.a * crop.size.width,
             localTransform.b * crop.size.width
@@ -344,125 +339,6 @@ bool AssistShadowBatch::buildGeometry() {
     return true;
 }
 
-void AssistShadowBatch::draw() {
-    // A verified interleaved stock-batch draw already submitted this owner's
-    // exact live atlas slots. Do not submit the old whole GPU subset again.
-    if (AtlasInterleaveRegistry::consumeSubmission(this))
-        return;
-
-    stats.drawCallsLastFrame = 0;
-    stats.indicesLastFrame = 0;
-
-    if (!stats.ready || !isVisible())
-        return;
-    if (!resolvedState || !resolvedState->isGPUStateReady() || !shader || !vao)
-        return;
-
-    auto objectStateTexture = resolvedState->getObjectStateTexture();
-    auto spriteStateTexture = resolvedState->getSpriteStateTexture();
-    if (!objectStateTexture || !spriteStateTexture)
-        return;
-
-    kmMat4 matrixP;
-    kmMat4 matrixMV;
-    kmMat4 matrixMVP;
-    kmGLGetMatrix(KM_GL_PROJECTION, &matrixP);
-    kmGLGetMatrix(KM_GL_MODELVIEW, &matrixMV);
-    kmMat4Multiply(&matrixMVP, &matrixP, &matrixMV);
-
-    GLint previousVAO = 0;
-    GLint previousVBO = 0;
-    GLint previousIBO = 0;
-    GLint previousProgram = 0;
-    GLint previousActiveTexture = GL_TEXTURE0;
-    GLint previousTextures[3] = {0, 0, 0};
-    GLint previousBlendSrcRGB = GL_SRC_ALPHA;
-    GLint previousBlendDstRGB = GL_ONE_MINUS_SRC_ALPHA;
-    GLint previousBlendSrcAlpha = GL_SRC_ALPHA;
-    GLint previousBlendDstAlpha = GL_ONE_MINUS_SRC_ALPHA;
-    GLboolean previousBlendEnabled = glIsEnabled(GL_BLEND);
-    GLboolean previousColorMask[4] = {GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE};
-    GLboolean previousDepthMask = GL_TRUE;
-    GLint previousStencilMask = 0;
-
-    glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &previousVAO);
-    glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &previousVBO);
-    glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &previousIBO);
-    glGetIntegerv(GL_CURRENT_PROGRAM, &previousProgram);
-    glGetIntegerv(GL_ACTIVE_TEXTURE, &previousActiveTexture);
-    glGetIntegerv(GL_BLEND_SRC_RGB, &previousBlendSrcRGB);
-    glGetIntegerv(GL_BLEND_DST_RGB, &previousBlendDstRGB);
-    glGetIntegerv(GL_BLEND_SRC_ALPHA, &previousBlendSrcAlpha);
-    glGetIntegerv(GL_BLEND_DST_ALPHA, &previousBlendDstAlpha);
-    glGetBooleanv(GL_COLOR_WRITEMASK, previousColorMask);
-    glGetBooleanv(GL_DEPTH_WRITEMASK, &previousDepthMask);
-    glGetIntegerv(GL_STENCIL_WRITEMASK, &previousStencilMask);
-
-    for (i32 unit = 0; unit < 3; ++unit) {
-        glActiveTexture(GL_TEXTURE0 + unit);
-        glGetIntegerv(GL_TEXTURE_BINDING_2D, &previousTextures[unit]);
-    }
-
-    shader->use();
-    shader->setMatrix4("u_mvp", matrixMVP.mat);
-
-    objectStateTexture->bind(1);
-    shader->setInt("u_objectStateTexture", 1);
-    shader->setVec2("u_objectStateTextureSize", objectStateTexture->getSize());
-
-    spriteStateTexture->bind(2);
-    shader->setInt("u_spriteStateTexture", 2);
-    shader->setVec2("u_spriteStateTextureSize", spriteStateTexture->getSize());
-
-    glBindVertexArray(vao);
-    glEnable(GL_BLEND);
-    glBlendFunc((GLenum)blendSrc, (GLenum)blendDst);
-    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-    glDepthMask(GL_FALSE);
-    glStencilMask(0);
-
-    for (const auto& range : drawRanges) {
-        if (!range.textureId || !range.indexCount)
-            continue;
-
-        shader->setTexture("u_spriteSheetTexture", 0, range.textureId);
-        glDrawElements(
-            GL_TRIANGLES,
-            (GLsizei)range.indexCount,
-            GL_UNSIGNED_SHORT,
-            (void*)((usize)range.startIndex * sizeof(u16))
-        );
-        ++stats.drawCallsLastFrame;
-        stats.indicesLastFrame += range.indexCount;
-    }
-
-    glColorMask(
-        previousColorMask[0],
-        previousColorMask[1],
-        previousColorMask[2],
-        previousColorMask[3]
-    );
-    glDepthMask(previousDepthMask);
-    glStencilMask((u32)previousStencilMask);
-    glBlendFuncSeparate(
-        (GLenum)previousBlendSrcRGB,
-        (GLenum)previousBlendDstRGB,
-        (GLenum)previousBlendSrcAlpha,
-        (GLenum)previousBlendDstAlpha
-    );
-    if (!previousBlendEnabled)
-        glDisable(GL_BLEND);
-
-    glBindVertexArray((u32)previousVAO);
-    glBindBuffer(GL_ARRAY_BUFFER, (u32)previousVBO);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, (u32)previousIBO);
-    glUseProgram((u32)previousProgram);
-
-    for (i32 unit = 0; unit < 3; ++unit) {
-        glActiveTexture(GL_TEXTURE0 + unit);
-        glBindTexture(GL_TEXTURE_2D, (u32)previousTextures[unit]);
-    }
-    glActiveTexture((GLenum)previousActiveTexture);
-}
+void AssistShadowBatch::draw() {}
 
 #endif

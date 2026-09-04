@@ -1,6 +1,7 @@
 #ifdef GEODE_IS_IOS
 
 #include "AtlasInterleave.hpp"
+#include "AtlasDrawPlan.hpp"
 #include "AssistShadowBatch.hpp"
 #include "StandaloneAssistBatch.hpp"
 #include "../Renderer.hpp"
@@ -43,6 +44,11 @@ struct OwnerDrawData {
     usize* indexCount = nullptr;
 };
 
+struct BatchIndexCache {
+    u32 buffer = 0;
+    std::vector<u16> indices;
+};
+
 struct RegistryState {
     std::unordered_map<cocos2d::CCSprite*, SpriteOwner> spriteOwners;
     std::unordered_map<cocos2d::CCSpriteBatchNode*, AssistShadowBatch*> immediateByBatch;
@@ -50,23 +56,18 @@ struct RegistryState {
     std::unordered_map<StandaloneAssistBatch*, Renderer*> deferredRenderers;
     std::unordered_set<Renderer*> invalidRenderers;
 
-    std::unordered_map<AssistShadowBatch*, u32> submittedImmediateFrame;
-    std::unordered_map<StandaloneAssistBatch*, u32> submittedDeferredFrame;
-
-    // Reused CPU-side scratch only. GPU index data remains the persistent EBO
-    // built by AssistShadowBatch / StandaloneAssistBatch.
+    std::unordered_map<cocos2d::CCSpriteBatchNode*, BatchIndexCache> indexCaches;
     std::vector<cocos2d::CCSprite*> atlasSprites;
     std::vector<SpriteOwner> atlasOwners;
+    std::vector<AtlasDrawRun> runs;
+    std::vector<u16> indices;
+    Renderer* activeRenderer = nullptr;
+    cocos2d::CCSpriteBatchNode* activeBatch = nullptr;
 };
 
 static RegistryState& registry() {
     static RegistryState state;
     return state;
-}
-
-static u32 currentFrame() {
-    auto director = cocos2d::CCDirector::get();
-    return director ? director->getTotalFrames() : 0;
 }
 
 static bool isIdentityBatchTransform(cocos2d::CCSpriteBatchNode* batch) {
@@ -133,6 +134,15 @@ static void releaseScratchIfUnused() {
     if (!state.immediateRenderers.empty() || !state.deferredRenderers.empty())
         return;
 
+    for (auto& [batch, cache] : state.indexCaches) {
+        if (cache.buffer)
+            glDeleteBuffers(1, &cache.buffer);
+    }
+    state.indexCaches.clear();
+    state.runs.clear();
+    state.indices.clear();
+    state.activeRenderer = nullptr;
+    state.activeBatch = nullptr;
     state.atlasSprites.clear();
     state.atlasOwners.clear();
     state.invalidRenderers.clear();
@@ -155,10 +165,12 @@ static bool synchronizeDirtyAtlasWithStockDraw(cocos2d::CCTextureAtlas* atlas) {
     GLboolean previousColorMask[4] = { GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE };
     GLboolean previousDepthMask = GL_TRUE;
     GLint previousStencilMask = 0;
+    GLint previousBackStencilMask = 0;
 
     glGetBooleanv(GL_COLOR_WRITEMASK, previousColorMask);
     glGetBooleanv(GL_DEPTH_WRITEMASK, &previousDepthMask);
     glGetIntegerv(GL_STENCIL_WRITEMASK, &previousStencilMask);
+    glGetIntegerv(GL_STENCIL_BACK_WRITEMASK, &previousBackStencilMask);
 
     glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
     glDepthMask(GL_FALSE);
@@ -173,31 +185,43 @@ static bool synchronizeDirtyAtlasWithStockDraw(cocos2d::CCTextureAtlas* atlas) {
         previousColorMask[3]
     );
     glDepthMask(previousDepthMask);
-    glStencilMask(static_cast<u32>(previousStencilMask));
+    glStencilMaskSeparate(GL_FRONT, static_cast<u32>(previousStencilMask));
+    glStencilMaskSeparate(GL_BACK, static_cast<u32>(previousBackStencilMask));
 
     return !atlas->isDirty();
+}
+
+static bool updateIndexCache(BatchIndexCache& cache, const std::vector<u16>& indices) {
+    if (cache.buffer && cache.indices == indices)
+        return true;
+    if (!cache.buffer)
+        glGenBuffers(1, &cache.buffer);
+    if (!cache.buffer)
+        return false;
+
+    GLint previousBuffer = 0;
+    glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &previousBuffer);
+    // Upload via ARRAY_BUFFER so no existing VAO's element binding is changed.
+    glBindBuffer(GL_ARRAY_BUFFER, cache.buffer);
+    glBufferData(GL_ARRAY_BUFFER, indices.size() * sizeof(u16), indices.data(), GL_DYNAMIC_DRAW);
+    const auto error = glGetError();
+    glBindBuffer(GL_ARRAY_BUFFER, static_cast<u32>(previousBuffer));
+    if (error != GL_NO_ERROR) {
+        cache.indices.clear();
+        return false;
+    }
+    cache.indices = indices;
+    return true;
 }
 
 static void drawGPURun(
     cocos2d::CCSpriteBatchNode* batch,
     const OwnerDrawData& owner,
-    usize atlasStart,
-    usize atlasEnd
+    const AtlasDrawRun& run,
+    u32 indexBuffer
 ) {
-    auto& state = registry();
-    if (atlasStart >= atlasEnd || atlasEnd > state.atlasOwners.size())
-        return;
-
-    const auto& firstRecord = state.atlasOwners[atlasStart];
-    const usize firstOrdinal = static_cast<usize>(firstRecord.baseVertex) / 4;
-    const usize spriteCount = atlasEnd - atlasStart;
-    const usize firstIndex = firstOrdinal * 6;
-    const usize drawIndices = spriteCount * 6;
-
     auto objectStateTexture = owner.resolvedState->getObjectStateTexture();
     auto spriteStateTexture = owner.resolvedState->getSpriteStateTexture();
-    auto texture = batch->getTexture();
-
     kmMat4 matrixP;
     kmMat4 matrixMV;
     kmMat4 matrixMVP;
@@ -208,90 +232,42 @@ static void drawGPURun(
     GLint previousVAO = 0;
     GLint previousProgram = 0;
     GLint previousActiveTexture = GL_TEXTURE0;
-    GLint previousTextures[3] = { 0, 0, 0 };
-    GLint previousBlendSrcRGB = GL_SRC_ALPHA;
-    GLint previousBlendDstRGB = GL_ONE_MINUS_SRC_ALPHA;
-    GLint previousBlendSrcAlpha = GL_SRC_ALPHA;
-    GLint previousBlendDstAlpha = GL_ONE_MINUS_SRC_ALPHA;
-    GLboolean previousBlendEnabled = glIsEnabled(GL_BLEND);
-    GLboolean previousColorMask[4] = { GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE };
-    GLboolean previousDepthMask = GL_TRUE;
-    GLint previousStencilMask = 0;
-
+    GLint previousTextures[3] = {0, 0, 0};
     glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &previousVAO);
     glGetIntegerv(GL_CURRENT_PROGRAM, &previousProgram);
     glGetIntegerv(GL_ACTIVE_TEXTURE, &previousActiveTexture);
-    glGetIntegerv(GL_BLEND_SRC_RGB, &previousBlendSrcRGB);
-    glGetIntegerv(GL_BLEND_DST_RGB, &previousBlendDstRGB);
-    glGetIntegerv(GL_BLEND_SRC_ALPHA, &previousBlendSrcAlpha);
-    glGetIntegerv(GL_BLEND_DST_ALPHA, &previousBlendDstAlpha);
-    glGetBooleanv(GL_COLOR_WRITEMASK, previousColorMask);
-    glGetBooleanv(GL_DEPTH_WRITEMASK, &previousDepthMask);
-    glGetIntegerv(GL_STENCIL_WRITEMASK, &previousStencilMask);
-
     for (i32 unit = 0; unit < 3; ++unit) {
         glActiveTexture(GL_TEXTURE0 + unit);
         glGetIntegerv(GL_TEXTURE_BINDING_2D, &previousTextures[unit]);
     }
-    glActiveTexture(static_cast<GLenum>(previousActiveTexture));
 
     owner.shader->use();
     owner.shader->setMatrix4("u_mvp", matrixMVP.mat);
-
     objectStateTexture->bind(1);
     owner.shader->setInt("u_objectStateTexture", 1);
     owner.shader->setVec2("u_objectStateTextureSize", objectStateTexture->getSize());
-
     spriteStateTexture->bind(2);
     owner.shader->setInt("u_spriteStateTexture", 2);
     owner.shader->setVec2("u_spriteStateTextureSize", spriteStateTexture->getSize());
 
-    // The owner's original VAO still points at its original persistent EBO.
-    // No temporary index buffer, EBO rebinding or buffer upload is needed.
     glBindVertexArray(owner.vao);
-
-    const auto blend = batch->getBlendFunc();
-    glEnable(GL_BLEND);
-    glBlendFunc(static_cast<GLenum>(blend.src), static_cast<GLenum>(blend.dst));
-    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-    glDepthMask(GL_FALSE);
-    glStencilMask(0);
-
-    owner.shader->setTexture("u_spriteSheetTexture", 0, texture->getName());
-    glDrawElements(
-        GL_TRIANGLES,
-        static_cast<GLsizei>(drawIndices),
-        GL_UNSIGNED_SHORT,
-        reinterpret_cast<void*>(firstIndex * sizeof(u16))
-    );
-
+    GLint previousOwnerIndices = 0;
+    glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &previousOwnerIndices);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, indexBuffer);
+    owner.shader->setTexture("u_spriteSheetTexture", 0, batch->getTexture()->getName());
+    const usize drawIndices = run.slotCount * 6;
+    glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(drawIndices), GL_UNSIGNED_SHORT,
+        reinterpret_cast<void*>(run.firstIndex * sizeof(u16)));
     if (owner.drawCalls)
         ++(*owner.drawCalls);
     if (owner.indexCount)
         *owner.indexCount += drawIndices;
 
-    glColorMask(
-        previousColorMask[0],
-        previousColorMask[1],
-        previousColorMask[2],
-        previousColorMask[3]
-    );
-    glDepthMask(previousDepthMask);
-    glStencilMask(static_cast<u32>(previousStencilMask));
-    glBlendFuncSeparate(
-        static_cast<GLenum>(previousBlendSrcRGB),
-        static_cast<GLenum>(previousBlendDstRGB),
-        static_cast<GLenum>(previousBlendSrcAlpha),
-        static_cast<GLenum>(previousBlendDstAlpha)
-    );
-    if (!previousBlendEnabled)
-        glDisable(GL_BLEND);
-
-    // Raw GL calls never update Cocos' state cache. Put the real state back to
-    // exactly what that cache still believes is active.
+    // Restore the owner's persistent EBO before leaving its VAO. Cocos' cache
+    // remains correct, including at the next partial stock run.
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, static_cast<u32>(previousOwnerIndices));
     glBindVertexArray(static_cast<u32>(previousVAO));
     glUseProgram(static_cast<u32>(previousProgram));
-
     for (i32 unit = 0; unit < 3; ++unit) {
         glActiveTexture(GL_TEXTURE0 + unit);
         glBindTexture(GL_TEXTURE_2D, static_cast<u32>(previousTextures[unit]));
@@ -363,7 +339,6 @@ void AtlasInterleaveRegistry::unregisterImmediate(AssistShadowBatch* owner) {
         else
             ++it;
     }
-    state.submittedImmediateFrame.erase(owner);
 
     if (renderer && !rendererHasRegisteredOwners(renderer))
         state.invalidRenderers.erase(renderer);
@@ -420,7 +395,6 @@ void AtlasInterleaveRegistry::unregisterDeferred(StandaloneAssistBatch* owner) {
         else
             ++it;
     }
-    state.submittedDeferredFrame.erase(owner);
 
     if (renderer && !rendererHasRegisteredOwners(renderer))
         state.invalidRenderers.erase(renderer);
@@ -475,7 +449,7 @@ bool AtlasInterleaveRegistry::drawBatch(
         return false;
 
     auto& state = registry();
-    if (state.invalidRenderers.contains(renderer))
+    if (state.invalidRenderers.contains(renderer) || state.activeBatch)
         return false;
 
     auto atlas = batch->getTextureAtlas();
@@ -491,8 +465,6 @@ bool AtlasInterleaveRegistry::drawBatch(
     state.atlasSprites.assign(totalQuads, nullptr);
     state.atlasOwners.assign(totalQuads, {});
 
-    std::unordered_set<AssistShadowBatch*> touchedImmediate;
-    std::unordered_set<StandaloneAssistBatch*> touchedDeferred;
     bool hasGPU = false;
 
     auto ownerReady = [&](const SpriteOwner& record) -> bool {
@@ -535,7 +507,7 @@ bool AtlasInterleaveRegistry::drawBatch(
             return false;
         state.atlasSprites[atlasIndex] = sprite;
 
-        if (!renderer->isGPUOwnedSprite(sprite))
+        if (!renderer->isGPUOwnedSprite(sprite) || sprite->getParent() != batch)
             continue;
 
         auto spriteTexture = sprite->getTexture();
@@ -548,10 +520,6 @@ bool AtlasInterleaveRegistry::drawBatch(
 
         const auto record = recordIt->second;
         state.atlasOwners[atlasIndex] = record;
-        if (record.immediate)
-            touchedImmediate.insert(record.immediate);
-        else
-            touchedDeferred.insert(record.deferred);
         hasGPU = true;
     }
 
@@ -563,62 +531,41 @@ bool AtlasInterleaveRegistry::drawBatch(
             return false;
     }
 
-    // Prove every currently attached GPU-owned sprite from each touched owner is
-    // represented by the exact atlas slot about to be replaced.
-    for (auto owner : touchedImmediate) {
-        if (!owner)
-            return false;
-        for (auto sprite : owner->ownedSprites) {
-            if (!sprite || !renderer->isGPUOwnedSprite(sprite))
-                continue;
-            auto actualBatch = sprite->getBatchNode();
-            if (!actualBatch)
-                continue;
-            if (actualBatch != batch)
-                return false;
-            const auto atlasIndex = sprite->getAtlasIndex();
-            if (atlasIndex == CCSpriteIndexNotInitialized || atlasIndex >= totalQuads ||
-                state.atlasSprites[atlasIndex] != sprite ||
-                state.atlasOwners[atlasIndex].immediate != owner) {
-                return false;
-            }
-        }
-    }
-
-    for (auto owner : touchedDeferred) {
-        if (!owner)
-            return false;
-        for (auto sprite : owner->ownedSprites) {
-            if (!sprite || !renderer->isGPUOwnedSprite(sprite))
-                continue;
-            auto actualBatch = sprite->getBatchNode();
-            if (!actualBatch)
-                continue;
-            if (actualBatch != batch)
-                return false;
-            const auto atlasIndex = sprite->getAtlasIndex();
-            if (atlasIndex == CCSpriteIndexNotInitialized || atlasIndex >= totalQuads ||
-                state.atlasSprites[atlasIndex] != sprite ||
-                state.atlasOwners[atlasIndex].deferred != owner) {
-                return false;
-            }
-        }
-    }
-
-    // All failure-prone validation and stock VBO synchronization happens before
-    // the first visible split draw. After this point we never fall back to a
-    // second full atlas draw, so alpha-blended content cannot be double-rendered.
-    if (!synchronizeDirtyAtlasWithStockDraw(atlas))
+    buildAtlasDrawPlan(state.atlasOwners, state.runs, state.indices);
+    auto& cache = state.indexCaches[batch];
+    if (!updateIndexCache(cache, state.indices))
         return false;
 
-    for (auto owner : touchedImmediate) {
-        owner->stats.drawCallsLastFrame = 0;
-        owner->stats.indicesLastFrame = 0;
+    // No atlas quad is removed. Only this validated plan can skip expansion;
+    // every other draw uses stock Cocos, including all rejection paths.
+    state.activeRenderer = renderer;
+    state.activeBatch = batch;
+    if (auto children = batch->getChildren()) {
+        for (auto child : CCArrayExt<cocos2d::CCNode*>(children)) {
+            if (auto sprite = typeinfo_cast<cocos2d::CCSprite*>(child))
+                sprite->updateTransform();
+        }
     }
-    for (auto owner : touchedDeferred) {
-        owner->stats.drawCallsLastFrame = 0;
-        owner->stats.indicesLastFrame = 0;
+    state.activeBatch = nullptr;
+    state.activeRenderer = nullptr;
+
+    // A third-party transform hook may have changed the atlas during traversal.
+    if (atlas->getTotalQuads() != totalQuads || descendants->count() != totalQuads)
+        return false;
+    for (usize i = 0; i < totalQuads; ++i) {
+        auto sprite = typeinfo_cast<cocos2d::CCSprite*>(descendants->objectAtIndex(i));
+        if (!sprite || sprite->getBatchNode() != batch)
+            return false;
+        const usize slot = sprite->getAtlasIndex();
+        if (slot >= totalQuads || state.atlasSprites[slot] != sprite)
+            return false;
     }
+
+    bool hasStock = false;
+    for (const auto& run : state.runs)
+        hasStock |= state.atlasOwners[run.firstSlot].empty();
+    if (hasStock && !synchronizeDirtyAtlasWithStockDraw(atlas))
+        return false;
 
     auto drawDataFor = [&](const SpriteOwner& record) -> OwnerDrawData {
         if (record.immediate) {
@@ -642,71 +589,40 @@ bool AtlasInterleaveRegistry::drawBatch(
         };
     };
 
-    usize stockStart = 0;
-    usize atlasIndex = 0;
-    while (atlasIndex < totalQuads) {
-        const auto owner = state.atlasOwners[atlasIndex];
+    for (const auto& run : state.runs) {
+        const auto& owner = state.atlasOwners[run.firstSlot];
         if (owner.empty()) {
-            ++atlasIndex;
-            continue;
+            atlas->drawNumberOfQuads(static_cast<unsigned int>(run.slotCount),
+                static_cast<unsigned int>(run.firstSlot));
+        } else {
+            drawGPURun(batch, drawDataFor(owner), run, cache.buffer);
         }
-
-        if (atlasIndex > stockStart) {
-            atlas->drawNumberOfQuads(
-                static_cast<unsigned int>(atlasIndex - stockStart),
-                static_cast<unsigned int>(stockStart)
-            );
-        }
-
-        // Draw directly from the owner's persistent EBO. A segment can stay one
-        // draw only while both atlas ownership and persistent vertex ordinal are
-        // contiguous. If GD reorders two GPU sprites, split the GPU calls rather
-        // than rewriting any index buffer.
-        usize runEnd = atlasIndex + 1;
-        u16 previousBaseVertex = owner.baseVertex;
-        while (runEnd < totalQuads) {
-            const auto& next = state.atlasOwners[runEnd];
-            if (!next.sameOwner(owner) || next.baseVertex != previousBaseVertex + 4)
-                break;
-            previousBaseVertex = next.baseVertex;
-            ++runEnd;
-        }
-
-        drawGPURun(batch, drawDataFor(owner), atlasIndex, runEnd);
-        atlasIndex = runEnd;
-        stockStart = runEnd;
     }
-
-    if (stockStart < totalQuads) {
-        atlas->drawNumberOfQuads(
-            static_cast<unsigned int>(totalQuads - stockStart),
-            static_cast<unsigned int>(stockStart)
-        );
-    }
-
-    const u32 frame = currentFrame();
-    for (auto owner : touchedImmediate)
-        state.submittedImmediateFrame[owner] = frame;
-    for (auto owner : touchedDeferred)
-        state.submittedDeferredFrame[owner] = frame;
-
     return true;
 }
 
-bool AtlasInterleaveRegistry::consumeSubmission(AssistShadowBatch* owner) {
-    if (!owner)
-        return false;
+bool AtlasInterleaveRegistry::shouldSkipTransform(
+    Renderer* renderer, cocos2d::CCSprite* sprite
+) {
     auto& state = registry();
-    auto it = state.submittedImmediateFrame.find(owner);
-    return it != state.submittedImmediateFrame.end() && it->second == currentFrame();
+    if (!sprite || state.activeRenderer != renderer || !state.activeBatch ||
+        sprite->getBatchNode() != state.activeBatch)
+        return false;
+    const usize slot = sprite->getAtlasIndex();
+    return slot < state.atlasOwners.size() && state.atlasSprites[slot] == sprite &&
+        !state.atlasOwners[slot].empty();
 }
 
-bool AtlasInterleaveRegistry::consumeSubmission(StandaloneAssistBatch* owner) {
-    if (!owner)
-        return false;
+void AtlasInterleaveRegistry::beginFrame() {
     auto& state = registry();
-    auto it = state.submittedDeferredFrame.find(owner);
-    return it != state.submittedDeferredFrame.end() && it->second == currentFrame();
+    for (const auto& [owner, renderer] : state.immediateRenderers) {
+        owner->stats.drawCallsLastFrame = 0;
+        owner->stats.indicesLastFrame = 0;
+    }
+    for (const auto& [owner, renderer] : state.deferredRenderers) {
+        owner->stats.drawCallsLastFrame = 0;
+        owner->stats.indicesLastFrame = 0;
+    }
 }
 
 bool Renderer::isGPUInterleavedBatch(cocos2d::CCSpriteBatchNode* batch) const {

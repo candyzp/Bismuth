@@ -14,7 +14,6 @@ using namespace geode::prelude;
 namespace {
 constexpr usize OBJECT_TEXELS_PER_STATE = 2;
 constexpr usize SPRITE_TEXELS_PER_STATE = 3;
-constexpr usize MAX_SAFE_SPRITES_PER_OBJECT = 12;
 
 // Merging a tiny gap costs fewer bytes than another GL call, but a distant dirty
 // record should never drag the entire data texture across the bus again.
@@ -76,10 +75,6 @@ void uploadDirtyRecordSpans(
 }
 } // namespace
 
-ResolvedStateLayer::~ResolvedStateLayer() {
-    destroyTextures();
-}
-
 void ResolvedStateLayer::destroyTextures() {
     if (objectStateTexture)
         DataTexture::destroy(objectStateTexture);
@@ -135,7 +130,11 @@ ResolvedStateLayer::SafetyClass ResolvedStateLayer::classifyObject(
         return SafetyClass::StockOnly;
     }
 
-    if (outSprites.empty() || outSprites.size() > MAX_SAFE_SPRITES_PER_OBJECT)
+    // Child transforms and separately attached visual parts can change without
+    // changing the root state. Persistent root geometry cannot represent them.
+    if (outSprites.size() != 1 || outSprites.front() != object ||
+        object->m_glowSprite || object->m_colorSprite ||
+        (object->getChildren() && object->getChildren()->count() != 0))
         return SafetyClass::StockOnly;
 
     // DynamicSafe is still GD-owned state. It only means the final transform is
@@ -174,11 +173,8 @@ ResolvedStateLayer::ObjectState ResolvedStateLayer::captureObjectState(GameObjec
     if (!object)
         return state;
 
-    const auto pos = object->getPosition();
-    state.position = { pos.x, pos.y };
-    state.rotation = object->getRotation();
-    state.scaleX = object->getScaleX();
-    state.scaleY = object->getScaleY();
+    state.transform = object->nodeToParentTransform();
+    state.vertexZ = object->getVertexZ();
     state.opacity = (float)object->getDisplayedOpacity() / 255.f;
     state.visible = object->isVisible() && !object->m_isInvisible;
     return state;
@@ -194,6 +190,8 @@ ResolvedStateLayer::SpriteState ResolvedStateLayer::captureSpriteState(cocos2d::
     state.color = sprite->getDisplayedColor();
     state.opacity = sprite->getDisplayedOpacity();
     state.textureRect = sprite->getTextureRect();
+    state.offset = sprite->getOffsetPosition();
+    state.opacityModifyRGB = sprite->isOpacityModifyRGB();
     state.visible = sprite->isVisible();
     state.rotated = sprite->isTextureRectRotated();
     state.flipX = sprite->isFlipX();
@@ -208,22 +206,22 @@ ResolvedStateLayer::SpriteState ResolvedStateLayer::captureSpriteState(cocos2d::
     return state;
 }
 
-void ResolvedStateLayer::packObjectState(usize index, const ObjectState& state, SafetyClass safety) {
+void ResolvedStateLayer::packObjectState(usize index, const ObjectState& state, SafetyClass) {
     const usize base = index * OBJECT_TEXELS_PER_STATE;
     if (base + 1 >= objectTexels.size())
         return;
 
     objectTexels[base + 0] = {
-        state.position.x,
-        state.position.y,
-        state.rotation,
-        state.scaleX
+        state.transform.a,
+        state.transform.b,
+        state.transform.c,
+        state.transform.d
     };
     objectTexels[base + 1] = {
-        state.scaleY,
-        state.opacity,
-        state.visible ? 1.f : 0.f,
-        safety == SafetyClass::DynamicSafe ? 1.f : 0.f
+        state.transform.tx,
+        state.transform.ty,
+        state.vertexZ,
+        state.visible ? 1.f : 0.f
     };
 }
 
@@ -232,10 +230,16 @@ void ResolvedStateLayer::packSpriteState(usize index, const SpriteState& state, 
     if (base + 2 >= spriteTexels.size())
         return;
 
+    const auto colorByte = [&](u8 value) -> float {
+        // Match CCSprite::updateColor's byte truncation for premultiplied RGB.
+        const u8 resolved = state.opacityModifyRGB
+            ? static_cast<u8>(value * (state.opacity / 255.f)) : value;
+        return static_cast<float>(resolved) / 255.f;
+    };
     spriteTexels[base + 0] = {
-        (float)state.color.r / 255.f,
-        (float)state.color.g / 255.f,
-        (float)state.color.b / 255.f,
+        colorByte(state.color.r),
+        colorByte(state.color.g),
+        colorByte(state.color.b),
         (float)state.opacity / 255.f
     };
     spriteTexels[base + 1] = {
@@ -260,11 +264,10 @@ void ResolvedStateLayer::packSpriteState(usize index, const SpriteState& state, 
 }
 
 bool ResolvedStateLayer::transformChanged(const ObjectState& a, const ObjectState& b) {
-    return changedFloat(a.position.x, b.position.x) ||
-           changedFloat(a.position.y, b.position.y) ||
-           changedFloat(a.rotation, b.rotation) ||
-           changedFloat(a.scaleX, b.scaleX) ||
-           changedFloat(a.scaleY, b.scaleY);
+    return a.transform.a != b.transform.a || a.transform.b != b.transform.b ||
+           a.transform.c != b.transform.c || a.transform.d != b.transform.d ||
+           a.transform.tx != b.transform.tx || a.transform.ty != b.transform.ty ||
+           a.vertexZ != b.vertexZ;
 }
 
 bool ResolvedStateLayer::objectAppearanceChanged(const ObjectState& a, const ObjectState& b) {
@@ -275,7 +278,7 @@ bool ResolvedStateLayer::spriteAppearanceChanged(const SpriteState& a, const Spr
     return a.color.r != b.color.r ||
            a.color.g != b.color.g ||
            a.color.b != b.color.b ||
-           a.opacity != b.opacity;
+           a.opacity != b.opacity || a.opacityModifyRGB != b.opacityModifyRGB;
 }
 
 bool ResolvedStateLayer::spriteUVChanged(const SpriteState& a, const SpriteState& b) {
@@ -291,6 +294,8 @@ bool ResolvedStateLayer::init(PlayLayer* playLayer) {
     layer = playLayer;
     objects.clear();
     sprites.clear();
+    spriteIndexByPointer.clear();
+    eventOwnershipReady = false;
     shadowCandidates.clear();
     objectTexels.clear();
     spriteTexels.clear();
@@ -377,6 +382,8 @@ bool ResolvedStateLayer::init(PlayLayer* playLayer) {
             SpriteRecord spriteRecord;
             spriteRecord.sprite = sprite;
             spriteRecord.objectIndex = objectIndex;
+            spriteRecord.geometry = captureSpriteState(sprite);
+            spriteIndexByPointer.emplace(sprite, sprites.size());
             // Initial state is captured once, inside resync(), while every
             // accepted object and sprite is still strongly retained.
             sprites.push_back(spriteRecord);
@@ -474,6 +481,24 @@ void ResolvedStateLayer::resync() {
         spriteStateTexture->upload(spriteTexels.data(), spriteTexels.size());
 }
 
+bool ResolvedStateLayer::canDrawSprite(cocos2d::CCSprite* sprite) const {
+    auto it = spriteIndexByPointer.find(sprite);
+    if (it == spriteIndexByPointer.end())
+        return false;
+    const auto& record = sprites[it->second];
+    auto object = objects[record.objectIndex].object;
+    if (object != sprite || object->m_glowSprite || object->m_colorSprite ||
+        (object->getChildren() && object->getChildren()->count() != 0))
+        return false;
+    const auto current = captureSpriteState(sprite);
+    const auto& baked = record.geometry;
+    // The persistent VBO contains these exact corners. A later frame/flip/crop
+    // change must use stock geometry until the original shape returns.
+    return !spriteUVChanged(baked, current) &&
+        baked.offset.x == current.offset.x && baked.offset.y == current.offset.y &&
+        baked.textureWidth == current.textureWidth && baked.textureHeight == current.textureHeight;
+}
+
 void ResolvedStateLayer::setGPUOwnedSprites(
     const std::unordered_set<cocos2d::CCSprite*>& ownedSprites
 ) {
@@ -535,11 +560,13 @@ void ResolvedStateLayer::update(bool detailedProbe) {
     if (!detailedProbe || !objectStateTexture || !spriteStateTexture || activeSpriteIndices.empty())
         return;
 
-    std::vector<usize> dirtyObjectRecords;
-    std::vector<usize> dirtySpriteRecords;
-    dirtyObjectRecords.reserve(64);
-    dirtySpriteRecords.reserve(64);
-    std::vector<bool> staticTouched(objects.size(), false);
+    dirtyObjectRecords.clear();
+    dirtySpriteRecords.clear();
+    staticTouched.resize(objects.size(), false);
+    for (usize i : activeObjectIndices) {
+        if (i < staticTouched.size())
+            staticTouched[i] = false;
+    }
 
     for (usize i : activeObjectIndices) {
         if (i >= objects.size())

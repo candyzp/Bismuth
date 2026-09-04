@@ -4,6 +4,7 @@
 
 namespace cocos2d {
 class CCSpriteBatchNode;
+class CCSprite;
 }
 
 class Renderer;
@@ -24,11 +25,8 @@ public:
     static bool ownsBatch(Renderer* renderer, cocos2d::CCSpriteBatchNode* batch);
     static bool drawBatch(Renderer* renderer, cocos2d::CCSpriteBatchNode* batch);
 
-    // A successful interleaved batch draw replaces the old sibling submission
-    // for that owner in the same CCDirector frame. Stale marks never carry into
-    // a later frame.
-    static bool consumeSubmission(AssistShadowBatch* owner);
-    static bool consumeSubmission(StandaloneAssistBatch* owner);
+    static bool shouldSkipTransform(Renderer* renderer, cocos2d::CCSprite* sprite);
+    static void beginFrame();
 };
 
 #endif

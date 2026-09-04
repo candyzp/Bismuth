@@ -183,8 +183,7 @@ bool StandaloneAssistBatch::buildGeometry(
             localTransform
         );
 
-        const glm::vec2 rootAnchor = ccPointToGLM(object->getAnchorPointInPoints());
-        const glm::vec2 bottomLeft = ccPointToGLM(localBottomLeftPoint) - rootAnchor;
+        const glm::vec2 bottomLeft = ccPointToGLM(localBottomLeftPoint);
         const glm::vec2 right = {
             localTransform.a * crop.size.width,
             localTransform.b * crop.size.width
@@ -319,14 +318,8 @@ bool StandaloneAssistBatch::drawRoot(GameObject* root) {
 }
 
 void StandaloneAssistBatch::draw() {
-    // Deferred-atlas buffers are replaced only when the exact stock batch was
-    // successfully interleaved in this same frame. Root-addressable standalone
-    // buffers never register here and keep their existing visit path.
-    if (!rootAddressable && AtlasInterleaveRegistry::consumeSubmission(this))
-        return;
-
-    beginFrame();
-    drawRangeSpan(0, drawRanges.size());
+    if (rootAddressable)
+        drawRangeSpan(0, drawRanges.size());
 }
 
 bool StandaloneAssistBatch::drawRangeSpan(usize firstRange, usize rangeCount) {

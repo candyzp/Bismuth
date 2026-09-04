@@ -289,20 +289,9 @@ class $modify(RendererOwnedCCSprite, cocos2d::CCSprite) {
             return;
         }
 
-        // The GPU owns final quad expansion. prepareGPUOwnedSprite() also makes
-        // sure a stock atlas slot that GD just populated is parked once before
-        // the stock batch can draw it. No matrix expansion or updateQuad here.
-        this->setDirty(false);
-
-        // Stock CCSprite::updateTransform recursively visits batched children.
-        // Preserve only that traversal. Owned children take this same fast path;
-        // unowned animation/complex children immediately call stock Cocos.
-        if (auto children = this->getChildren()) {
-            for (auto child : CCArrayExt<cocos2d::CCNode*>(children)) {
-                if (auto sprite = typeinfo_cast<cocos2d::CCSprite*>(child))
-                    sprite->updateTransform();
-            }
-        }
+        // Only an already-validated atlas plan may skip expansion. Leave the
+        // sprite dirty so any later stock draw regenerates its real quad.
+        this->setDirty(true);
     }
 };
 
@@ -359,7 +348,7 @@ class $modify(RendererInterleavedSpriteBatchNode, cocos2d::CCSpriteBatchNode) {
 
         // Portals, animations and other multi-part stock roots must stay inside
         // one uninterrupted stock atlas submission. GPU-owned sprites in these
-        // mixed batches still use the existing sibling GPU fallback afterward.
+        // mixed batches are drawn by stock Cocos in their original atlas slots.
         if (batchContainsStockSensitiveRoot(renderer.data(), this)) {
             cocos2d::CCSpriteBatchNode::draw();
             return;
@@ -383,24 +372,11 @@ class $modify(RendererInterleavedSpriteBatchNode, cocos2d::CCSpriteBatchNode) {
             }
         }
 
-        // Mirror CCSpriteBatchNode::draw(), but replace only its final atlas
-        // submission. GD/Cocos still owns shader setup and updateTransform.
         CC_NODE_DRAW_SETUP();
-        if (auto children = this->getChildren()) {
-            for (auto child : CCArrayExt<cocos2d::CCNode*>(children)) {
-                if (auto sprite = typeinfo_cast<cocos2d::CCSprite*>(child))
-                    sprite->updateTransform();
-            }
-        }
-
         const auto blend = this->getBlendFunc();
         ccGLBlendFunc(blend.src, blend.dst);
-
-        // A false result is possible only before the first visible split draw.
-        // The dirty-atlas synchronization draw is color/depth/stencil masked, so
-        // this stock fallback cannot double-blend visible content.
         if (!renderer->drawGPUInterleavedBatch(this))
-            atlas->drawQuads();
+            cocos2d::CCSpriteBatchNode::draw();
     }
 };
 #endif

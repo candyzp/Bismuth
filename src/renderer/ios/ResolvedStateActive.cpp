@@ -26,6 +26,12 @@ ResolvedStateLayer::ResolvedStateLayer() {
     g_currentResolvedState = this;
 }
 
+ResolvedStateLayer::~ResolvedStateLayer() {
+    if (g_currentResolvedState == this)
+        g_currentResolvedState = nullptr;
+    destroyTextures();
+}
+
 ResolvedStateLayer* ResolvedStateLayer::getCurrent() {
     return g_currentResolvedState;
 }

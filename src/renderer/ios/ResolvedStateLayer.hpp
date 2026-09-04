@@ -65,6 +65,7 @@ public:
     bool init(PlayLayer* layer);
     void resync();
     void update(bool detailedProbe);
+    bool canDrawSprite(cocos2d::CCSprite* sprite) const;
 
     // Called once after renderer ownership is resolved. RendererIOS still builds
     // the complete ownership list; reseedActiveFromStock() then compiles the much
@@ -157,10 +158,8 @@ public:
 
 private:
     struct ObjectState {
-        glm::vec2 position = {0.f, 0.f};
-        float rotation = 0.f;
-        float scaleX = 1.f;
-        float scaleY = 1.f;
+        cocos2d::CCAffineTransform transform = cocos2d::CCAffineTransformMakeIdentity();
+        float vertexZ = 0.f;
         float opacity = 1.f;
         bool visible = true;
     };
@@ -169,6 +168,8 @@ private:
         cocos2d::ccColor3B color = {255, 255, 255};
         u8 opacity = 255;
         cocos2d::CCRect textureRect = {};
+        cocos2d::CCPoint offset = {};
+        bool opacityModifyRGB = false;
         u32 textureId = 0;
         float textureWidth = 1.f;
         float textureHeight = 1.f;
@@ -190,6 +191,7 @@ private:
         cocos2d::CCSprite* sprite = nullptr;
         usize objectIndex = 0;
         SpriteState state;
+        SpriteState geometry;
     };
 
     struct CollectionDiagnostics {
@@ -237,6 +239,10 @@ private:
     std::vector<ShadowCandidate> shadowCandidates;
     std::vector<glm::vec4> objectTexels;
     std::vector<glm::vec4> spriteTexels;
+    std::unordered_map<cocos2d::CCSprite*, usize> spriteIndexByPointer;
+    std::vector<usize> dirtyObjectRecords;
+    std::vector<usize> dirtySpriteRecords;
+    std::vector<bool> staticTouched;
 
     std::vector<usize> activeObjectIndices;
     std::vector<usize> activeSpriteIndices;

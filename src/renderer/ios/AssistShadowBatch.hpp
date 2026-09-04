@@ -9,11 +9,8 @@
 #include <Geode/cocos/sprite_nodes/CCSpriteBatchNode.h>
 #include <vector>
 
-// One assist node mirrors only the safe sprites that live inside a stock
-// CCSpriteBatchNode. The stock batch itself stays alive for animation/complex
-// sprites. Safe sprite quads are suppressed individually by the CCSprite
-// updateTransform hook, so one animated child can no longer disable GPU work for
-// thousands of unrelated static/dynamic-safe sprites.
+// Persistent GPU geometry for an exact stock atlas. The atlas draw hook owns
+// submission; this node never draws an unordered sibling copy.
 class AssistShadowBatch : public cocos2d::CCNode {
 public:
     struct Stats {

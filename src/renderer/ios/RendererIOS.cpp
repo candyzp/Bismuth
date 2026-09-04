@@ -5,6 +5,7 @@
 #include "ResolvedStateLayer.hpp"
 #include "AssistShadowBatch.hpp"
 #include "StandaloneAssistBatch.hpp"
+#include "AtlasInterleave.hpp"
 
 #include "Geode/cocos/CCDirector.h"
 #include "Geode/cocos/sprite_nodes/CCSpriteBatchNode.h"
@@ -79,8 +80,7 @@ struct IOSRendererState {
 
     usize batchTransformSkipsCurrentFrame = 0;
     usize batchTransformSkipsLastFrame = 0;
-    usize atlasSlotParksCurrentFrame = 0;
-    usize atlasSlotParksLastFrame = 0;
+    std::string lastDebugText;
 
     ~IOSRendererState() {
         if (assistShader)
@@ -113,40 +113,6 @@ static bool isDescendantOf(cocos2d::CCNode* node, cocos2d::CCNode* ancestor) {
             return true;
     }
     return false;
-}
-
-// Returns true only when an atlas slot actually had to be changed. Reading the
-// already-resident quad first avoids turning every GPU-owned transform into an
-// atlas upload. This also handles remove/re-add lifecycle: if GD repopulates the
-// same numerical atlas index later, the nonzero quad is detected and parked
-// again automatically.
-static bool parkSpriteAtlasQuadIfNeeded(cocos2d::CCSprite* sprite) {
-    if (!sprite)
-        return false;
-
-    auto atlas = sprite->getTextureAtlas();
-    const auto atlasIndex = sprite->getAtlasIndex();
-    if (!atlas || atlasIndex == CCSpriteIndexNotInitialized || atlasIndex >= atlas->getTotalQuads())
-        return false;
-
-    cocos2d::ccV3F_C4B_T2F_Quad parked {};
-    auto quads = atlas->getQuads();
-    if (quads && std::memcmp(&quads[atlasIndex], &parked, sizeof(parked)) == 0) {
-        sprite->setDirty(false);
-        return false;
-    }
-
-    atlas->updateQuad(&parked, atlasIndex);
-    sprite->setDirty(false);
-    return true;
-}
-
-static void parkOwnedStockQuads(IOSRendererState* state) {
-    if (!state)
-        return;
-
-    for (auto sprite : state->batchOwnedSprites)
-        parkSpriteAtlasQuadIfNeeded(sprite);
 }
 
 static void restoreOwnedStockQuads(IOSRendererState* state) {
@@ -602,7 +568,6 @@ bool Renderer::init(PlayLayer* playLayer) {
         if (gpuBuffer)
             gpuBuffer->setVisible(true);
     }
-    parkOwnedStockQuads(state);
 
     setVisible(false);
     rendererStartTime = getTime();
@@ -716,8 +681,7 @@ void Renderer::updateDebugText() {
             const usize standaloneRoots = state ? state->standaloneOwnedRoots.size() : 0;
             const usize rootVisits = state ? state->standaloneRootVisitsLastFrame : 0;
             const usize transformSkips = state ? state->batchTransformSkipsLastFrame : 0;
-            const usize slotParks = state ? state->atlasSlotParksLastFrame : 0;
-            const bool ownsPixels = enabled && ownedSprites > 0;
+            const bool ownsPixels = enabled && gpuDraws > 0;
 
             text = fmt::format(
                 "Bismuth iOS GPU Assist\n"
@@ -737,7 +701,7 @@ void Renderer::updateDebugText() {
                 "Dirty: {} transform | {} appearance | {} visibility | {} UV\n"
                 "Static GPU reused: {}/{} | uploads: {} in {} call(s)\n"
                 "Resident verts: {} | GPU draws: {} / frame | indices: {} | ranges: {} | rejected: {}\n"
-                "CPU skipped last frame: {} atlas transforms | {} slot park(s) | {} standalone root visit(s)\n"
+                "CPU skipped last frame: {} atlas transforms | {} standalone root visit(s)\n"
                 "Framebuffer writes: {}\n"
                 "Animation lifecycle ownership: STOCK GD",
                 ownsPixels ? "GPU SAFE SPRITES + STOCK ANIMATION" : "STOCK GD",
@@ -799,7 +763,6 @@ void Renderer::updateDebugText() {
                 textureRanges,
                 rejectedSprites,
                 transformSkips,
-                slotParks,
                 rootVisits,
                 ownsPixels ? "ON (owned safe sprites)" : "OFF"
             );
@@ -816,6 +779,11 @@ void Renderer::updateDebugText() {
         }
     }
 
+    if (auto state = iosState(this)) {
+        if (state->lastDebugText == text)
+            return;
+        state->lastDebugText = text;
+    }
     debugText->setString(text.c_str());
     debugTextOutline1->setString(text.c_str());
     debugTextOutline2->setString(text.c_str());
@@ -833,8 +801,6 @@ void Renderer::update(float dt) {
         state->standaloneRootVisitsCurrentFrame = 0;
         state->batchTransformSkipsLastFrame = state->batchTransformSkipsCurrentFrame;
         state->batchTransformSkipsCurrentFrame = 0;
-        state->atlasSlotParksLastFrame = state->atlasSlotParksCurrentFrame;
-        state->atlasSlotParksCurrentFrame = 0;
     }
 
     const bool detailedProbe = Mod::get()->getSettingValue<bool>("ios_gpu_debug");
@@ -844,6 +810,7 @@ void Renderer::update(float dt) {
     }
 
     updateDebugText();
+    AtlasInterleaveRegistry::beginFrame();
 
     if (state) {
         for (auto& buffer : state->standaloneBatches) {
@@ -888,7 +855,8 @@ bool Renderer::isGPUOwnedSprite(cocos2d::CCSprite* sprite) const {
         return false;
 
     auto state = iosState(const_cast<Renderer*>(this));
-    if (!state || !state->batchOwnedSprites.contains(sprite))
+    if (!state || !state->batchOwnedSprites.contains(sprite) ||
+        !state->resolvedState || !state->resolvedState->canDrawSprite(sprite))
         return false;
 
     // A deferred-atlas sprite is only allowed to bypass stock matrix expansion
@@ -900,19 +868,10 @@ bool Renderer::isGPUOwnedSprite(cocos2d::CCSprite* sprite) const {
 }
 
 bool Renderer::prepareGPUOwnedSprite(cocos2d::CCSprite* sprite) {
-    if (!enabled || !sprite)
+    if (!enabled || !AtlasInterleaveRegistry::shouldSkipTransform(this, sprite))
         return false;
-
-    auto state = iosState(this);
-    if (!state || !state->batchOwnedSprites.contains(sprite))
-        return false;
-
-    if (state->deferredAtlasOwnedSprites.contains(sprite) && !sprite->getBatchNode())
-        return false;
-
-    ++state->batchTransformSkipsCurrentFrame;
-    if (parkSpriteAtlasQuadIfNeeded(sprite))
-        ++state->atlasSlotParksCurrentFrame;
+    if (auto state = iosState(this))
+        ++state->batchTransformSkipsCurrentFrame;
     return true;
 }
 
@@ -921,7 +880,8 @@ bool Renderer::isGPUOwnedStandaloneSprite(cocos2d::CCSprite* sprite) const {
         return false;
 
     auto state = iosState(const_cast<Renderer*>(this));
-    if (!state)
+    if (!state || !state->resolvedState || !state->resolvedState->canDrawSprite(sprite) ||
+        sprite->getBatchNode())
         return false;
 
     auto object = typeinfo_cast<GameObject*>(sprite);
@@ -959,7 +919,6 @@ void Renderer::setEnabled(bool value) {
     } else {
         enabled = true;
         if (state) {
-            parkOwnedStockQuads(state);
             for (auto& gpuBatch : state->gpuBatches) {
                 if (gpuBatch)
                     gpuBatch->setVisible(true);
@@ -979,8 +938,6 @@ void Renderer::reset() {
     AreaVisualState::reset();
     if (auto state = iosState(this); state && state->resolvedState) {
         state->resolvedState->resync();
-        if (enabled)
-            parkOwnedStockQuads(state);
     }
 }
 
