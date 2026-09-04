@@ -3,6 +3,10 @@
 #include <decomp/PlayLayer.hpp>
 #include <BProfiler.hpp>
 
+#ifdef GEODE_IS_IOS
+#include "ios/ResolvedStateLayer.hpp"
+#endif
+
 using namespace geode::prelude;
 
 static bool newPlayLayer = false;
@@ -29,6 +33,10 @@ class $modify(RendererPlayLayer, PlayLayer) {
             if (renderer) {
                 batchLayer->addChild(renderer, -100000);
                 renderer->reset();
+#ifdef GEODE_IS_IOS
+                if (auto resolved = ResolvedStateLayer::getCurrent())
+                    resolved->reseedActiveFromStock();
+#endif
             }
             return;
         }
@@ -36,8 +44,13 @@ class $modify(RendererPlayLayer, PlayLayer) {
         PlayLayer::resetLevel();
 
         auto renderer = Renderer::get();
-        if (renderer)
+        if (renderer) {
             renderer->reset();
+#ifdef GEODE_IS_IOS
+            if (auto resolved = ResolvedStateLayer::getCurrent())
+                resolved->reseedActiveFromStock();
+#endif
+        }
     }
 
     void updateVisibility(float dt) {
@@ -78,8 +91,18 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
         timer.end();
 
         auto renderer = Renderer::get();
-        if (renderer)
+        if (renderer) {
+            // Stock GD has completed this frame's gameplay, trigger and
+            // visibility lifecycle before the GPU state is sampled.
             renderer->update(dt);
+#ifdef GEODE_IS_IOS
+            // Deactivated GPU records stayed live through renderer->update() so
+            // their final visible=false state reached the shader. They can now
+            // leave the hot polling set until stock activates them again.
+            if (auto resolved = ResolvedStateLayer::getCurrent())
+                resolved->finishEventFrame();
+#endif
+        }
     }
 
     void processMoveActions() {
@@ -231,6 +254,31 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
 };
 
 #ifdef GEODE_IS_IOS
+#include <Geode/modify/GameObject.hpp>
+class $modify(RendererTrackedGameObject, GameObject) {
+    void activateObject() {
+        // STOCK GD owns the decision and performs the real hierarchy/batch
+        // attachment first. Bismuth only observes the completed lifecycle state.
+        GameObject::activateObject();
+
+        if (Renderer::get()) {
+            if (auto resolved = ResolvedStateLayer::getCurrent())
+                resolved->onObjectActivated(this);
+        }
+    }
+
+    void deactivateObject(bool value) {
+        // Same rule in reverse: stock GD hides/removes the object first. Keep it
+        // in the GPU hot set for one final resolved-state upload this frame.
+        GameObject::deactivateObject(value);
+
+        if (Renderer::get()) {
+            if (auto resolved = ResolvedStateLayer::getCurrent())
+                resolved->onObjectDeactivated(this);
+        }
+    }
+};
+
 #include <Geode/modify/CCSprite.hpp>
 class $modify(RendererOwnedCCSprite, cocos2d::CCSprite) {
     void updateTransform() {

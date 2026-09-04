@@ -6,6 +6,7 @@
 #include <Geode/binding/GameObject.hpp>
 #include <Geode/binding/PlayLayer.hpp>
 #include <Geode/cocos/sprite_nodes/CCSprite.h>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -35,9 +36,8 @@ public:
         usize retainedInitSprites = 0;
         usize initRevalidationFailures = 0;
 
-        // Only records actually consumed by the visible GPU path are walked on
-        // the per-frame hot path. Merely-safe-but-stock records stay out of the
-        // poll loop so scaling ownership does not create bookkeeping soup.
+        // These counters now mean stock-active GPU records, not merely owned
+        // records. GD's activate/deactivate lifecycle is the authority.
         usize activeGPUObjects = 0;
         usize activeGPUSprites = 0;
         usize activeStaticObjects = 0;
@@ -59,17 +59,26 @@ public:
         usize spriteStateIndex = 0;
     };
 
-    ResolvedStateLayer() = default;
+    ResolvedStateLayer();
     ~ResolvedStateLayer();
 
     bool init(PlayLayer* layer);
     void resync();
     void update(bool detailedProbe);
 
-    // Called once after renderer ownership is resolved. This compiles the exact
-    // object/sprite index lists the GPU consumes so update() never has to scan
-    // thousands of safe-but-unowned records every frame.
+    // Called once after renderer ownership is resolved. RendererIOS still builds
+    // the complete ownership list; reseedActiveFromStock() then compiles the much
+    // smaller set GD actually has active in the scene.
     void setGPUOwnedSprites(const std::unordered_set<cocos2d::CCSprite*>& ownedSprites);
+
+    // iOS visibility observer. These NEVER decide visibility. Stock GD performs
+    // activateObject/deactivateObject first, then these methods mirror the final
+    // lifecycle result into the GPU polling set.
+    static ResolvedStateLayer* getCurrent();
+    void reseedActiveFromStock();
+    void onObjectActivated(GameObject* object);
+    void onObjectDeactivated(GameObject* object);
+    void finishEventFrame();
 
     inline const Stats& getStats() const { return stats; }
     inline const std::vector<ShadowCandidate>& getShadowCandidates() const { return shadowCandidates; }
@@ -213,6 +222,13 @@ private:
 
     void destroyTextures();
 
+    // Event-driven active-set helpers. The ownership masks are compiled once
+    // from setGPUOwnedSprites()'s initial complete lists, then the hot vectors are
+    // kept sorted and screen-scale by stock activation events.
+    void ensureEventOwnership();
+    void addActiveObjectIndex(usize objectIndex);
+    void removeActiveObjectIndex(usize objectIndex);
+
 private:
     PlayLayer* layer = nullptr;
 
@@ -224,6 +240,15 @@ private:
 
     std::vector<usize> activeObjectIndices;
     std::vector<usize> activeSpriteIndices;
+
+    std::unordered_map<GameObject*, usize> objectIndexByPointer;
+    std::vector<bool> gpuOwnedObjectMask;
+    std::vector<bool> gpuOwnedSpriteMask;
+    std::vector<bool> activeObjectMask;
+    std::vector<bool> activeSpriteMask;
+    std::vector<bool> pendingDeactivateMask;
+    std::vector<usize> pendingDeactivateIndices;
+    bool eventOwnershipReady = false;
 
     DataTexture* objectStateTexture = nullptr;
     DataTexture* spriteStateTexture = nullptr;
