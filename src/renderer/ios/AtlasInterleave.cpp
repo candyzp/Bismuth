@@ -92,8 +92,6 @@ static bool isExactGameplayBatch(Renderer* renderer, cocos2d::CCSpriteBatchNode*
     if (!layer || !layer->m_batchNodes)
         return false;
 
-    // Process-wide hook hard barrier. Menu/loading/Geode UI batches never reach
-    // custom atlas or GL work.
     if (layer->m_batchNodes->indexOfObject(batch) == UINT_MAX)
         return false;
 
@@ -158,10 +156,6 @@ static bool synchronizeDirtyAtlasWithStockDraw(cocos2d::CCTextureAtlas* atlas) {
     if (totalQuads == 0)
         return true;
 
-    // The Cocos VAO path clears its dirty bit on the first atlas draw. A full
-    // range at start=0 is the one proven case that uploads every live quad. Let
-    // stock Cocos perform that upload while framebuffer writes are masked, then
-    // later partial stock runs reuse the synchronized VBO.
     GLboolean previousColorMask[4] = { GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE };
     GLboolean previousDepthMask = GL_TRUE;
     GLint previousStencilMask = 0;
@@ -201,8 +195,8 @@ static bool updateIndexCache(BatchIndexCache& cache, const std::vector<u16>& ind
 
     GLint previousBuffer = 0;
     glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &previousBuffer);
-    // Upload via ARRAY_BUFFER so no existing VAO's element binding is changed.
     glBindBuffer(GL_ARRAY_BUFFER, cache.buffer);
+    (void)glGetError();
     glBufferData(GL_ARRAY_BUFFER, indices.size() * sizeof(u16), indices.data(), GL_DYNAMIC_DRAW);
     const auto error = glGetError();
     glBindBuffer(GL_ARRAY_BUFFER, static_cast<u32>(previousBuffer));
@@ -263,8 +257,6 @@ static void drawGPURun(
     if (owner.indexCount)
         *owner.indexCount += drawIndices;
 
-    // Restore the owner's persistent EBO before leaving its VAO. Cocos' cache
-    // remains correct, including at the next partial stock run.
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, static_cast<u32>(previousOwnerIndices));
     glBindVertexArray(static_cast<u32>(previousVAO));
     glUseProgram(static_cast<u32>(previousProgram));
@@ -423,8 +415,6 @@ bool AtlasInterleaveRegistry::ownsBatch(
     if (!descendants)
         return false;
 
-    // Deferred objects are parentless when registered. Discover their live stock
-    // batch only after GD attaches them.
     for (u32 i = 0; i < descendants->count(); ++i) {
         auto sprite = typeinfo_cast<cocos2d::CCSprite*>(descendants->objectAtIndex(i));
         if (!sprite || sprite->getBatchNode() != batch)
@@ -512,14 +502,13 @@ bool AtlasInterleaveRegistry::drawBatch(
 
         auto spriteTexture = sprite->getTexture();
         if (!spriteTexture || spriteTexture->getName() != texture->getName())
-            return false;
+            continue;
 
         auto recordIt = state.spriteOwners.find(sprite);
         if (recordIt == state.spriteOwners.end() || !ownerReady(recordIt->second))
-            return false;
+            continue;
 
-        const auto record = recordIt->second;
-        state.atlasOwners[atlasIndex] = record;
+        state.atlasOwners[atlasIndex] = recordIt->second;
         hasGPU = true;
     }
 
@@ -536,8 +525,6 @@ bool AtlasInterleaveRegistry::drawBatch(
     if (!updateIndexCache(cache, state.indices))
         return false;
 
-    // No atlas quad is removed. Only this validated plan can skip expansion;
-    // every other draw uses stock Cocos, including all rejection paths.
     state.activeRenderer = renderer;
     state.activeBatch = batch;
     if (auto children = batch->getChildren()) {
@@ -549,7 +536,6 @@ bool AtlasInterleaveRegistry::drawBatch(
     state.activeBatch = nullptr;
     state.activeRenderer = nullptr;
 
-    // A third-party transform hook may have changed the atlas during traversal.
     if (atlas->getTotalQuads() != totalQuads || descendants->count() != totalQuads)
         return false;
     for (usize i = 0; i < totalQuads; ++i) {
