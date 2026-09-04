@@ -1,6 +1,7 @@
 #ifdef GEODE_IS_IOS
 
 #include "AssistShadowBatch.hpp"
+#include "AtlasInterleave.hpp"
 
 #include "Geode/cocos/CCDirector.h"
 #include "Geode/cocos/cocoa/CCAffineTransform.h"
@@ -108,10 +109,13 @@ bool AssistShadowBatch::initWithState(
     setVisible(true);
     stats.ready = true;
     stats.visibleOwnership = true;
+    AtlasInterleaveRegistry::registerImmediate(this);
     return true;
 }
 
 void AssistShadowBatch::destroyGL() {
+    AtlasInterleaveRegistry::unregisterImmediate(this);
+
     if (vao)
         glDeleteVertexArrays(1, &vao);
     vao = 0;
@@ -341,6 +345,11 @@ bool AssistShadowBatch::buildGeometry() {
 }
 
 void AssistShadowBatch::draw() {
+    // A verified interleaved stock-batch draw already submitted this owner's
+    // exact live atlas slots. Do not submit the old whole GPU subset again.
+    if (AtlasInterleaveRegistry::consumeSubmission(this))
+        return;
+
     stats.drawCallsLastFrame = 0;
     stats.indicesLastFrame = 0;
 

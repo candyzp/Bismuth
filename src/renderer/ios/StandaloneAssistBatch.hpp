@@ -44,6 +44,8 @@ public:
     inline bool isRootAddressable() const { return rootAddressable; }
 
 private:
+    friend class AtlasInterleaveRegistry;
+
     struct Vertex {
         glm::vec2 localPosition;
         glm::vec2 texCoord;

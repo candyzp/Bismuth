@@ -43,6 +43,8 @@ public:
     inline const std::vector<cocos2d::CCSprite*>& getOwnedSprites() const { return ownedSprites; }
 
 private:
+    friend class AtlasInterleaveRegistry;
+
     struct Vertex {
         glm::vec2 localPosition;
         glm::vec2 texCoord;

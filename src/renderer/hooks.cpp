@@ -304,6 +304,54 @@ class $modify(RendererOwnedCCSprite, cocos2d::CCSprite) {
         }
     }
 };
+
+#include <Geode/modify/CCSpriteBatchNode.hpp>
+class $modify(RendererInterleavedSpriteBatchNode, cocos2d::CCSpriteBatchNode) {
+    void draw() {
+        // Startup safety is deliberate: before a Bismuth PlayLayer exists this
+        // hook does nothing except tail straight into stock Cocos. Do not inspect
+        // atlas members, descendants, or GL state before this exact-batch gate.
+        auto renderer = Renderer::get();
+        if (!renderer || !renderer->isGPUInterleavedBatch(this)) {
+            cocos2d::CCSpriteBatchNode::draw();
+            return;
+        }
+
+        auto atlas = this->getTextureAtlas();
+        if (!atlas || atlas->getTotalQuads() == 0)
+            return;
+
+        // Keep the old child-cast crash fix: validate as CCNode first and only
+        // call CCSprite methods after a checked RTTI cast. Any unexpected child
+        // fails closed to the exact stock draw before Bismuth has submitted work.
+        if (auto children = this->getChildren()) {
+            for (auto child : CCArrayExt<cocos2d::CCNode*>(children)) {
+                if (!typeinfo_cast<cocos2d::CCSprite*>(child)) {
+                    cocos2d::CCSpriteBatchNode::draw();
+                    return;
+                }
+            }
+        }
+
+        // Mirror CCSpriteBatchNode::draw(), but replace only its final atlas
+        // submission. GD/Cocos still owns shader setup and updateTransform.
+        CC_NODE_DRAW_SETUP();
+        if (auto children = this->getChildren()) {
+            for (auto child : CCArrayExt<cocos2d::CCNode*>(children)) {
+                if (auto sprite = typeinfo_cast<cocos2d::CCSprite*>(child))
+                    sprite->updateTransform();
+            }
+        }
+
+        const auto blend = this->getBlendFunc();
+        ccGLBlendFunc(blend.src, blend.dst);
+
+        // drawGPUInterleavedBatch returns false only before any framebuffer draw
+        // was issued, so this stock-only fail-closed path cannot double-blend.
+        if (!renderer->drawGPUInterleavedBatch(this))
+            atlas->drawQuads();
+    }
+};
 #endif
 
 #include <Geode/modify/CCDisplayLinkDirector.hpp>

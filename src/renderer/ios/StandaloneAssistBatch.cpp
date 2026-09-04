@@ -1,6 +1,7 @@
 #ifdef GEODE_IS_IOS
 
 #include "StandaloneAssistBatch.hpp"
+#include "AtlasInterleave.hpp"
 
 #include "Geode/cocos/cocoa/CCAffineTransform.h"
 #include "Geode/cocos/kazmath/include/kazmath/mat4.h"
@@ -92,10 +93,14 @@ bool StandaloneAssistBatch::initWithCandidates(
 
     setVisible(true);
     stats.ready = true;
+    if (!rootAddressable)
+        AtlasInterleaveRegistry::registerDeferred(this);
     return true;
 }
 
 void StandaloneAssistBatch::destroyGL() {
+    AtlasInterleaveRegistry::unregisterDeferred(this);
+
     if (vao)
         glDeleteVertexArrays(1, &vao);
     vao = 0;
@@ -314,6 +319,12 @@ bool StandaloneAssistBatch::drawRoot(GameObject* root) {
 }
 
 void StandaloneAssistBatch::draw() {
+    // Deferred-atlas buffers are replaced only when the exact stock batch was
+    // successfully interleaved in this same frame. Root-addressable standalone
+    // buffers never register here and keep their existing visit path.
+    if (!rootAddressable && AtlasInterleaveRegistry::consumeSubmission(this))
+        return;
+
     beginFrame();
     drawRangeSpan(0, drawRanges.size());
 }

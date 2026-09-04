@@ -93,6 +93,15 @@ public:
     // to stock transform handling.
     bool prepareGPUOwnedSprite(cocos2d::CCSprite* sprite);
 
+    // Fast gate for the single CCSpriteBatchNode::draw hook. This only checks
+    // renderer-owned bookkeeping; it intentionally touches no atlas/GL state.
+    bool isGPUInterleavedBatch(cocos2d::CCSpriteBatchNode* batch) const;
+
+    // Called only after stock batch draw setup + child updateTransform have run
+    // for an exact registered gameplay atlas. Emits stock/GPU runs in live atlas
+    // order. Returns false only before any framebuffer draw has been submitted.
+    bool drawGPUInterleavedBatch(cocos2d::CCSpriteBatchNode* batch);
+
     // True standalone ownership is queried at the GameObject root visit. The
     // parentless-at-init objects that GD later inserts into sprite batch nodes do
     // NOT use this path; they are handled by deferred atlas buffers instead.
