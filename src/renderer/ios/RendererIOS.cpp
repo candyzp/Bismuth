@@ -18,17 +18,14 @@
 using namespace geode::prelude;
 
 namespace {
-constexpr usize MAX_STANDALONE_RUN_SPRITES = 16383;
+constexpr usize MAX_STANDALONE_BUFFER_SPRITES = 16383;
 
 struct StandaloneObjectDesc {
     GameObject* root = nullptr;
     std::vector<ResolvedStateLayer::ShadowCandidate> candidates;
 };
 
-struct StandaloneRunDesc {
-    cocos2d::CCNode* parent = nullptr;
-    int zOrder = 0;
-    unsigned int orderOfArrival = 0;
+struct StandaloneChunkDesc {
     std::vector<GameObject*> roots;
     std::vector<ResolvedStateLayer::ShadowCandidate> candidates;
 };
@@ -45,6 +42,7 @@ struct IOSRendererState {
     std::unordered_set<cocos2d::CCSprite*> standaloneOwnedSprites;
     std::unordered_set<cocos2d::CCSprite*> ownedSprites;
     std::unordered_set<GameObject*> standaloneOwnedRoots;
+    std::unordered_map<GameObject*, usize> standaloneRootBatchIndices;
 
     usize gpuCandidateSprites = 0;
     usize candidatesWithBatch = 0;
@@ -62,10 +60,11 @@ struct IOSRendererState {
     usize standaloneExternalColorObjects = 0;
     usize standaloneExternalOtherObjects = 0;
     usize standaloneInvalidVisualRejected = 0;
-    usize standaloneMissingParentRejected = 0;
     usize standaloneRootBatchRejected = 0;
-    usize standaloneParentCount = 0;
-    usize standaloneRunCount = 0;
+    usize standaloneParentlessAtInit = 0;
+    usize standaloneBufferCount = 0;
+    usize standaloneRootVisitsCurrentFrame = 0;
+    usize standaloneRootVisitsLastFrame = 0;
 
     ~IOSRendererState() {
         if (assistShader)
@@ -104,8 +103,6 @@ static void parkOwnedStockQuads(IOSRendererState* state) {
     if (!state)
         return;
 
-    // Only sprites actually living in a CCSpriteBatchNode have atlas quads to
-    // park. Standalone objects are suppressed at the root visit stage.
     for (auto sprite : state->batchOwnedSprites) {
         if (!sprite)
             continue;
@@ -125,7 +122,6 @@ static void restoreOwnedStockQuads(IOSRendererState* state) {
     if (!state)
         return;
 
-    // Manual in-level disable only. The scene is known to still be alive here.
     for (auto sprite : state->batchOwnedSprites) {
         if (!sprite || !sprite->getBatchNode())
             continue;
@@ -134,73 +130,40 @@ static void restoreOwnedStockQuads(IOSRendererState* state) {
     }
 }
 
-static std::vector<StandaloneRunDesc> buildStandaloneRuns(
-    const std::unordered_map<cocos2d::CCNode*, StandaloneObjectDesc>& lookup,
-    const std::unordered_set<cocos2d::CCNode*>& parents
+static std::vector<StandaloneChunkDesc> buildStandaloneChunks(
+    const std::vector<StandaloneObjectDesc>& objects
 ) {
-    std::vector<StandaloneRunDesc> runs;
+    std::vector<StandaloneChunkDesc> chunks;
+    StandaloneChunkDesc current;
 
-    for (auto parent : parents) {
-        if (!parent || parent->getChildrenCount() == 0)
+    auto flush = [&]() {
+        if (!current.roots.empty() && !current.candidates.empty())
+            chunks.push_back(std::move(current));
+        current = {};
+    };
+
+    for (const auto& object : objects) {
+        if (!object.root || object.candidates.empty())
             continue;
 
-        parent->sortAllChildren();
-        auto children = parent->getChildren();
-        if (!children)
+        if (object.candidates.size() > MAX_STANDALONE_BUFFER_SPRITES)
             continue;
 
-        StandaloneRunDesc current;
-        bool hasRun = false;
-
-        auto flush = [&]() {
-            if (!current.roots.empty() && !current.candidates.empty())
-                runs.push_back(std::move(current));
-            current = {};
-            hasRun = false;
-        };
-
-        for (auto child : CCArrayExt<cocos2d::CCNode*>(children)) {
-            auto it = lookup.find(child);
-            if (it == lookup.end()) {
-                flush();
-                continue;
-            }
-
-            const auto& objectDesc = it->second;
-            if (!objectDesc.root || objectDesc.candidates.empty()) {
-                flush();
-                continue;
-            }
-
-            const int zOrder = objectDesc.root->getZOrder();
-            const bool wouldOverflow =
-                hasRun &&
-                current.candidates.size() + objectDesc.candidates.size() > MAX_STANDALONE_RUN_SPRITES;
-
-            if (hasRun && (zOrder != current.zOrder || wouldOverflow))
-                flush();
-
-            if (!hasRun) {
-                current.parent = parent;
-                current.zOrder = zOrder;
-                current.orderOfArrival = objectDesc.root->getOrderOfArrival();
-                hasRun = true;
-            }
-
-            // Append complete objects only. A run is never split through the
-            // middle of a GameObject visual subtree.
-            current.roots.push_back(objectDesc.root);
-            current.candidates.insert(
-                current.candidates.end(),
-                objectDesc.candidates.begin(),
-                objectDesc.candidates.end()
-            );
+        if (!current.candidates.empty() &&
+            current.candidates.size() + object.candidates.size() > MAX_STANDALONE_BUFFER_SPRITES) {
+            flush();
         }
 
-        flush();
+        current.roots.push_back(object.root);
+        current.candidates.insert(
+            current.candidates.end(),
+            object.candidates.begin(),
+            object.candidates.end()
+        );
     }
 
-    return runs;
+    flush();
+    return chunks;
 }
 } // namespace
 
@@ -245,9 +208,6 @@ bool Renderer::init(PlayLayer* playLayer) {
             candidatesByObject.reserve(state->resolvedState->getStats().safeObjects);
             firstSpriteOwner.reserve(candidates.size());
 
-            // First establish the real render home of every safe visual sprite.
-            // This is also used to prove that a standalone object is complete
-            // before its root visit is ever suppressed.
             for (const auto& candidate : candidates) {
                 auto object = candidate.object;
                 auto sprite = candidate.sprite;
@@ -272,10 +232,8 @@ bool Renderer::init(PlayLayer* playLayer) {
 
             state->candidateBatchNodes = candidateBatches.size();
 
-            std::unordered_map<cocos2d::CCNode*, StandaloneObjectDesc> standaloneLookup;
-            std::unordered_set<cocos2d::CCNode*> standaloneParents;
-            standaloneLookup.reserve(candidatesByObject.size());
-            standaloneParents.reserve(64);
+            std::vector<StandaloneObjectDesc> standaloneObjects;
+            standaloneObjects.reserve(candidatesByObject.size());
 
             for (auto& [object, objectCandidates] : candidatesByObject) {
                 if (!object || objectCandidates.empty())
@@ -326,9 +284,6 @@ bool Renderer::init(PlayLayer* playLayer) {
 
                 ++state->standaloneObjectCandidates;
 
-                // Do not split one visual object between atlas and standalone
-                // ownership. The already-working atlas path can keep doing its
-                // thing, but standalone root suppression requires the full tree.
                 if (anyAtlas) {
                     ++state->standaloneMixedRejected;
                     continue;
@@ -344,9 +299,8 @@ bool Renderer::init(PlayLayer* playLayer) {
                     continue;
                 }
 
-                // External color/glow sprites are legitimate GD arrangements,
-                // but skipping only the GameObject root cannot suppress them.
-                // Keep them stock for now and report exactly what kind they are.
+                // These are valid GD render arrangements, but a root visit cannot
+                // suppress a sibling/external glow or color node. Keep them stock.
                 if (externalVisual) {
                     ++state->standaloneExternalRejected;
                     if (externalGlow)
@@ -363,34 +317,21 @@ bool Renderer::init(PlayLayer* playLayer) {
                     continue;
                 }
 
-                auto parent = object->getParent();
-                if (!parent) {
-                    ++state->standaloneMissingParentRejected;
-                    continue;
-                }
-
                 if (object->getBatchNode()) {
                     ++state->standaloneRootBatchRejected;
                     continue;
                 }
 
+                // Geometry Dash intentionally removes inactive/offscreen roots
+                // from their render parent. Parentless at init is lifecycle state,
+                // not an ownership rejection. The stock root visit later supplies
+                // exact render timing/order when the object becomes active.
+                if (!object->getParent())
+                    ++state->standaloneParentlessAtInit;
+
                 ++state->standaloneObjectEligible;
-                standaloneLookup.emplace(
-                    static_cast<cocos2d::CCNode*>(object),
-                    StandaloneObjectDesc { object, objectCandidates }
-                );
-                standaloneParents.insert(parent);
+                standaloneObjects.push_back({ object, objectCandidates });
             }
-
-            state->standaloneParentCount = standaloneParents.size();
-
-            // Runs are captured before adding any assist nodes. Unsupported or
-            // animated siblings naturally split a run, preserving Cocos order.
-            const auto standaloneRuns = buildStandaloneRuns(
-                standaloneLookup,
-                standaloneParents
-            );
-            state->standaloneRunCount = standaloneRuns.size();
 
             for (auto batch : candidateBatches) {
                 if (!batch)
@@ -420,33 +361,33 @@ bool Renderer::init(PlayLayer* playLayer) {
                 }
             }
 
-            for (const auto& run : standaloneRuns) {
-                if (!run.parent || run.roots.empty() || run.candidates.empty())
+            const auto standaloneChunks = buildStandaloneChunks(standaloneObjects);
+            for (const auto& chunk : standaloneChunks) {
+                if (chunk.roots.empty() || chunk.candidates.empty())
                     continue;
 
-                auto gpuRun = StandaloneAssistBatch::create(
+                auto gpuBuffer = StandaloneAssistBatch::create(
                     state->resolvedState.get(),
                     state->assistShader,
-                    run.candidates
+                    chunk.candidates
                 );
-                if (!gpuRun || !gpuRun->getStats().ready)
+                if (!gpuBuffer || !gpuBuffer->getStats().ready)
                     continue;
 
-                // The batch builder is all-or-nothing. Do not suppress any root
-                // unless every visual sprite in this run made it into GPU geometry.
-                if (gpuRun->getOwnedSprites().size() != run.candidates.size())
+                if (gpuBuffer->getOwnedSprites().size() != chunk.candidates.size())
                     continue;
 
-                run.parent->addChild(gpuRun, run.zOrder);
-                gpuRun->setOrderOfArrival(run.orderOfArrival);
-                state->standaloneBatches.push_back(gpuRun);
+                const usize batchIndex = state->standaloneBatches.size();
+                state->standaloneBatches.push_back(gpuBuffer);
 
-                for (auto root : run.roots) {
-                    if (root)
-                        state->standaloneOwnedRoots.insert(root);
+                for (auto root : chunk.roots) {
+                    if (!root || !gpuBuffer->ownsRoot(root))
+                        continue;
+                    state->standaloneOwnedRoots.insert(root);
+                    state->standaloneRootBatchIndices[root] = batchIndex;
                 }
 
-                for (auto sprite : gpuRun->getOwnedSprites()) {
+                for (auto sprite : gpuBuffer->getOwnedSprites()) {
                     if (!sprite)
                         continue;
                     state->standaloneOwnedSprites.insert(sprite);
@@ -454,12 +395,11 @@ bool Renderer::init(PlayLayer* playLayer) {
                 }
             }
 
-            // Only records that actually feed visible GPU geometry are polled in
-            // the per-frame state hot path.
+            state->standaloneBufferCount = state->standaloneBatches.size();
             state->resolvedState->setGPUOwnedSprites(state->ownedSprites);
 
             log::info(
-                "Bismuth iOS ownership: {} sprite candidates ({} atlas / {} standalone); standalone {} candidates / {} eligible; rejects mixed {} / duplicate {} / shared {} / external {} (glow {} / color {} / other {}) / invalid {} / no-parent {} / root-batched {}; {} atlas GPU nodes + {} standalone runs; {} roots / {} standalone visual sprites owned",
+                "Bismuth iOS ownership: {} sprite candidates ({} atlas / {} standalone); standalone {} candidates / {} lifecycle-eligible; rejects mixed {} / duplicate {} / shared {} / external {} (glow {} / color {} / other {}) / invalid {} / root-batched {}; parentless-at-init {} deferred to stock root visits; {} atlas GPU nodes + {} shared standalone buffers; {} roots / {} standalone visual sprites owned",
                 state->gpuCandidateSprites,
                 state->candidatesWithBatch,
                 state->candidatesWithoutBatch,
@@ -473,10 +413,10 @@ bool Renderer::init(PlayLayer* playLayer) {
                 state->standaloneExternalColorObjects,
                 state->standaloneExternalOtherObjects,
                 state->standaloneInvalidVisualRejected,
-                state->standaloneMissingParentRejected,
                 state->standaloneRootBatchRejected,
+                state->standaloneParentlessAtInit,
                 state->gpuBatches.size(),
-                state->standaloneBatches.size(),
+                state->standaloneBufferCount,
                 state->standaloneOwnedRoots.size(),
                 state->standaloneOwnedSprites.size()
             );
@@ -517,16 +457,16 @@ bool Renderer::init(PlayLayer* playLayer) {
         if (gpuBatch)
             gpuBatch->setVisible(true);
     }
-    for (auto& gpuRun : state->standaloneBatches) {
-        if (gpuRun)
-            gpuRun->setVisible(true);
+    for (auto& gpuBuffer : state->standaloneBatches) {
+        if (gpuBuffer)
+            gpuBuffer->setVisible(true);
     }
     parkOwnedStockQuads(state);
 
     setVisible(false);
     rendererStartTime = getTime();
 
-    log::info("Bismuth iOS initialized: complete standalone subtree + atlas GPU math ownership, stock animation lifecycle");
+    log::info("Bismuth iOS initialized: stock root-order standalone GPU math + atlas GPU math, stock animation lifecycle");
     return true;
 }
 
@@ -539,21 +479,20 @@ void Renderer::terminate() {
 
     auto state = iosState(this);
     if (state) {
-        // Never call into scene sprites/parents during teardown. The PlayLayer may
-        // already be partially destroyed; simply disable and release our refs.
         for (auto& gpuBatch : state->gpuBatches) {
             if (gpuBatch)
                 gpuBatch->setVisible(false);
         }
-        for (auto& gpuRun : state->standaloneBatches) {
-            if (gpuRun)
-                gpuRun->setVisible(false);
+        for (auto& gpuBuffer : state->standaloneBatches) {
+            if (gpuBuffer)
+                gpuBuffer->setVisible(false);
         }
 
         state->ownedSprites.clear();
         state->batchOwnedSprites.clear();
         state->standaloneOwnedSprites.clear();
         state->standaloneOwnedRoots.clear();
+        state->standaloneRootBatchIndices.clear();
         state->gpuBatches.clear();
         state->standaloneBatches.clear();
     }
@@ -578,7 +517,6 @@ void Renderer::terminate() {
 void Renderer::prepareShaderUniforms() {}
 void Renderer::prepareColorChannelBuffer() {}
 void Renderer::generateStaticRenderingBuffer(ObjectSorter&) {}
-
 void Renderer::draw() {}
 
 void Renderer::updateDebugText() {
@@ -612,10 +550,10 @@ void Renderer::updateDebugText() {
                     rejectedSprites += s.rejectedSprites;
                 }
 
-                for (const auto& run : state->standaloneBatches) {
-                    if (!run)
+                for (const auto& buffer : state->standaloneBatches) {
+                    if (!buffer)
                         continue;
-                    const auto& s = run->getStats();
+                    const auto& s = buffer->getStats();
                     residentVertices += s.verticesResident;
                     gpuDraws += s.drawCallsLastFrame;
                     gpuIndices += s.indicesLastFrame;
@@ -629,6 +567,7 @@ void Renderer::updateDebugText() {
             const usize batchOwned = state ? state->batchOwnedSprites.size() : 0;
             const usize standaloneOwned = state ? state->standaloneOwnedSprites.size() : 0;
             const usize standaloneRoots = state ? state->standaloneOwnedRoots.size() : 0;
+            const usize rootVisits = state ? state->standaloneRootVisitsLastFrame : 0;
             const bool ownsPixels = enabled && ownedSprites > 0;
 
             text = fmt::format(
@@ -640,14 +579,15 @@ void Renderer::updateDebugText() {
                 "Stock animation/complex: {} | safe sprite records: {}\n"
                 "Collection safety: {} unsafe object(s) | {} non-sprite child | {} duplicate | {} invalid | init retained {} obj / {} sprites | revalidate {}\n"
                 "Discovery: {} sprites | {} atlas | {} standalone\n"
-                "Standalone objects: {} candidates | {} eligible\n"
-                "Reject: {} mixed | {} duplicate | {} shared | {} external [glow {} / color {} / other {}] | {} invalid | {} no-parent | {} root-batched\n"
-                "GPU nodes: {} atlas + {} standalone runs | owned roots: {} | visual sprites: {} ({} atlas + {} standalone)\n"
+                "Standalone objects: {} candidates | {} lifecycle-eligible\n"
+                "Reject: {} mixed | {} duplicate | {} shared | {} external [glow {} / color {} / other {}] | {} invalid | {} root-batched\n"
+                "Lifecycle: {} parentless at init -> stock root-visit handoff\n"
+                "GPU storage: {} atlas nodes + {} shared standalone buffers | owned roots: {} | visual sprites: {} ({} atlas + {} standalone)\n"
                 "Active GPU state: {} objects | {} sprites\n"
                 "Dirty: {} transform | {} appearance | {} visibility | {} UV\n"
                 "Static GPU reused: {}/{} | uploads: {} in {} call(s)\n"
                 "Resident verts: {} | GPU draws: {} / frame | indices: {} | ranges: {} | rejected: {}\n"
-                "CPU render skipped: {} atlas quad transforms | {} complete standalone root visits\n"
+                "CPU render skipped: {} atlas quad transforms | {} standalone root visits last frame\n"
                 "Framebuffer writes: {}\n"
                 "Animation lifecycle ownership: STOCK GD",
                 ownsPixels ? "GPU SAFE SPRITES + STOCK ANIMATION" : "STOCK GD",
@@ -679,8 +619,8 @@ void Renderer::updateDebugText() {
                 state ? state->standaloneExternalColorObjects : 0,
                 state ? state->standaloneExternalOtherObjects : 0,
                 state ? state->standaloneInvalidVisualRejected : 0,
-                state ? state->standaloneMissingParentRejected : 0,
                 state ? state->standaloneRootBatchRejected : 0,
+                state ? state->standaloneParentlessAtInit : 0,
                 atlasBatchCount,
                 standaloneBatchCount,
                 standaloneRoots,
@@ -703,7 +643,7 @@ void Renderer::updateDebugText() {
                 textureRanges,
                 rejectedSprites,
                 batchOwned,
-                standaloneRoots,
+                rootVisits,
                 ownsPixels ? "ON (owned safe sprites)" : "OFF"
             );
         } else {
@@ -730,13 +670,28 @@ void Renderer::finishDraw() {}
 void Renderer::update(float dt) {
     gameTimer += dt;
 
+    auto state = iosState(this);
+    if (state) {
+        state->standaloneRootVisitsLastFrame = state->standaloneRootVisitsCurrentFrame;
+        state->standaloneRootVisitsCurrentFrame = 0;
+    }
+
     const bool detailedProbe = Mod::get()->getSettingValue<bool>("ios_gpu_debug");
-    if (auto state = iosState(this); state && state->resolvedState) {
+    if (state && state->resolvedState) {
         const bool gpuConsumesResolvedState = enabled && !state->ownedSprites.empty();
         state->resolvedState->update(detailedProbe || gpuConsumesResolvedState);
     }
 
     updateDebugText();
+
+    // Debug reads the completed previous-frame counters above. Reset direct
+    // root-visit draw counters only after that so the next render can accumulate.
+    if (state) {
+        for (auto& buffer : state->standaloneBatches) {
+            if (buffer)
+                buffer->beginFrame();
+        }
+    }
 }
 
 bool Renderer::isColorChannelBlending(i32 channel) {
@@ -786,7 +741,19 @@ bool Renderer::isGPUOwnedStandaloneSprite(cocos2d::CCSprite* sprite) const {
         return false;
 
     auto object = typeinfo_cast<GameObject*>(sprite);
-    return object && state->standaloneOwnedRoots.contains(object);
+    if (!object)
+        return false;
+
+    auto it = state->standaloneRootBatchIndices.find(object);
+    if (it == state->standaloneRootBatchIndices.end() || it->second >= state->standaloneBatches.size())
+        return false;
+
+    auto& buffer = state->standaloneBatches[it->second];
+    if (!buffer || !buffer->drawRoot(object))
+        return false;
+
+    ++state->standaloneRootVisitsCurrentFrame;
+    return true;
 }
 
 void Renderer::setEnabled(bool value) {
@@ -799,9 +766,9 @@ void Renderer::setEnabled(bool value) {
                 if (gpuBatch)
                     gpuBatch->setVisible(false);
             }
-            for (auto& gpuRun : state->standaloneBatches) {
-                if (gpuRun)
-                    gpuRun->setVisible(false);
+            for (auto& gpuBuffer : state->standaloneBatches) {
+                if (gpuBuffer)
+                    gpuBuffer->setVisible(false);
             }
             restoreOwnedStockQuads(state);
         }
@@ -813,9 +780,9 @@ void Renderer::setEnabled(bool value) {
                 if (gpuBatch)
                     gpuBatch->setVisible(true);
             }
-            for (auto& gpuRun : state->standaloneBatches) {
-                if (gpuRun)
-                    gpuRun->setVisible(true);
+            for (auto& gpuBuffer : state->standaloneBatches) {
+                if (gpuBuffer)
+                    gpuBuffer->setVisible(true);
             }
         }
     }

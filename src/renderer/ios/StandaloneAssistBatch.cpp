@@ -16,9 +16,6 @@ static glm::vec2 quadUV(const cocos2d::ccV3F_C4B_T2F& vertex) {
     return { vertex.texCoords.u, vertex.texCoords.v };
 }
 
-// Convert a sprite in a safe GameObject visual subtree into coordinates local to
-// the root GameObject. This is the same hierarchy transform model used by the
-// atlas-assist path that already fixed the detached-spike regression.
 static bool getSpriteLocalTransform(
     GameObject* object,
     cocos2d::CCSprite* sprite,
@@ -96,6 +93,7 @@ void StandaloneAssistBatch::destroyGL() {
     indexBuffer = nullptr;
 
     drawRanges.clear();
+    rootDrawSpans.clear();
     ownedSprites.clear();
     stats.ready = false;
 }
@@ -103,9 +101,6 @@ void StandaloneAssistBatch::destroyGL() {
 bool StandaloneAssistBatch::buildGeometry(
     const std::vector<ResolvedStateLayer::ShadowCandidate>& candidates
 ) {
-    // RendererIOS splits runs on whole-object boundaries before this point. Never
-    // truncate a run here, because doing so could suppress a root while leaving
-    // part of its visual subtree undrawn.
     if (candidates.empty() || candidates.size() > MAX_BATCH_SPRITES)
         return false;
 
@@ -115,17 +110,42 @@ bool StandaloneAssistBatch::buildGeometry(
     indices.reserve(candidates.size() * 6);
     ownedSprites.clear();
     drawRanges.clear();
+    rootDrawSpans.clear();
 
     u32 activeTexture = 0;
     u32 activeBlendSrc = 0;
     u32 activeBlendDst = 0;
     DrawRange* activeRange = nullptr;
 
+    GameObject* currentRoot = nullptr;
+    usize currentRootFirstRange = 0;
+
+    auto finishRoot = [&]() {
+        if (!currentRoot)
+            return;
+        const usize count = drawRanges.size() - currentRootFirstRange;
+        if (count > 0)
+            rootDrawSpans[currentRoot] = { currentRootFirstRange, count };
+    };
+
     for (const auto& candidate : candidates) {
         auto object = candidate.object;
         auto sprite = candidate.sprite;
         if (!object || !sprite || sprite->getBatchNode())
             return false;
+
+        // RendererIOS appends complete objects contiguously. Force a draw-range
+        // boundary between roots even when texture/blend happen to match so a
+        // stock root visit can address exactly one complete object's geometry.
+        if (object != currentRoot) {
+            finishRoot();
+            currentRoot = object;
+            currentRootFirstRange = drawRanges.size();
+            activeRange = nullptr;
+            activeTexture = 0;
+            activeBlendSrc = 0;
+            activeBlendDst = 0;
+        }
 
         auto texture = sprite->getTexture();
         if (!texture || !texture->getName())
@@ -141,10 +161,6 @@ bool StandaloneAssistBatch::buildGeometry(
             localTransform
         );
 
-        // Root rotation/scale happens in the A15 shader around the root anchor.
-        // Child transforms are baked once into local geometry because the safe
-        // classifier has already excluded animation lifecycles that mutate that
-        // subtree structure over time.
         const glm::vec2 rootAnchor = ccPointToGLM(object->getAnchorPointInPoints());
         const glm::vec2 bottomLeft = ccPointToGLM(localBottomLeftPoint) - rootAnchor;
         const glm::vec2 right = {
@@ -156,8 +172,6 @@ bool StandaloneAssistBatch::buildGeometry(
             localTransform.d * crop.size.height
         };
 
-        // Reuse Cocos' already-resolved UV corners so rotated/trimmed/flipped
-        // frames remain identical to stock Geometry Dash.
         const auto quad = sprite->getQuad();
         const glm::vec2 uvBL = quadUV(quad.bl);
         const glm::vec2 uvBR = quadUV(quad.br);
@@ -169,8 +183,6 @@ bool StandaloneAssistBatch::buildGeometry(
         const u32 blendSrc = (u32)blend.src;
         const u32 blendDst = (u32)blend.dst;
 
-        // Preserve sprite order exactly. A new range is created whenever texture
-        // or blend changes, rather than sorting by texture and breaking z order.
         if (!activeRange ||
             activeTexture != textureId ||
             activeBlendSrc != blendSrc ||
@@ -208,8 +220,12 @@ bool StandaloneAssistBatch::buildGeometry(
         ownedSprites.push_back(sprite);
     }
 
-    if (ownedSprites.size() != candidates.size() || vertices.empty() || indices.empty() || drawRanges.empty())
+    finishRoot();
+
+    if (ownedSprites.size() != candidates.size() || vertices.empty() || indices.empty() ||
+        drawRanges.empty() || rootDrawSpans.empty()) {
         return false;
+    }
 
     vertexBuffer = Buffer::createStaticDraw(
         "Standalone resolved GPU vertices",
@@ -262,19 +278,43 @@ bool StandaloneAssistBatch::buildGeometry(
     return true;
 }
 
-void StandaloneAssistBatch::draw() {
+void StandaloneAssistBatch::beginFrame() {
     stats.drawCallsLastFrame = 0;
     stats.indicesLastFrame = 0;
+}
 
+bool StandaloneAssistBatch::ownsRoot(GameObject* root) const {
+    return root && rootDrawSpans.contains(root);
+}
+
+bool StandaloneAssistBatch::drawRoot(GameObject* root) {
+    if (!root)
+        return false;
+    auto it = rootDrawSpans.find(root);
+    if (it == rootDrawSpans.end())
+        return false;
+    return drawRangeSpan(it->second.firstRange, it->second.rangeCount);
+}
+
+void StandaloneAssistBatch::draw() {
+    beginFrame();
+    drawRangeSpan(0, drawRanges.size());
+}
+
+bool StandaloneAssistBatch::drawRangeSpan(usize firstRange, usize rangeCount) {
     if (!stats.ready || !isVisible() || !resolvedState || !shader || !vao)
-        return;
-    if (!resolvedState->isGPUStateReady())
-        return;
+        return false;
+    if (!resolvedState->isGPUStateReady() || rangeCount == 0 || firstRange >= drawRanges.size())
+        return false;
+
+    const usize endRange = std::min(drawRanges.size(), firstRange + rangeCount);
+    if (endRange <= firstRange)
+        return false;
 
     auto objectStateTexture = resolvedState->getObjectStateTexture();
     auto spriteStateTexture = resolvedState->getSpriteStateTexture();
     if (!objectStateTexture || !spriteStateTexture)
-        return;
+        return false;
 
     kmMat4 matrixP;
     kmMat4 matrixMV;
@@ -333,7 +373,8 @@ void StandaloneAssistBatch::draw() {
     glDepthMask(GL_FALSE);
     glStencilMask(0);
 
-    for (const auto& range : drawRanges) {
+    for (usize rangeIndex = firstRange; rangeIndex < endRange; ++rangeIndex) {
+        const auto& range = drawRanges[rangeIndex];
         if (!range.textureId || !range.indexCount)
             continue;
 
@@ -376,6 +417,7 @@ void StandaloneAssistBatch::draw() {
         glBindTexture(GL_TEXTURE_2D, (u32)previousTextures[unit]);
     }
     glActiveTexture((GLenum)previousActiveTexture);
+    return true;
 }
 
 #endif

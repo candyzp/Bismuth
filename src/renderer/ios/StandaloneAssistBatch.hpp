@@ -6,12 +6,13 @@
 #include "../Buffer.hpp"
 #include "../Shader.hpp"
 #include <Geode/Geode.hpp>
+#include <unordered_map>
 #include <vector>
 
-// Replaces consecutive, fully-owned standalone GameObject visual subtrees.
-// Geometry Dash keeps every object/sprite alive and continues resolving gameplay,
-// triggers, colors, visibility and animation state. Only the final render visit
-// of roots whose entire safe visual subtree was accepted is skipped.
+// Persistent standalone geometry shared by many complete safe GameObject roots.
+// Geometry Dash still owns gameplay, visibility, child lifecycle, colors and
+// animation. The stock GameObject root visit selects exactly one root slice at
+// the moment Cocos would have rendered it, preserving stock scene order.
 class StandaloneAssistBatch : public cocos2d::CCNode {
 public:
     struct Stats {
@@ -33,6 +34,13 @@ public:
 
     void draw() override;
 
+    // Direct root-visit path. The caller is already inside the stock Cocos parent
+    // traversal, so drawing only this root's range preserves exact z/order without
+    // requiring the GameObject to have a parent during level initialization.
+    void beginFrame();
+    bool drawRoot(GameObject* root);
+    bool ownsRoot(GameObject* root) const;
+
     inline const Stats& getStats() const { return stats; }
     inline const std::vector<cocos2d::CCSprite*>& getOwnedSprites() const { return ownedSprites; }
 
@@ -52,12 +60,18 @@ private:
         u32 indexCount = 0;
     };
 
+    struct RootDrawSpan {
+        usize firstRange = 0;
+        usize rangeCount = 0;
+    };
+
     bool initWithCandidates(
         ResolvedStateLayer* resolvedState,
         Shader* shader,
         const std::vector<ResolvedStateLayer::ShadowCandidate>& candidates
     );
     bool buildGeometry(const std::vector<ResolvedStateLayer::ShadowCandidate>& candidates);
+    bool drawRangeSpan(usize firstRange, usize rangeCount);
     void destroyGL();
 
 private:
@@ -69,6 +83,7 @@ private:
     u32 vao = 0;
 
     std::vector<DrawRange> drawRanges;
+    std::unordered_map<GameObject*, RootDrawSpan> rootDrawSpans;
     std::vector<cocos2d::CCSprite*> ownedSprites;
     Stats stats;
 };
