@@ -8,6 +8,7 @@
 
 #include "Geode/cocos/CCDirector.h"
 #include "Geode/cocos/sprite_nodes/CCSpriteBatchNode.h"
+#include <Geode/utils/cocos.hpp>
 
 #include <cstring>
 #include <memory>
@@ -264,8 +265,10 @@ bool Renderer::init(PlayLayer* playLayer) {
 
             std::vector<StandaloneObjectDesc> standaloneObjects;
             std::unordered_map<cocos2d::CCSpriteBatchNode*, std::vector<StandaloneObjectDesc>> deferredAtlasObjectsByBatch;
+            std::unordered_map<cocos2d::CCSpriteBatchNode*, cocos2d::CCNode*> gpuInsertionTails;
             standaloneObjects.reserve(candidatesByObject.size());
             deferredAtlasObjectsByBatch.reserve(32);
+            gpuInsertionTails.reserve(64);
 
             for (auto& [object, objectCandidates] : candidatesByObject) {
                 if (!object || objectCandidates.empty())
@@ -371,9 +374,20 @@ bool Renderer::init(PlayLayer* playLayer) {
                         continue;
                     }
 
+                    // Match stock GameObject::addMainSpriteToParent(). The old
+                    // predictor used m_baseOrDetailBlending directly and skipped
+                    // both updateBlendMode() and GD's color-sprite Z adjustment,
+                    // which routed effect-heavy levels into the wrong stock batch.
+                    object->updateBlendMode();
+                    i32 targetZ = (i32)object->getObjectZLayer();
+                    if (object->m_shouldBlendBase && object->m_colorSprite &&
+                        !object->m_shouldBlendDetail && !object->m_colorZLayerRelated) {
+                        ++targetZ;
+                    }
+
                     auto targetNode = layer->parentForZLayer(
-                        (i32)object->getObjectZLayer(),
-                        object->m_baseOrDetailBlending,
+                        targetZ,
+                        object->m_shouldBlendBase,
                         object->getParentMode(),
                         false
                     );
@@ -418,7 +432,11 @@ bool Renderer::init(PlayLayer* playLayer) {
                 if (!gpuBatch || !gpuBatch->getStats().ready || gpuBatch->getStats().batchedSprites == 0)
                     continue;
 
-                parent->addChild(gpuBatch, batch->getZOrder());
+                // Same Z is not enough. Preserve the stock sibling ordering by
+                // placing the GPU geometry directly after the exact atlas node it
+                // shadows. Later deferred chunks for this batch continue the chain.
+                parent->insertAfter(gpuBatch, batch);
+                gpuInsertionTails[batch] = gpuBatch;
                 state->gpuBatches.push_back(gpuBatch);
                 for (auto sprite : gpuBatch->getOwnedSprites()) {
                     if (!sprite)
@@ -443,6 +461,10 @@ bool Renderer::init(PlayLayer* playLayer) {
                     continue;
                 }
 
+                cocos2d::CCNode* insertionAnchor = targetBatch;
+                if (auto tailIt = gpuInsertionTails.find(targetBatch); tailIt != gpuInsertionTails.end() && tailIt->second)
+                    insertionAnchor = tailIt->second;
+
                 const auto chunks = buildStandaloneChunks(objects);
                 for (const auto& chunk : chunks) {
                     if (chunk.candidates.empty())
@@ -458,7 +480,8 @@ bool Renderer::init(PlayLayer* playLayer) {
                     if (gpuBuffer->getOwnedSprites().size() != chunk.candidates.size())
                         continue;
 
-                    parent->addChild(gpuBuffer, targetBatch->getZOrder());
+                    parent->insertAfter(gpuBuffer, insertionAnchor);
+                    insertionAnchor = gpuBuffer;
                     state->standaloneBatches.push_back(gpuBuffer);
                     ++state->deferredAtlasBufferCount;
 
@@ -470,6 +493,8 @@ bool Renderer::init(PlayLayer* playLayer) {
                         state->ownedSprites.insert(sprite);
                     }
                 }
+
+                gpuInsertionTails[targetBatch] = insertionAnchor;
             }
 
             // Preserve the true standalone root path only for objects that were
