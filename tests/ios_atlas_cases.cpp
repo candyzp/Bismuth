@@ -47,11 +47,10 @@ int main() {
         assert((fixture::pixels==std::vector<int>{0,1,2,3,4}));
         assert(fixture::gpuDraws==3 && fixture::stockTransforms==2);
         checkStateRestored();
-        // Becoming a complex mixed batch must regenerate every real stock quad.
         s.sprites[1].m_classType=GameObjectClassType::Animated;
         s.draw();
         assert((fixture::pixels==std::vector<int>{0,1,2,3,4}));
-        assert(fixture::gpuDraws==0 && fixture::stockDraws==1 && fixture::stockTransforms==5);
+        assert(fixture::gpuDraws==3 && fixture::stockTransforms==2);
         s.sprites[1].m_classType=GameObjectClassType::Normal;
         s.draw();
         assert(fixture::gpuDraws==3);
@@ -78,15 +77,15 @@ int main() {
     {
         Scene s(3); s.claim({0,2});
         fixture::failUpload=true; s.draw(); fixture::failUpload=false;
-        assert((fixture::pixels==std::vector<int>{0,1,2}));
-        assert(fixture::gpuDraws==0 && fixture::stockTransforms==3);
+        assert(fixture::pixels.empty());
+        assert(fixture::gpuDraws==0 && fixture::stockTransforms==0);
         s.batch.atlas.dirty=true; fixture::failAtlasSync=true; s.draw(); fixture::failAtlasSync=false;
-        assert((fixture::pixels==std::vector<int>{0,1,2}));
-        assert(fixture::gpuDraws==0 && fixture::stockDraws==1);
+        assert(fixture::pixels.empty());
+        assert(fixture::gpuDraws==0);
         checkStateRestored();
         s.draw(); assert(fixture::gpuDraws==2);
         s.resolved.ready=false; s.draw();
-        assert(fixture::gpuDraws==0 && (fixture::pixels==std::vector<int>{0,1,2}));
+        assert(fixture::gpuDraws==0 && fixture::pixels.empty());
     }
     {
         Scene s(2); s.claim({0,1});
@@ -132,7 +131,6 @@ int main() {
         checkStateRestored();
         fixture::colorMask={0,0,0,0}; s.draw(); assert(fixture::pixels.empty());
         fixture::colorMask={1,1,1,1};
-        // The last legal u16 quad must remain addressable without wraparound.
         std::vector<SpriteOwner> owners{{&s.renderer,nullptr,&s.owner,65532}};
         std::vector<AtlasDrawRun> runs; std::vector<u16> indices;
         buildAtlasDrawPlan(owners,runs,indices);
@@ -149,11 +147,10 @@ int main() {
         AtlasInterleaveRegistry::registerImmediate(&immediate);
         s.draw();
         assert((fixture::pixels==std::vector<int>{0,1,2}) && fixture::gpuDraws==2);
-        // Conflicting ownership must return the complete batch to stock.
         s.claim({0}); s.draw();
         assert((fixture::pixels==std::vector<int>{0,1,2}) && fixture::gpuDraws==0);
         AtlasInterleaveRegistry::unregisterImmediate(&immediate);
     }
     assert(registry().spriteOwners.empty() && registry().indexCaches.empty());
-    std::cout << "PASS: stock/GPU order, fallback restoration, failed uploads, batch migration, masks, VAO/EBO state, teardown, u16 limits\n";
+    std::cout << "PASS: mixed stock/GPU order, strict owned-batch failures, batch migration, masks, VAO/EBO state, teardown, u16 limits\n";
 }
