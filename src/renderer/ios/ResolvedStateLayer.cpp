@@ -14,9 +14,6 @@ using namespace geode::prelude;
 namespace {
 constexpr usize OBJECT_TEXELS_PER_STATE = 2;
 constexpr usize SPRITE_TEXELS_PER_STATE = 3;
-
-// Merging a tiny gap costs fewer bytes than another GL call, but a distant dirty
-// record should never drag the entire data texture across the bus again.
 constexpr usize DIRTY_RECORD_MERGE_GAP = 2;
 
 inline bool changedFloat(float a, float b, float epsilon = 0.0001f) {
@@ -92,9 +89,6 @@ ResolvedStateLayer::SafetyClass ResolvedStateLayer::classifyObject(
     if (!object || object->isTrigger() || object->m_isHide || object->m_isInvisible)
         return SafetyClass::StockOnly;
 
-    // These classes keep the exact stock path. Their sprite trees/frames or
-    // interaction visuals can change independently of simple resolved root
-    // state, which is precisely where the old replacement renderer broke.
     if (object->m_classType == GameObjectClassType::Animated)
         return SafetyClass::StockOnly;
     if (ObjectUtils::isInteractiveVisualObject(object))
@@ -130,16 +124,11 @@ ResolvedStateLayer::SafetyClass ResolvedStateLayer::classifyObject(
         return SafetyClass::StockOnly;
     }
 
-    // Child transforms and separately attached visual parts can change without
-    // changing the root state. Persistent root geometry cannot represent them.
     if (outSprites.size() != 1 || outSprites.front() != object ||
         object->m_glowSprite || object->m_colorSprite ||
         (object->getChildren() && object->getChildren()->count() != 0))
         return SafetyClass::StockOnly;
 
-    // DynamicSafe is still GD-owned state. It only means the final transform is
-    // expected to change, so the state texture will receive dirty updates while
-    // the A15 performs the final per-vertex transform math.
     const bool dynamic =
         object->m_groupCount > 0 ||
         object->getHasRotateAction() ||
@@ -176,7 +165,7 @@ ResolvedStateLayer::ObjectState ResolvedStateLayer::captureObjectState(GameObjec
     state.transform = object->nodeToParentTransform();
     state.vertexZ = object->getVertexZ();
     state.opacity = (float)object->getDisplayedOpacity() / 255.f;
-    state.visible = object->isVisible() && !object->m_isInvisible;
+    state.visible = object->getParent() && object->isVisible() && !object->m_isInvisible;
     return state;
 }
 
@@ -185,8 +174,6 @@ ResolvedStateLayer::SpriteState ResolvedStateLayer::captureSpriteState(cocos2d::
     if (!sprite)
         return state;
 
-    // Consume Cocos' already-resolved display state. Bismuth does not recreate
-    // GD color channels, cascade color, cascade opacity, HSV, or fade semantics.
     state.color = sprite->getDisplayedColor();
     state.opacity = sprite->getDisplayedOpacity();
     state.textureRect = sprite->getTextureRect();
@@ -231,7 +218,6 @@ void ResolvedStateLayer::packSpriteState(usize index, const SpriteState& state, 
         return;
 
     const auto colorByte = [&](u8 value) -> float {
-        // Match CCSprite::updateColor's byte truncation for premultiplied RGB.
         const u8 resolved = state.opacityModifyRGB
             ? static_cast<u8>(value * (state.opacity / 255.f)) : value;
         return static_cast<float>(resolved) / 255.f;
@@ -306,9 +292,6 @@ bool ResolvedStateLayer::init(PlayLayer* playLayer) {
     if (!layer || !layer->m_objects)
         return false;
 
-    // Retain accepted records only across initial collection -> texture creation
-    // -> resync. This closes the init lifetime window without pinning visual parts
-    // for the whole level or interfering with normal GD ownership afterward.
     std::vector<Ref<GameObject>> initObjectRetains;
     std::vector<Ref<cocos2d::CCSprite>> initSpriteRetains;
     initObjectRetains.reserve(layer->m_objects->count());
@@ -334,8 +317,6 @@ bool ResolvedStateLayer::init(PlayLayer* playLayer) {
             continue;
         }
 
-        // Convert the freshly type-checked raw pointers into strong refs before
-        // committing any state records. Revalidate the texture while retained.
         std::vector<Ref<cocos2d::CCSprite>> objectSpriteRetains;
         objectSpriteRetains.reserve(objectSprites.size());
         bool revalidationFailed = false;
@@ -384,8 +365,6 @@ bool ResolvedStateLayer::init(PlayLayer* playLayer) {
             spriteRecord.objectIndex = objectIndex;
             spriteRecord.geometry = captureSpriteState(sprite);
             spriteIndexByPointer.emplace(sprite, sprites.size());
-            // Initial state is captured once, inside resync(), while every
-            // accepted object and sprite is still strongly retained.
             sprites.push_back(spriteRecord);
             initSpriteRetains.emplace_back(sprite);
             ++stats.safeSprites;
@@ -436,9 +415,6 @@ bool ResolvedStateLayer::init(PlayLayer* playLayer) {
         return false;
     }
 
-    // This is the first state capture for accepted records. initObjectRetains and
-    // initSpriteRetains remain alive until init() returns, so resync cannot see a
-    // sprite that disappeared after classification.
     resync();
 
     log::info(
@@ -492,8 +468,6 @@ bool ResolvedStateLayer::canDrawSprite(cocos2d::CCSprite* sprite) const {
         return false;
     const auto current = captureSpriteState(sprite);
     const auto& baked = record.geometry;
-    // The persistent VBO contains these exact corners. A later frame/flip/crop
-    // change must use stock geometry until the original shape returns.
     return !spriteUVChanged(baked, current) &&
         baked.offset.x == current.offset.x && baked.offset.y == current.offset.y &&
         baked.textureWidth == current.textureWidth && baked.textureHeight == current.textureHeight;
@@ -555,8 +529,6 @@ void ResolvedStateLayer::update(bool detailedProbe) {
     stats.bytesUploaded = 0;
     stats.uploadCalls = 0;
 
-    // The hot path only polls records actually consumed by visible GPU batches.
-    // Safe-but-stock sprites are classification information, not renderer input.
     if (!detailedProbe || !objectStateTexture || !spriteStateTexture || activeSpriteIndices.empty())
         return;
 
