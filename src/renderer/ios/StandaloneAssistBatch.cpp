@@ -307,7 +307,10 @@ bool StandaloneAssistBatch::drawRangeSpan(usize firstRange, usize rangeCount) {
     if (!resolvedState->isGPUStateReady() || rangeCount == 0 || firstRange >= drawRanges.size())
         return false;
 
-    const usize endRange = std::min(drawRanges.size(), firstRange + rangeCount);
+    const usize endRange = std::min<usize>(
+        static_cast<usize>(drawRanges.size()),
+        firstRange + rangeCount
+    );
     if (endRange <= firstRange)
         return false;
 
