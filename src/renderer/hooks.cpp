@@ -5,6 +5,12 @@
 
 #ifdef GEODE_IS_IOS
 #include "ios/ResolvedStateLayer.hpp"
+#include "ios/AssistShadowBatch.hpp"
+#include "ios/StandaloneAssistBatch.hpp"
+#include "Geode/cocos/sprite_nodes/CCSpriteBatchNode.h"
+#include "Geode/cocos/textures/CCTextureAtlas.h"
+#include <cstring>
+#include <vector>
 #endif
 
 using namespace geode::prelude;
@@ -283,10 +289,32 @@ class $modify(RendererTrackedGameObject, GameObject) {
 class $modify(RendererOwnedCCSprite, cocos2d::CCSprite) {
     void updateTransform() {
         auto renderer = Renderer::get();
+
+        // RendererIOS::prepareGPUOwnedSprite() reads the current atlas quad to
+        // see whether it is already parked. Cocos getQuads() marks the atlas
+        // dirty even for that read. Detect the already-zero case from the public
+        // CPU atlas storage so a pure read cannot force a full atlas VBO upload
+        // every frame on decoration-heavy levels.
+        auto atlas = this->getTextureAtlas();
+        const auto atlasIndex = this->getAtlasIndex();
+        bool restoreCleanAtlas = false;
+        if (atlas && !atlas->m_bDirty && atlas->m_pQuads &&
+            atlasIndex != CCSpriteIndexNotInitialized && atlasIndex < atlas->getTotalQuads()) {
+            cocos2d::ccV3F_C4B_T2F_Quad zeroQuad {};
+            restoreCleanAtlas = std::memcmp(
+                &atlas->m_pQuads[atlasIndex],
+                &zeroQuad,
+                sizeof(zeroQuad)
+            ) == 0;
+        }
+
         if (!renderer || !renderer->prepareGPUOwnedSprite(this)) {
             cocos2d::CCSprite::updateTransform();
             return;
         }
+
+        if (restoreCleanAtlas && atlas && atlas->m_bDirty)
+            atlas->m_bDirty = false;
 
         // The GPU owns final quad expansion. prepareGPUOwnedSprite() also makes
         // sure a stock atlas slot that GD just populated is parked once before
@@ -302,6 +330,233 @@ class $modify(RendererOwnedCCSprite, cocos2d::CCSprite) {
                     sprite->updateTransform();
             }
         }
+    }
+};
+
+namespace {
+struct AtlasGPUOwner {
+    AssistShadowBatch* immediate = nullptr;
+    StandaloneAssistBatch* deferred = nullptr;
+
+    bool empty() const { return !immediate && !deferred; }
+    bool operator==(const AtlasGPUOwner& other) const {
+        return immediate == other.immediate && deferred == other.deferred;
+    }
+};
+
+cocos2d::CCSpriteBatchNode* g_currentSpriteBatchDraw = nullptr;
+
+static AtlasGPUOwner atlasOwnerForSprite(Renderer* renderer, cocos2d::CCSprite* sprite) {
+    if (!renderer || !sprite || !renderer->isGPUOwnedSprite(sprite))
+        return {};
+
+    if (auto immediate = AssistShadowBatch::ownerForSprite(sprite))
+        return { immediate, nullptr };
+    if (auto deferred = StandaloneAssistBatch::deferredOwnerForSprite(sprite))
+        return { nullptr, deferred };
+    return {};
+}
+
+static bool syncWholeDirtyAtlas(cocos2d::CCTextureAtlas* atlas) {
+    if (!atlas)
+        return false;
+    if (!atlas->m_bDirty)
+        return true;
+
+    const usize quadCount = static_cast<usize>(atlas->getTotalQuads());
+    if (quadCount == 0) {
+        atlas->m_bDirty = false;
+        return true;
+    }
+    if (!atlas->m_pQuads || !atlas->m_pBuffersVBO[0])
+        return false;
+
+    // drawNumberOfQuads(start,count) may clear m_bDirty after uploading only the
+    // requested sub-range on Cocos' non-VAO path. Interleaving requires several
+    // partial draws, so synchronize the complete live CPU atlas exactly once.
+    GLint previousVBO = 0;
+    glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &previousVBO);
+    glBindBuffer(GL_ARRAY_BUFFER, atlas->m_pBuffersVBO[0]);
+    glBufferSubData(
+        GL_ARRAY_BUFFER,
+        0,
+        static_cast<GLsizeiptr>(quadCount * sizeof(cocos2d::ccV3F_C4B_T2F_Quad)),
+        atlas->m_pQuads
+    );
+    glBindBuffer(GL_ARRAY_BUFFER, static_cast<u32>(previousVBO));
+    atlas->m_bDirty = false;
+    return true;
+}
+
+static void bindStockAtlasTexture(cocos2d::CCTextureAtlas* atlas) {
+    if (!atlas || !atlas->getTexture())
+        return;
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, atlas->getTexture()->getName());
+}
+
+static bool beginOwnerIfNeeded(
+    const AtlasGPUOwner& owner,
+    std::vector<AtlasGPUOwner>& begunOwners
+) {
+    for (const auto& begun : begunOwners) {
+        if (begun == owner)
+            return true;
+    }
+
+    if (owner.immediate)
+        owner.immediate->beginAtlasFrame();
+    else if (owner.deferred)
+        owner.deferred->beginFrame();
+    else
+        return false;
+
+    begunOwners.push_back(owner);
+    return true;
+}
+
+static bool drawOwnerRun(
+    const AtlasGPUOwner& owner,
+    const std::vector<cocos2d::CCSprite*>& run
+) {
+    if (owner.immediate)
+        return owner.immediate->drawOrderedSprites(run);
+    if (owner.deferred)
+        return owner.deferred->drawOrderedSprites(run);
+    return false;
+}
+
+static bool tryDrawInterleavedAtlas(cocos2d::CCTextureAtlas* atlas) {
+    auto renderer = Renderer::get();
+    auto stockBatch = g_currentSpriteBatchDraw;
+    if (!renderer || !renderer->isEnabled() || !atlas || !stockBatch)
+        return false;
+    if (stockBatch->getTextureAtlas() != atlas)
+        return false;
+
+    const u32 totalQuads = atlas->getTotalQuads();
+    if (totalQuads == 0)
+        return false;
+
+    auto descendants = stockBatch->getDescendants();
+    if (!descendants)
+        return false;
+
+    // Reused scratch avoids per-frame allocation on decoration-heavy levels.
+    static thread_local std::vector<cocos2d::CCSprite*> atlasSprites;
+    static thread_local std::vector<AtlasGPUOwner> atlasOwners;
+    static thread_local std::vector<cocos2d::CCSprite*> runSprites;
+    static thread_local std::vector<AtlasGPUOwner> begunOwners;
+
+    atlasSprites.assign(totalQuads, nullptr);
+    atlasOwners.assign(totalQuads, {});
+    begunOwners.clear();
+
+    for (u32 i = 0; i < descendants->count(); ++i) {
+        auto sprite = typeinfo_cast<cocos2d::CCSprite*>(descendants->objectAtIndex(i));
+        if (!sprite || sprite->getBatchNode() != stockBatch)
+            continue;
+
+        const u32 atlasIndex = sprite->getAtlasIndex();
+        if (atlasIndex == CCSpriteIndexNotInitialized || atlasIndex >= totalQuads)
+            continue;
+        atlasSprites[atlasIndex] = sprite;
+    }
+
+    bool hasGPU = false;
+    for (u32 atlasIndex = 0; atlasIndex < totalQuads; ++atlasIndex) {
+        auto sprite = atlasSprites[atlasIndex];
+        if (!sprite)
+            continue;
+
+        auto owner = atlasOwnerForSprite(renderer, sprite);
+        if (owner.empty())
+            continue;
+
+        atlasOwners[atlasIndex] = owner;
+        hasGPU = true;
+    }
+
+    if (!hasGPU)
+        return false;
+    if (!syncWholeDirtyAtlas(atlas))
+        return false;
+
+    // Ensure texture unit zero really contains the stock atlas before the first
+    // GPU handoff. Shader::use()/setTexture use raw GL and intentionally do not
+    // mutate Cocos' state cache, so restoring the actual GL binding keeps both
+    // the cache and hardware state coherent across every stock/GPU switch.
+    bindStockAtlasTexture(atlas);
+
+    u32 stockStart = 0;
+    u32 atlasIndex = 0;
+    while (atlasIndex < totalQuads) {
+        const auto owner = atlasOwners[atlasIndex];
+        if (owner.empty()) {
+            ++atlasIndex;
+            continue;
+        }
+
+        if (atlasIndex > stockStart) {
+            bindStockAtlasTexture(atlas);
+            atlas->drawNumberOfQuads(atlasIndex - stockStart, stockStart);
+        }
+
+        runSprites.clear();
+        u32 runEnd = atlasIndex;
+        while (runEnd < totalQuads && atlasOwners[runEnd] == owner && !owner.empty()) {
+            auto sprite = atlasSprites[runEnd];
+            if (!sprite)
+                break;
+            runSprites.push_back(sprite);
+            ++runEnd;
+        }
+
+        beginOwnerIfNeeded(owner, begunOwners);
+        if (!drawOwnerRun(owner, runSprites)) {
+            // Registration is created only after persistent geometry + GL state
+            // are ready, so a live registered owner must be drawable. Do not
+            // silently route parked quads back through stock and hide a renderer
+            // bug behind a fake fallback.
+            static bool loggedInvariantFailure = false;
+            if (!loggedInvariantFailure) {
+                log::error(
+                    "Bismuth iOS atlas interleave invariant failed at atlas index {} ({} sprite run)",
+                    atlasIndex,
+                    runSprites.size()
+                );
+                loggedInvariantFailure = true;
+            }
+        }
+
+        atlasIndex = runEnd;
+        stockStart = runEnd;
+    }
+
+    if (stockStart < totalQuads) {
+        bindStockAtlasTexture(atlas);
+        atlas->drawNumberOfQuads(totalQuads - stockStart, stockStart);
+    }
+
+    return true;
+}
+} // namespace
+
+#include <Geode/modify/CCSpriteBatchNode.hpp>
+class $modify(RendererTrackedSpriteBatchNode, cocos2d::CCSpriteBatchNode) {
+    void draw() {
+        auto previousBatch = g_currentSpriteBatchDraw;
+        g_currentSpriteBatchDraw = this;
+        cocos2d::CCSpriteBatchNode::draw();
+        g_currentSpriteBatchDraw = previousBatch;
+    }
+};
+
+#include <Geode/modify/CCTextureAtlas.hpp>
+class $modify(RendererInterleavedTextureAtlas, cocos2d::CCTextureAtlas) {
+    void drawQuads() {
+        if (!tryDrawInterleavedAtlas(this))
+            cocos2d::CCTextureAtlas::drawQuads();
     }
 };
 #endif

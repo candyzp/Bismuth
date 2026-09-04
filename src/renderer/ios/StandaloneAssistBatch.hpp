@@ -10,10 +10,10 @@
 #include <vector>
 
 // Persistent GameObject-local geometry for safe non-atlas-at-init sprites.
-// In root-addressable mode, each GameObject gets an independent draw span for
-// exact stock root-visit replacement. In coalesced mode, object boundaries do
-// not force GL ranges, allowing parentless-at-init objects that later enter the
-// same stock atlas to render in a small number of shared draws.
+// Root-addressable buffers are drawn from the stock GameObject root visit.
+// Parentless/deferred buffers are NOT drawn as siblings anymore: once GD inserts
+// those sprites into a stock atlas, CCTextureAtlas interleaves their persistent
+// vertices at the sprite's live atlas index.
 class StandaloneAssistBatch : public cocos2d::CCNode {
 public:
     struct Stats {
@@ -38,6 +38,13 @@ public:
     void beginFrame();
     bool ownsRoot(GameObject* root) const;
     bool drawRoot(GameObject* root);
+
+    // Deferred-atlas owner lookup used by the stock atlas interleaver. True
+    // standalone/root-addressable buffers are intentionally never registered.
+    static StandaloneAssistBatch* deferredOwnerForSprite(cocos2d::CCSprite* sprite);
+
+    // Draw one contiguous GPU run in the exact current stock atlas order.
+    bool drawOrderedSprites(const std::vector<cocos2d::CCSprite*>& sprites);
 
     inline const Stats& getStats() const { return stats; }
     inline const std::vector<cocos2d::CCSprite*>& getOwnedSprites() const { return ownedSprites; }
@@ -72,6 +79,14 @@ private:
     );
     bool buildGeometry(const std::vector<ResolvedStateLayer::ShadowCandidate>& candidates);
     bool drawRangeSpan(usize firstRange, usize rangeCount);
+    bool drawDynamicIndices(
+        const std::vector<u16>& indices,
+        u32 textureId,
+        u32 blendSrc,
+        u32 blendDst
+    );
+    void registerDeferredSprites();
+    void unregisterDeferredSprites();
     void destroyGL();
 
 private:
@@ -81,6 +96,13 @@ private:
     Buffer* vertexBuffer = nullptr;
     Buffer* indexBuffer = nullptr;
     u32 vao = 0;
+
+    // Deferred-atlas-only dynamic index scratch. Persistent vertex data remains
+    // static; only the current atlas ordering is uploaded.
+    u32 interleaveIndexBuffer = 0;
+    usize interleaveIndexCapacity = 0;
+    std::unordered_map<cocos2d::CCSprite*, u16> vertexBaseBySprite;
+    std::vector<u16> interleaveIndices;
 
     bool rootAddressable = true;
     std::vector<DrawRange> drawRanges;

@@ -8,21 +8,14 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <unordered_map>
 
 using namespace geode::prelude;
 
 namespace {
-// Four vertices per sprite with a u16 index buffer. If one stock batch contains
-// more than this many safe sprites we keep the overflow on stock Cocos instead
-// of disabling GPU ownership for the entire batch.
 constexpr usize MAX_BATCH_SPRITES = 16383;
 
-struct CandidateWithTexture {
-    ResolvedStateLayer::ShadowCandidate candidate;
-    u32 textureId = 0;
-    u32 atlasIndex = 0;
-    usize originalOrder = 0;
-};
+std::unordered_map<cocos2d::CCSprite*, AssistShadowBatch*> g_assistOwnerBySprite;
 
 static bool isDescendantOf(cocos2d::CCNode* node, cocos2d::CCNode* ancestor) {
     for (auto current = node; current; current = current->getParent()) {
@@ -32,8 +25,6 @@ static bool isDescendantOf(cocos2d::CCNode* node, cocos2d::CCNode* ancestor) {
     return false;
 }
 
-// Build only child-to-GameObject geometry. Geometry Dash resolves the root
-// GameObject state; the vertex shader applies root translation/rotation/scale.
 static bool getSpriteLocalTransform(
     GameObject* object,
     cocos2d::CCSprite* sprite,
@@ -60,6 +51,13 @@ static glm::vec2 quadUV(const cocos2d::ccV3F_C4B_T2F& vertex) {
 
 AssistShadowBatch::~AssistShadowBatch() {
     destroyGL();
+}
+
+AssistShadowBatch* AssistShadowBatch::ownerForSprite(cocos2d::CCSprite* sprite) {
+    if (!sprite)
+        return nullptr;
+    auto it = g_assistOwnerBySprite.find(sprite);
+    return it == g_assistOwnerBySprite.end() ? nullptr : it->second;
 }
 
 geode::Ref<AssistShadowBatch> AssistShadowBatch::create(
@@ -98,32 +96,54 @@ bool AssistShadowBatch::initWithState(
         return false;
     }
 
-    const auto blend = stockBatch->getBlendFunc();
-    blendSrc = (u32)blend.src;
-    blendDst = (u32)blend.dst;
-
     if (!buildGeometry())
         return false;
 
+    registerOwnedSprites();
     setVisible(true);
     stats.ready = true;
     stats.visibleOwnership = true;
     return true;
 }
 
+void AssistShadowBatch::registerOwnedSprites() {
+    for (auto sprite : ownedSprites) {
+        if (!sprite)
+            continue;
+        auto [it, inserted] = g_assistOwnerBySprite.emplace(sprite, this);
+        if (!inserted && it->second != this) {
+            log::warn("Bismuth iOS atlas owner collision for sprite {}; using newest safe owner", (void*)sprite);
+            it->second = this;
+        }
+    }
+}
+
+void AssistShadowBatch::unregisterOwnedSprites() {
+    for (auto sprite : ownedSprites) {
+        auto it = g_assistOwnerBySprite.find(sprite);
+        if (it != g_assistOwnerBySprite.end() && it->second == this)
+            g_assistOwnerBySprite.erase(it);
+    }
+}
+
 void AssistShadowBatch::destroyGL() {
+    unregisterOwnedSprites();
+
     if (vao)
         glDeleteVertexArrays(1, &vao);
     vao = 0;
 
+    if (interleaveIndexBuffer)
+        glDeleteBuffers(1, &interleaveIndexBuffer);
+    interleaveIndexBuffer = 0;
+    interleaveIndexCapacity = 0;
+
     if (vertexBuffer)
         Buffer::destroy(vertexBuffer);
-    if (indexBuffer)
-        Buffer::destroy(indexBuffer);
     vertexBuffer = nullptr;
-    indexBuffer = nullptr;
 
-    drawRanges.clear();
+    vertexBaseBySprite.clear();
+    interleaveIndices.clear();
     ownedSprites.clear();
     stats.ready = false;
     stats.visibleOwnership = false;
@@ -135,6 +155,7 @@ bool AssistShadowBatch::buildGeometry() {
     std::vector<CandidateWithTexture> candidates;
     candidates.reserve(std::min<usize>(sourceCandidates.size(), MAX_BATCH_SPRITES));
     ownedSprites.clear();
+    vertexBaseBySprite.clear();
 
     usize ordinal = 0;
     for (const auto& candidate : sourceCandidates) {
@@ -145,9 +166,6 @@ bool AssistShadowBatch::buildGeometry() {
 
         ++stats.eligibleSprites;
 
-        // No whole-batch fallback. Bad/overflow records stay stock individually
-        // while every valid safe sprite in the same Cocos batch still gets GPU
-        // ownership.
         if (candidates.size() >= MAX_BATCH_SPRITES) {
             ++stats.rejectedSprites;
             continue;
@@ -182,8 +200,6 @@ bool AssistShadowBatch::buildGeometry() {
     if (candidates.empty())
         return false;
 
-    // Preserve Cocos atlas order among the GPU-owned subset. Animated/complex
-    // sprites remain in the stock batch and are never inserted here.
     std::stable_sort(candidates.begin(), candidates.end(), [](const auto& a, const auto& b) {
         if (a.atlasIndex != b.atlasIndex)
             return a.atlasIndex < b.atlasIndex;
@@ -191,18 +207,14 @@ bool AssistShadowBatch::buildGeometry() {
     });
 
     std::vector<Vertex> vertices;
-    std::vector<u16> indices;
     vertices.reserve(candidates.size() * 4);
-    indices.reserve(candidates.size() * 6);
-    drawRanges.clear();
-
-    u32 activeTexture = 0;
-    DrawRange* activeRange = nullptr;
+    ownedSprites.reserve(candidates.size());
+    vertexBaseBySprite.reserve(candidates.size());
 
     for (const auto& entry : candidates) {
         auto object = entry.candidate.object;
         auto sprite = entry.candidate.sprite;
-        auto texture = sprite->getTexture();
+        auto texture = sprite ? sprite->getTexture() : nullptr;
         if (!object || !sprite || !texture) {
             ++stats.rejectedSprites;
             continue;
@@ -220,43 +232,31 @@ bool AssistShadowBatch::buildGeometry() {
             localTransform
         );
 
-        // Cocos' root nodeToParentTransform rotates/scales around the root
-        // anchor point. The assist shader uses the GameObject position itself as
-        // that pivot, so express all child/root geometry relative to the same
-        // anchor before the GPU applies the root transform.
         const glm::vec2 rootAnchor = ccPointToGLM(object->getAnchorPointInPoints());
-        glm::vec2 posBottomLeft = ccPointToGLM(localBottomLeftPoint) - rootAnchor;
-        glm::vec2 posRight = {
+        const glm::vec2 posBottomLeft = ccPointToGLM(localBottomLeftPoint) - rootAnchor;
+        const glm::vec2 posRight = {
             localTransform.a * crop.size.width,
             localTransform.b * crop.size.width
         };
-        glm::vec2 posUp = {
+        const glm::vec2 posUp = {
             localTransform.c * crop.size.height,
             localTransform.d * crop.size.height
         };
 
-        // Do not reconstruct flip/rotated-frame UV behavior ourselves. Cocos has
-        // already resolved it in m_sQuad. Reusing those exact UV corners avoids
-        // mirrored/rotated sprite mismatches while GD keeps frame ownership.
         const auto stockQuad = sprite->getQuad();
         const glm::vec2 uvBL = quadUV(stockQuad.bl);
         const glm::vec2 uvBR = quadUV(stockQuad.br);
         const glm::vec2 uvTL = quadUV(stockQuad.tl);
         const glm::vec2 uvTR = quadUV(stockQuad.tr);
 
-        if (!activeRange || activeTexture != entry.textureId) {
-            drawRanges.push_back({
-                entry.textureId,
-                (u32)indices.size(),
-                0
-            });
-            activeRange = &drawRanges.back();
-            activeTexture = entry.textureId;
+        if (vertices.size() + 4 > 65535) {
+            ++stats.rejectedSprites;
+            continue;
         }
 
-        const u16 baseVertex = (u16)vertices.size();
-        const float objectIndex = (float)entry.candidate.objectStateIndex;
-        const float spriteIndex = (float)entry.candidate.spriteStateIndex;
+        const u16 baseVertex = static_cast<u16>(vertices.size());
+        const float objectIndex = static_cast<float>(entry.candidate.objectStateIndex);
+        const float spriteIndex = static_cast<float>(entry.candidate.spriteStateIndex);
 
         vertices.push_back({ posBottomLeft, uvBL, objectIndex, spriteIndex });
         vertices.push_back({ posBottomLeft + posRight, uvBR, objectIndex, spriteIndex });
@@ -268,18 +268,12 @@ bool AssistShadowBatch::buildGeometry() {
             spriteIndex
         });
 
-        indices.push_back(baseVertex + 0);
-        indices.push_back(baseVertex + 2);
-        indices.push_back(baseVertex + 3);
-        indices.push_back(baseVertex + 0);
-        indices.push_back(baseVertex + 3);
-        indices.push_back(baseVertex + 1);
-        activeRange->indexCount += 6;
+        vertexBaseBySprite.emplace(sprite, baseVertex);
         ownedSprites.push_back(sprite);
         ++stats.batchedSprites;
     }
 
-    if (vertices.empty() || indices.empty() || drawRanges.empty() || ownedSprites.empty())
+    if (vertices.empty() || ownedSprites.empty() || vertexBaseBySprite.size() != ownedSprites.size())
         return false;
 
     vertexBuffer = Buffer::createStaticDraw(
@@ -287,12 +281,7 @@ bool AssistShadowBatch::buildGeometry() {
         vertices.data(),
         vertices.size() * sizeof(Vertex)
     );
-    indexBuffer = Buffer::createStaticDraw(
-        "Resolved safe GPU indices",
-        indices.data(),
-        indices.size() * sizeof(u16)
-    );
-    if (!vertexBuffer || !indexBuffer) {
+    if (!vertexBuffer) {
         destroyGL();
         return false;
     }
@@ -305,14 +294,24 @@ bool AssistShadowBatch::buildGeometry() {
     glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &previousIBO);
 
     glGenVertexArrays(1, &vao);
-    if (!vao) {
+    glGenBuffers(1, &interleaveIndexBuffer);
+    if (!vao || !interleaveIndexBuffer) {
         destroyGL();
         return false;
     }
 
+    interleaveIndexCapacity = ownedSprites.size() * 6;
+    interleaveIndices.reserve(interleaveIndexCapacity);
+
     glBindVertexArray(vao);
     vertexBuffer->bindAs(GL_ARRAY_BUFFER);
-    indexBuffer->bindAs(GL_ELEMENT_ARRAY_BUFFER);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, interleaveIndexBuffer);
+    glBufferData(
+        GL_ELEMENT_ARRAY_BUFFER,
+        static_cast<GLsizeiptr>(interleaveIndexCapacity * sizeof(u16)),
+        nullptr,
+        GL_DYNAMIC_DRAW
+    );
 
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, localPosition));
     glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, texCoord));
@@ -323,36 +322,94 @@ bool AssistShadowBatch::buildGeometry() {
     glEnableVertexAttribArray(2);
     glEnableVertexAttribArray(3);
 
-    glBindVertexArray((u32)previousVAO);
-    glBindBuffer(GL_ARRAY_BUFFER, (u32)previousVBO);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, (u32)previousIBO);
+    glBindVertexArray(static_cast<u32>(previousVAO));
+    glBindBuffer(GL_ARRAY_BUFFER, static_cast<u32>(previousVBO));
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, static_cast<u32>(previousIBO));
 
-    stats.textureBatches = drawRanges.size();
+    stats.textureBatches = 1;
     stats.verticesResident = vertices.size();
 
     log::info(
-        "Bismuth iOS mixed GPU batch: {} owned / {} eligible sprites, {} rejected, {} draw range(s)",
+        "Bismuth iOS atlas-interleave buffer: {} owned / {} eligible sprites, {} rejected, {} resident vertices",
         stats.batchedSprites,
         stats.eligibleSprites,
         stats.rejectedSprites,
-        stats.textureBatches
+        stats.verticesResident
     );
     return true;
 }
 
 void AssistShadowBatch::draw() {
+    // Deliberately empty. Drawing here would place the GPU-owned subset after
+    // all stock quads and recreate the exact ordering regression this class now
+    // exists to avoid. The CCTextureAtlas hook calls drawOrderedSprites().
+}
+
+void AssistShadowBatch::beginAtlasFrame() {
     stats.drawCallsLastFrame = 0;
     stats.indicesLastFrame = 0;
+}
 
-    if (!stats.ready || !isVisible())
-        return;
-    if (!resolvedState || !resolvedState->isGPUStateReady() || !shader || !vao)
-        return;
+bool AssistShadowBatch::drawOrderedSprites(
+    const std::vector<cocos2d::CCSprite*>& orderedSprites
+) {
+    if (!stats.ready || !isVisible() || !resolvedState || !shader || !vao || !interleaveIndexBuffer)
+        return false;
+    if (!resolvedState->isGPUStateReady() || orderedSprites.empty())
+        return false;
+
+    auto firstSprite = orderedSprites.front();
+    auto actualBatch = firstSprite ? firstSprite->getBatchNode() : nullptr;
+    if (!actualBatch)
+        return false;
+
+    auto texture = actualBatch->getTexture();
+    if (!texture || !texture->getName())
+        return false;
+
+    interleaveIndices.clear();
+    if (orderedSprites.size() * 6 > interleaveIndexCapacity)
+        return false;
+
+    for (auto sprite : orderedSprites) {
+        if (!sprite || sprite->getBatchNode() != actualBatch)
+            return false;
+
+        auto it = vertexBaseBySprite.find(sprite);
+        if (it == vertexBaseBySprite.end())
+            return false;
+
+        const u16 baseVertex = it->second;
+        interleaveIndices.push_back(baseVertex + 0);
+        interleaveIndices.push_back(baseVertex + 2);
+        interleaveIndices.push_back(baseVertex + 3);
+        interleaveIndices.push_back(baseVertex + 0);
+        interleaveIndices.push_back(baseVertex + 3);
+        interleaveIndices.push_back(baseVertex + 1);
+    }
+
+    const auto blend = actualBatch->getBlendFunc();
+    return drawDynamicIndices(
+        interleaveIndices,
+        texture->getName(),
+        static_cast<u32>(blend.src),
+        static_cast<u32>(blend.dst)
+    );
+}
+
+bool AssistShadowBatch::drawDynamicIndices(
+    const std::vector<u16>& indices,
+    u32 textureId,
+    u32 blendSrc,
+    u32 blendDst
+) {
+    if (indices.empty() || !textureId || indices.size() > interleaveIndexCapacity)
+        return false;
 
     auto objectStateTexture = resolvedState->getObjectStateTexture();
     auto spriteStateTexture = resolvedState->getSpriteStateTexture();
     if (!objectStateTexture || !spriteStateTexture)
-        return;
+        return false;
 
     kmMat4 matrixP;
     kmMat4 matrixMV;
@@ -406,26 +463,29 @@ void AssistShadowBatch::draw() {
     shader->setVec2("u_spriteStateTextureSize", spriteStateTexture->getSize());
 
     glBindVertexArray(vao);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, interleaveIndexBuffer);
+    glBufferSubData(
+        GL_ELEMENT_ARRAY_BUFFER,
+        0,
+        static_cast<GLsizeiptr>(indices.size() * sizeof(u16)),
+        indices.data()
+    );
+
     glEnable(GL_BLEND);
-    glBlendFunc((GLenum)blendSrc, (GLenum)blendDst);
+    glBlendFunc(static_cast<GLenum>(blendSrc), static_cast<GLenum>(blendDst));
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
     glDepthMask(GL_FALSE);
     glStencilMask(0);
 
-    for (const auto& range : drawRanges) {
-        if (!range.textureId || !range.indexCount)
-            continue;
-
-        shader->setTexture("u_spriteSheetTexture", 0, range.textureId);
-        glDrawElements(
-            GL_TRIANGLES,
-            (GLsizei)range.indexCount,
-            GL_UNSIGNED_SHORT,
-            (void*)((usize)range.startIndex * sizeof(u16))
-        );
-        ++stats.drawCallsLastFrame;
-        stats.indicesLastFrame += range.indexCount;
-    }
+    shader->setTexture("u_spriteSheetTexture", 0, textureId);
+    glDrawElements(
+        GL_TRIANGLES,
+        static_cast<GLsizei>(indices.size()),
+        GL_UNSIGNED_SHORT,
+        nullptr
+    );
+    ++stats.drawCallsLastFrame;
+    stats.indicesLastFrame += indices.size();
 
     glColorMask(
         previousColorMask[0],
@@ -434,26 +494,27 @@ void AssistShadowBatch::draw() {
         previousColorMask[3]
     );
     glDepthMask(previousDepthMask);
-    glStencilMask((u32)previousStencilMask);
+    glStencilMask(static_cast<u32>(previousStencilMask));
     glBlendFuncSeparate(
-        (GLenum)previousBlendSrcRGB,
-        (GLenum)previousBlendDstRGB,
-        (GLenum)previousBlendSrcAlpha,
-        (GLenum)previousBlendDstAlpha
+        static_cast<GLenum>(previousBlendSrcRGB),
+        static_cast<GLenum>(previousBlendDstRGB),
+        static_cast<GLenum>(previousBlendSrcAlpha),
+        static_cast<GLenum>(previousBlendDstAlpha)
     );
     if (!previousBlendEnabled)
         glDisable(GL_BLEND);
 
-    glBindVertexArray((u32)previousVAO);
-    glBindBuffer(GL_ARRAY_BUFFER, (u32)previousVBO);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, (u32)previousIBO);
-    glUseProgram((u32)previousProgram);
+    glBindVertexArray(static_cast<u32>(previousVAO));
+    glBindBuffer(GL_ARRAY_BUFFER, static_cast<u32>(previousVBO));
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, static_cast<u32>(previousIBO));
+    glUseProgram(static_cast<u32>(previousProgram));
 
     for (i32 unit = 0; unit < 3; ++unit) {
         glActiveTexture(GL_TEXTURE0 + unit);
-        glBindTexture(GL_TEXTURE_2D, (u32)previousTextures[unit]);
+        glBindTexture(GL_TEXTURE_2D, static_cast<u32>(previousTextures[unit]));
     }
-    glActiveTexture((GLenum)previousActiveTexture);
+    glActiveTexture(static_cast<GLenum>(previousActiveTexture));
+    return true;
 }
 
 #endif
