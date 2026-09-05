@@ -1,5 +1,6 @@
 #ifdef GEODE_IS_IOS
 
+#include <Geode/Geode.hpp>
 #include <Geode/modify/CCLabelBMFont.hpp>
 #include <cstdlib>
 #include <string>
