@@ -159,7 +159,7 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
             if (rotation == 0.0 && !cmdObj->m_finishRelated)
                 continue;
 
-            if (eman->m_unkMap770.find({ targetId, centerId }) != m_effectManager->m_unkMap770.end()) {
+            if (eman->m_unkMap770.find({ targetId, centerId }) != eman->m_unkMap770.end()) {
                 for (auto obj : eman->m_unkMap770[{ targetId, centerId }]) {
                     if (obj->m_someInterpValue1RelatedFalse)
                         continue;
@@ -194,7 +194,7 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
         }
 
         auto eman = m_effectManager;
-        for (auto node : m_effectManager->m_unkVector6d8) {
+        for (auto node : eman->m_unkVector6d8) {
             i32 targetGroupId = node->getTag();
             i32 followGroupId = node->m_unk074;
 
