@@ -159,7 +159,7 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
             if (rotation == 0.0 && !cmdObj->m_finishRelated)
                 continue;
 
-            if (eman->m_unkMap770.find({ targetId, centerId }) != eman->m_unkMap770.end()) {
+            if (eman->m_unkMap770.find({ targetId, centerId }) != m_effectManager->m_unkMap770.end()) {
                 for (auto obj : eman->m_unkMap770[{ targetId, centerId }]) {
                     if (obj->m_someInterpValue1RelatedFalse)
                         continue;
@@ -194,7 +194,7 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
         }
 
         auto eman = m_effectManager;
-        for (auto node : eman->m_unkVector6d8) {
+        for (auto node : m_effectManager->m_unkVector6d8) {
             i32 targetGroupId = node->getTag();
             i32 followGroupId = node->m_unk074;
 
@@ -294,8 +294,13 @@ class $modify(RendererInterleavedSpriteBatchNode, cocos2d::CCSpriteBatchNode) {
         CC_NODE_DRAW_SETUP();
         const auto blend = this->getBlendFunc();
         ccGLBlendFunc(blend.src, blend.dst);
-        if (!renderer->drawGPUInterleavedBatch(this))
-            log::error("Bismuth iOS interleave failed for an owned gameplay batch");
+
+        bool submitted = false;
+        for (int attempt = 0; attempt < 3 && !submitted; ++attempt)
+            submitted = renderer->drawGPUInterleavedBatch(this);
+
+        if (!submitted)
+            log::error("Bismuth iOS interleave failed after live-atlas replanning");
     }
 };
 #endif
