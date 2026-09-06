@@ -95,6 +95,8 @@ void restoreGroundGLState(const SavedGroundGLState& state) {
     glBindTexture(GL_TEXTURE_2D, static_cast<u32>(state.texture0));
     glActiveTexture(static_cast<GLenum>(state.activeTexture));
 
+    // Use raw GL here. The ground assist must not mutate Cocos' cached blend
+    // state, otherwise a later ccGLBlendFunc() can skip a needed real GL change.
     glBlendFuncSeparate(
         static_cast<GLenum>(state.blendSrcRGB),
         static_cast<GLenum>(state.blendDstRGB),
@@ -358,8 +360,10 @@ bool drawGroundOnGPU(cocos2d::CCSprite* sprite) {
     glBindTexture(GL_TEXTURE_2D, texture->getName());
     glUniform1i(state.texture, 0);
 
+    // Raw GL on purpose. ccGLBlendFunc() updates Cocos' blend cache, and this
+    // custom draw restores the previous real GL state before returning.
     const auto blend = sprite->getBlendFunc();
-    ccGLBlendFunc(blend.src, blend.dst);
+    glBlendFunc(static_cast<GLenum>(blend.src), static_cast<GLenum>(blend.dst));
 
     glBindVertexArray(state.vao);
     glBindBuffer(GL_ARRAY_BUFFER, state.vertexBuffer);
@@ -369,15 +373,7 @@ bool drawGroundOnGPU(cocos2d::CCSprite* sprite) {
     const GLenum error = glGetError();
     restoreGroundGLState(saved);
     if (error != GL_NO_ERROR) {
-        ++state.failedDraws;
         log::error("Bismuth iOS STRICT ground GPU draw failed with GL error {}; stock ground fallback is disabled", static_cast<u32>(error));
-        if (Mod::get()->getSettingValue<bool>("ios_gpu_debug")) {
-            log::error(
-                "[Bismuth GPU TRUTH] FLOOR GPU=NO | failed submit | successful={} | failed={}",
-                state.successfulDraws,
-                state.failedDraws
-            );
-        }
         return false;
     }
 
