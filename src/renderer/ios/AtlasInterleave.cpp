@@ -41,8 +41,26 @@ struct OwnerDrawData {
     ResolvedStateLayer* resolvedState = nullptr;
     Shader* shader = nullptr;
     u32 vao = 0;
+    u32 ownerIndexBuffer = 0;
     usize* drawCalls = nullptr;
     usize* indexCount = nullptr;
+};
+
+struct AssistUniformLocations {
+    GLint mvp = -1;
+    GLint objectStateTexture = -1;
+    GLint objectStateTextureSize = -1;
+    GLint spriteStateTexture = -1;
+    GLint spriteStateTextureSize = -1;
+    GLint spriteSheetTexture = -1;
+};
+
+struct SavedGLState {
+    GLint vao = 0;
+    GLint elementArrayBuffer = 0;
+    GLint program = 0;
+    GLint activeTexture = GL_TEXTURE0;
+    GLint textures[3] = {0, 0, 0};
 };
 
 struct BatchIndexCache {
@@ -211,63 +229,42 @@ static bool updateIndexCache(BatchIndexCache& cache, const std::vector<u16>& ind
     return true;
 }
 
-static void drawGPURun(
-    cocos2d::CCSpriteBatchNode* batch,
-    const OwnerDrawData& owner,
-    const AtlasDrawRun& run,
-    u32 indexBuffer
-) {
-    auto objectStateTexture = owner.resolvedState->getObjectStateTexture();
-    auto spriteStateTexture = owner.resolvedState->getSpriteStateTexture();
-    kmMat4 matrixP;
-    kmMat4 matrixMV;
-    kmMat4 matrixMVP;
-    kmGLGetMatrix(KM_GL_PROJECTION, &matrixP);
-    kmGLGetMatrix(KM_GL_MODELVIEW, &matrixMV);
-    kmMat4Multiply(&matrixMVP, &matrixP, &matrixMV);
-
-    GLint previousVAO = 0;
-    GLint previousProgram = 0;
-    GLint previousActiveTexture = GL_TEXTURE0;
-    GLint previousTextures[3] = {0, 0, 0};
-    glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &previousVAO);
-    glGetIntegerv(GL_CURRENT_PROGRAM, &previousProgram);
-    glGetIntegerv(GL_ACTIVE_TEXTURE, &previousActiveTexture);
+static SavedGLState captureGLState() {
+    SavedGLState saved;
+    glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &saved.vao);
+    glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &saved.elementArrayBuffer);
+    glGetIntegerv(GL_CURRENT_PROGRAM, &saved.program);
+    glGetIntegerv(GL_ACTIVE_TEXTURE, &saved.activeTexture);
     for (i32 unit = 0; unit < 3; ++unit) {
         glActiveTexture(GL_TEXTURE0 + unit);
-        glGetIntegerv(GL_TEXTURE_BINDING_2D, &previousTextures[unit]);
+        glGetIntegerv(GL_TEXTURE_BINDING_2D, &saved.textures[unit]);
     }
+    glActiveTexture(static_cast<GLenum>(saved.activeTexture));
+    return saved;
+}
 
-    owner.shader->use();
-    owner.shader->setMatrix4("u_mvp", matrixMVP.mat);
-    objectStateTexture->bind(1);
-    owner.shader->setInt("u_objectStateTexture", 1);
-    owner.shader->setVec2("u_objectStateTextureSize", objectStateTexture->getSize());
-    spriteStateTexture->bind(2);
-    owner.shader->setInt("u_spriteStateTexture", 2);
-    owner.shader->setVec2("u_spriteStateTextureSize", spriteStateTexture->getSize());
-
-    glBindVertexArray(owner.vao);
-    GLint previousOwnerIndices = 0;
-    glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &previousOwnerIndices);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, indexBuffer);
-    owner.shader->setTexture("u_spriteSheetTexture", 0, batch->getTexture()->getName());
-    const usize drawIndices = run.slotCount * 6;
-    glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(drawIndices), GL_UNSIGNED_SHORT,
-        reinterpret_cast<void*>(run.firstIndex * sizeof(u16)));
-    if (owner.drawCalls)
-        ++(*owner.drawCalls);
-    if (owner.indexCount)
-        *owner.indexCount += drawIndices;
-
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, static_cast<u32>(previousOwnerIndices));
-    glBindVertexArray(static_cast<u32>(previousVAO));
-    glUseProgram(static_cast<u32>(previousProgram));
+static void restoreGLState(const SavedGLState& saved) {
+    glBindVertexArray(static_cast<u32>(saved.vao));
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, static_cast<u32>(saved.elementArrayBuffer));
+    glUseProgram(static_cast<u32>(saved.program));
     for (i32 unit = 0; unit < 3; ++unit) {
         glActiveTexture(GL_TEXTURE0 + unit);
-        glBindTexture(GL_TEXTURE_2D, static_cast<u32>(previousTextures[unit]));
+        glBindTexture(GL_TEXTURE_2D, static_cast<u32>(saved.textures[unit]));
     }
-    glActiveTexture(static_cast<GLenum>(previousActiveTexture));
+    glActiveTexture(static_cast<GLenum>(saved.activeTexture));
+}
+
+static AssistUniformLocations queryAssistUniformLocations(Shader* shader) {
+    AssistUniformLocations locations;
+    if (!shader)
+        return locations;
+    locations.mvp = static_cast<GLint>(shader->location("u_mvp"));
+    locations.objectStateTexture = static_cast<GLint>(shader->location("u_objectStateTexture"));
+    locations.objectStateTextureSize = static_cast<GLint>(shader->location("u_objectStateTextureSize"));
+    locations.spriteStateTexture = static_cast<GLint>(shader->location("u_spriteStateTexture"));
+    locations.spriteStateTextureSize = static_cast<GLint>(shader->location("u_spriteStateTextureSize"));
+    locations.spriteSheetTexture = static_cast<GLint>(shader->location("u_spriteSheetTexture"));
+    return locations;
 }
 } // namespace
 
@@ -574,6 +571,7 @@ bool AtlasInterleaveRegistry::drawBatch(
                 owner->resolvedState,
                 owner->shader,
                 owner->vao,
+                owner->indexBuffer->getId(),
                 &owner->stats.drawCallsLastFrame,
                 &owner->stats.indicesLastFrame
             };
@@ -584,20 +582,117 @@ bool AtlasInterleaveRegistry::drawBatch(
             owner->resolvedState,
             owner->shader,
             owner->vao,
+            owner->indexBuffer->getId(),
             &owner->stats.drawCallsLastFrame,
             &owner->stats.indicesLastFrame
         };
     };
 
+    // The old hot path queried and restored GL state, looked up every uniform,
+    // recomputed the same MVP, and rebound the same shader for every GPU run.
+    // On heavily interleaved levels that can mean thousands of driver round trips
+    // per frame. Capture stock state once for this atlas submission instead.
+    const SavedGLState stockState = captureGLState();
+    kmMat4 matrixP;
+    kmMat4 matrixMV;
+    kmMat4 matrixMVP;
+    kmGLGetMatrix(KM_GL_PROJECTION, &matrixP);
+    kmGLGetMatrix(KM_GL_MODELVIEW, &matrixMV);
+    kmMat4Multiply(&matrixMVP, &matrixP, &matrixMV);
+
+    bool gpuStateActive = false;
+    Shader* activeShader = nullptr;
+    ResolvedStateLayer* activeResolvedState = nullptr;
+    u32 activeVAO = 0;
+    u32 activeOwnerIndexBuffer = 0;
+
+    Shader* configuredShader = nullptr;
+    ResolvedStateLayer* configuredResolvedState = nullptr;
+    AssistUniformLocations configuredLocations;
+
+    auto restoreActiveOwnerVAO = [&]() {
+        if (!activeVAO || !activeOwnerIndexBuffer)
+            return;
+        glBindVertexArray(activeVAO);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, activeOwnerIndexBuffer);
+        activeVAO = 0;
+        activeOwnerIndexBuffer = 0;
+    };
+
+    auto restoreStockState = [&]() {
+        restoreActiveOwnerVAO();
+        restoreGLState(stockState);
+        gpuStateActive = false;
+        activeShader = nullptr;
+        activeResolvedState = nullptr;
+    };
+
     for (const auto& run : cache.runs) {
-        const auto& owner = state.atlasOwners[run.firstSlot];
-        if (owner.empty()) {
+        const auto& ownerRecord = state.atlasOwners[run.firstSlot];
+        if (ownerRecord.empty()) {
+            if (gpuStateActive)
+                restoreStockState();
             atlas->drawNumberOfQuads(static_cast<unsigned int>(run.slotCount),
                 static_cast<unsigned int>(run.firstSlot));
-        } else {
-            drawGPURun(batch, drawDataFor(owner), run, cache.buffer);
+            continue;
         }
+
+        const auto owner = drawDataFor(ownerRecord);
+        auto objectStateTexture = owner.resolvedState->getObjectStateTexture();
+        auto spriteStateTexture = owner.resolvedState->getSpriteStateTexture();
+
+        // Stock runs may switch program/texture state. Re-enter the assist state
+        // only at GPU block boundaries; consecutive GPU owners stay in one state
+        // scope and only change VAO when their persistent geometry differs.
+        if (!gpuStateActive || activeShader != owner.shader) {
+            owner.shader->use();
+            activeShader = owner.shader;
+        }
+
+        if (configuredShader != owner.shader || configuredResolvedState != owner.resolvedState) {
+            configuredLocations = queryAssistUniformLocations(owner.shader);
+            glUniformMatrix4fv(configuredLocations.mvp, 1, GL_FALSE, matrixMVP.mat);
+            glUniform1i(configuredLocations.objectStateTexture, 1);
+            const auto objectTextureSize = objectStateTexture->getSize();
+            glUniform2f(configuredLocations.objectStateTextureSize,
+                objectTextureSize.x, objectTextureSize.y);
+            glUniform1i(configuredLocations.spriteStateTexture, 2);
+            const auto spriteTextureSize = spriteStateTexture->getSize();
+            glUniform2f(configuredLocations.spriteStateTextureSize,
+                spriteTextureSize.x, spriteTextureSize.y);
+            glUniform1i(configuredLocations.spriteSheetTexture, 0);
+            configuredShader = owner.shader;
+            configuredResolvedState = owner.resolvedState;
+        }
+
+        if (!gpuStateActive || activeResolvedState != owner.resolvedState) {
+            objectStateTexture->bind(1);
+            spriteStateTexture->bind(2);
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, texture->getName());
+            activeResolvedState = owner.resolvedState;
+        }
+
+        if (activeVAO != owner.vao) {
+            restoreActiveOwnerVAO();
+            glBindVertexArray(owner.vao);
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, cache.buffer);
+            activeVAO = owner.vao;
+            activeOwnerIndexBuffer = owner.ownerIndexBuffer;
+        }
+
+        gpuStateActive = true;
+        const usize drawIndices = run.slotCount * 6;
+        glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(drawIndices), GL_UNSIGNED_SHORT,
+            reinterpret_cast<void*>(run.firstIndex * sizeof(u16)));
+        if (owner.drawCalls)
+            ++(*owner.drawCalls);
+        if (owner.indexCount)
+            *owner.indexCount += drawIndices;
     }
+
+    if (gpuStateActive)
+        restoreStockState();
     return true;
 }
 
