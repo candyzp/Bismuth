@@ -5,6 +5,7 @@
 
 #ifdef GEODE_IS_IOS
 #include "ios/ResolvedStateLayer.hpp"
+#include "ios/GPUTruth.hpp"
 #endif
 
 using namespace geode::prelude;
@@ -320,8 +321,14 @@ class $modify(RendererInterleavedSpriteBatchNode, cocos2d::CCSpriteBatchNode) {
         for (int attempt = 0; attempt < 3 && !submitted; ++attempt)
             submitted = renderer->drawGPUInterleavedBatch(this);
 
-        if (!submitted)
+        if (submitted) {
+            // This is the truth signal: the live-atlas path actually completed a
+            // GPU submission for this batch. Merely owning a sprite is not enough.
+            GPUTruth::recordObjectBatch(renderer.data(), this);
+        } else {
+            GPUTruth::recordObjectFailure(renderer.data());
             log::error("Bismuth iOS interleave failed after live-atlas replanning");
+        }
     }
 };
 #endif
