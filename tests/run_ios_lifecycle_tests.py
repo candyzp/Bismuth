@@ -34,6 +34,7 @@ fixture = r'''
 #include <vector>
 using usize=std::size_t;
 namespace cocos2d {
+struct CCObject {};
 struct CCSprite {};
 struct CCSpriteBatchNode {};
 struct CCNode { template<class T> void addChild(T, int) {} };
@@ -41,6 +42,8 @@ struct CCDirector { inline static std::function<void()> frame; virtual void draw
 }
 struct GameObject : cocos2d::CCSprite { float x=0; float getPositionX(){return x;} };
 struct PlayLayer {
+    inline static PlayLayer* current=nullptr;
+    static PlayLayer* get(){return current;}
     cocos2d::CCNode objectLayer;
     cocos2d::CCNode* m_objectLayer=&objectLayer;
     virtual ~PlayLayer()=default;
@@ -48,11 +51,13 @@ struct PlayLayer {
     virtual void setupHasCompleted() { resetLevel(); }
     virtual void onExit() {} virtual void onEnterTransitionDidFinish() {}
 };
+struct PauseLayer { virtual void onResume(cocos2d::CCObject*) {} };
 namespace geode {
 template<class T> struct Ref {
     T* p=nullptr;
     Ref(T* value=nullptr):p(value){}
     T* operator->() const{return p;}
+    T* data() const{return p;}
     operator T*() const{return p;}
 };
 namespace prelude { namespace log { template<class... T> void error(T&&...) {} } }
@@ -88,6 +93,10 @@ struct Renderer {
     void setEnabled(bool value){enabled=value;if(!value)++restores;}
     void updateDebugText(){++debugCalls;}
 };
+namespace GPUTruth {
+inline void beginFrame(Renderer*) {}
+inline void finishFrame(Renderer*) {}
+}
 #define $modify(Name, Base) Name : public Base
 '''
 state = renderer[renderer.index('struct IOSRendererState {'):renderer.index('static bool isDescendantOf(')]

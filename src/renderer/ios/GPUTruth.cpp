@@ -1,6 +1,7 @@
 #ifdef GEODE_IS_IOS
 
 #include "GPUTruth.hpp"
+#include "GroundOwnership.hpp"
 #include "../Renderer.hpp"
 
 #include <Geode/Geode.hpp>
@@ -186,11 +187,12 @@ void recordGroundSuccess(
         return;
 
     ++state.groundSubmits;
-    if (sprite == ground->m_ground1Sprite)
+    const auto part = GroundOwnership::part(ground, sprite);
+    if (part == GroundOwnership::Part::Ground1)
         state.ground1 = true;
-    if (sprite == ground->m_ground2Sprite)
+    if (part == GroundOwnership::Part::Ground2)
         state.ground2 = true;
-    if (sprite == ground->m_lineSprite)
+    if (part == GroundOwnership::Part::Line)
         state.line = true;
 }
 
@@ -219,7 +221,7 @@ void finishFrame(Renderer* renderer) {
     setChartVisible(state, true);
 
     const bool objectsYES = state.objectSubmits > 0;
-    const bool floorYES = state.ground1 || state.ground2;
+    const bool floorYES = (state.ground1 || state.ground2) && state.groundFailures == 0;
     const bool gpuYES = objectsYES || state.groundSubmits > 0;
 
     const std::string chart = fmt::format(

@@ -6,6 +6,7 @@ Run from the repository root with Python 3 and a C++23-capable GCC:
 python tests/run_ios_atlas_tests.py
 python tests/run_ios_state_tests.py
 python tests/run_ios_lifecycle_tests.py
+python tests/run_ios_ground_tests.py
 glslang -l resources/shaders/assist_ios.vert resources/shaders/assist_ios.frag
 ```
 
@@ -28,7 +29,11 @@ Coverage includes:
 - Spatial grouping of 33,000 safe objects across three u16 GPU buffers without changing live atlas draw order.
 - Menu restart of a suspended renderer without an enter-transition callback, including explicit-disable preservation.
 - Simple spike roots with separate stock glow/detail sprites; animated, nested, and changed-geometry cases remain excluded.
+- Cocos' cached VAO/texture bindings versus actual GL state across 120 clean frames with stock/GPU/stock interleaving. The old batch-wide snapshot fails this regression after an unrelated floor/atlas draw; boundary-local snapshots pass.
+- Both ground tile descendant trees, the line and shadows, empty/dont-draw containers, exact corner colors and UVs, scrolling updates, failed initialization/submission, and restoration of the caller's separate blend functions and GL bindings.
 
 These are host regression tests, not an iOS build or a Geometry Dash performance benchmark. They do not measure Future Funk FPS, Apple driver behavior, or runtime Geode hook ABI compatibility. The workflow remains manual-only and was not run for this change.
 
 For device validation, build the new master and compare the same Future Funk sections with Bismuth enabled and disabled. Check overlapping decoration and fades, reset/practice restart, exiting/re-entering the level, and both screen edges where objects enter or leave the active render set. Use the GPU debug display to verify nonzero GPU draws and skipped atlas transforms, then turn it off for the frame-rate comparison.
+
+Also revisit the reported 5.71% section: block fills must remain correct after the first frames, and no extra black strip should follow the camera. Floor proof now comes from successful draws of the actual child tiles; G2 can remain NO on ground styles without a drawn second layer. Confirm floor coverage while scrolling and after a ground-style or camera change. Host tests exercise production C++ control flow with fake GL; they do not establish that these device symptoms are resolved.

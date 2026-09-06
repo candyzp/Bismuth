@@ -3,6 +3,7 @@
 #include "../Renderer.hpp"
 #include "../Shader.hpp"
 #include "GPUTruth.hpp"
+#include "GroundOwnership.hpp"
 
 #include <Geode/binding/GJGroundLayer.hpp>
 #include <Geode/modify/CCSprite.hpp>
@@ -26,11 +27,14 @@ struct GroundGPUResources {
     GLint uvBR = -1;
     GLint uvTL = -1;
     GLint uvTR = -1;
-    GLint color = -1;
-    GLint opacityModifyRGB = -1;
+    GLint colorBL = -1;
+    GLint colorBR = -1;
+    GLint colorTL = -1;
+    GLint colorTR = -1;
     GLint texture = -1;
 
     bool attemptedInit = false;
+    bool ready = false;
     bool announced = false;
     bool failureAnnounced = false;
 
@@ -113,7 +117,7 @@ void restoreGroundGLState(const SavedGroundGLState& state) {
 bool initGroundGPU() {
     auto& state = groundGPU();
     if (state.attemptedInit)
-        return state.shader && state.vao && state.vertexBuffer && state.indexBuffer;
+        return state.ready;
     state.attemptedInit = true;
 
     static const char* vertexSource = R"(
@@ -133,8 +137,10 @@ uniform vec2 u_uvBL;
 uniform vec2 u_uvBR;
 uniform vec2 u_uvTL;
 uniform vec2 u_uvTR;
-uniform vec4 u_color;
-uniform float u_opacityModifyRGB;
+uniform vec4 u_colorBL;
+uniform vec4 u_colorBR;
+uniform vec4 u_colorTL;
+uniform vec4 u_colorTR;
 
 varying vec2 t_texCoord;
 varying vec4 t_color;
@@ -148,10 +154,10 @@ void main() {
     vec2 topUV = mix(u_uvTL, u_uvTR, a_positionOffset.x);
     t_texCoord = mix(bottomUV, topUV, a_positionOffset.y);
 
-    vec3 rgb = u_color.rgb;
-    if (u_opacityModifyRGB > 0.5)
-        rgb *= u_color.a;
-    t_color = vec4(rgb, u_color.a);
+    // Use the exact stock corner colors, including premultiplication and
+    // ground/shadow gradients. These bytes already contain GD's resolved alpha.
+    t_color = mix(mix(u_colorBL, u_colorBR, a_positionOffset.x),
+                  mix(u_colorTL, u_colorTR, a_positionOffset.x), a_positionOffset.y);
 
     gl_Position = u_mvp * vec4(localPosition, 1.0);
 }
@@ -184,8 +190,10 @@ void main() {
     state.uvBR = static_cast<GLint>(state.shader->location("u_uvBR"));
     state.uvTL = static_cast<GLint>(state.shader->location("u_uvTL"));
     state.uvTR = static_cast<GLint>(state.shader->location("u_uvTR"));
-    state.color = static_cast<GLint>(state.shader->location("u_color"));
-    state.opacityModifyRGB = static_cast<GLint>(state.shader->location("u_opacityModifyRGB"));
+    state.colorBL = static_cast<GLint>(state.shader->location("u_colorBL"));
+    state.colorBR = static_cast<GLint>(state.shader->location("u_colorBR"));
+    state.colorTL = static_cast<GLint>(state.shader->location("u_colorTL"));
+    state.colorTR = static_cast<GLint>(state.shader->location("u_colorTR"));
     state.texture = static_cast<GLint>(state.shader->location("u_spriteSheetTexture"));
 
     const GLfloat corners[] = {
@@ -194,7 +202,7 @@ void main() {
         0.f, 1.f,
         1.f, 1.f,
     };
-    const u16 indices[] = { 0, 2, 3, 0, 3, 1 };
+    const u16 indices[] = { 0, 1, 2, 1, 3, 2 };
 
     const auto saved = captureGroundGLState();
 
@@ -223,29 +231,24 @@ void main() {
         return false;
     }
 
+    state.ready = true;
     return true;
 }
 
 GJGroundLayer* groundOwner(cocos2d::CCSprite* sprite) {
-    if (!sprite)
-        return nullptr;
-
-    for (auto node = sprite->getParent(); node; node = node->getParent()) {
-        auto ground = typeinfo_cast<GJGroundLayer*>(node);
-        if (!ground)
-            continue;
-
-        if (sprite == ground->m_ground1Sprite ||
-            sprite == ground->m_ground2Sprite ||
-            sprite == ground->m_lineSprite)
-            return ground;
-    }
-    return nullptr;
+    return GroundOwnership::owner(sprite);
 }
 
 bool strictGroundTarget(cocos2d::CCSprite* sprite) {
     auto renderer = Renderer::get();
-    return renderer && renderer->isEnabled() && groundOwner(sprite);
+    if (!renderer || !renderer->isEnabled())
+        return false;
+    auto ground = groundOwner(sprite);
+    for (auto node = static_cast<cocos2d::CCNode*>(ground); node; node = node->getParent()) {
+        if (node == renderer->getPlayLayer())
+            return true;
+    }
+    return false;
 }
 
 inline glm::vec3 vertexPosition(const cocos2d::ccV3F_C4B_T2F& vertex) {
@@ -264,15 +267,16 @@ void recordGroundProof(GJGroundLayer* ground, cocos2d::CCSprite* sprite) {
     ++state.successfulDraws;
 
     bool changed = false;
-    if (sprite == ground->m_ground1Sprite && !state.ground1Proven) {
+    const auto part = GroundOwnership::part(ground, sprite);
+    if (part == GroundOwnership::Part::Ground1 && !state.ground1Proven) {
         state.ground1Proven = true;
         changed = true;
     }
-    if (sprite == ground->m_ground2Sprite && !state.ground2Proven) {
+    if (part == GroundOwnership::Part::Ground2 && !state.ground2Proven) {
         state.ground2Proven = true;
         changed = true;
     }
-    if (sprite == ground->m_lineSprite && !state.lineProven) {
+    if (part == GroundOwnership::Part::Line && !state.lineProven) {
         state.lineProven = true;
         changed = true;
     }
@@ -322,15 +326,6 @@ bool drawGroundOnGPU(cocos2d::CCSprite* sprite) {
     kmGLGetMatrix(KM_GL_MODELVIEW, &modelView);
     kmMat4Multiply(&mvp, &projection, &modelView);
 
-    const auto displayedColor = sprite->getDisplayedColor();
-    const float opacity = static_cast<float>(sprite->getDisplayedOpacity()) / 255.f;
-    const glm::vec4 rawColor = {
-        static_cast<float>(displayedColor.r) / 255.f,
-        static_cast<float>(displayedColor.g) / 255.f,
-        static_cast<float>(displayedColor.b) / 255.f,
-        opacity,
-    };
-
     const auto saved = captureGroundGLState();
 
     state.shader->use();
@@ -354,8 +349,13 @@ bool drawGroundOnGPU(cocos2d::CCSprite* sprite) {
     glUniform2f(state.uvTL, uvTL.x, uvTL.y);
     glUniform2f(state.uvTR, uvTR.x, uvTR.y);
 
-    glUniform4f(state.color, rawColor.r, rawColor.g, rawColor.b, rawColor.a);
-    glUniform1f(state.opacityModifyRGB, sprite->isOpacityModifyRGB() ? 1.f : 0.f);
+    const auto setColor = [](GLint location, const cocos2d::ccColor4B& color) {
+        glUniform4f(location, color.r / 255.f, color.g / 255.f, color.b / 255.f, color.a / 255.f);
+    };
+    setColor(state.colorBL, quad.bl.colors);
+    setColor(state.colorBR, quad.br.colors);
+    setColor(state.colorTL, quad.tl.colors);
+    setColor(state.colorTR, quad.tr.colors);
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, texture->getName());
@@ -364,6 +364,7 @@ bool drawGroundOnGPU(cocos2d::CCSprite* sprite) {
     // Raw GL on purpose. ccGLBlendFunc() updates Cocos' blend cache, and this
     // custom draw restores the previous real GL state before returning.
     const auto blend = sprite->getBlendFunc();
+    glEnable(GL_BLEND);
     glBlendFunc(static_cast<GLenum>(blend.src), static_cast<GLenum>(blend.dst));
 
     glBindVertexArray(state.vao);
@@ -385,7 +386,7 @@ bool drawGroundOnGPU(cocos2d::CCSprite* sprite) {
 
     if (!state.announced) {
         state.announced = true;
-        log::info("Bismuth iOS literal ground GPU assist active: ground01 + ground02 + line use persistent GPU quad expansion");
+        log::info("Bismuth iOS ground GPU assist active: tiled ground descendants, line and shadows use persistent GPU quad expansion");
     }
     return true;
 }
@@ -397,6 +398,12 @@ class $modify(RendererGroundOwnedCCSprite, cocos2d::CCSprite) {
             cocos2d::CCSprite::draw();
             return;
         }
+
+        // Empty scrolling containers and GD's explicitly suppressed quads have
+        // no stock pixels. Their children still visit normally and draw on GPU.
+        const auto size = this->getTextureRect().size;
+        if (this->getDontDraw() || size.width == 0.f || size.height == 0.f)
+            return;
 
         // Deliberately no stock fallback here. A target ground sprite is owned by
         // the GPU path while Bismuth is enabled. If submission fails, the failure

@@ -588,11 +588,12 @@ bool AtlasInterleaveRegistry::drawBatch(
         };
     };
 
-    // The old hot path queried and restored GL state, looked up every uniform,
-    // recomputed the same MVP, and rebound the same shader for every GPU run.
-    // On heavily interleaved levels that can mean thousands of driver round trips
-    // per frame. Capture stock state once for this atlas submission instead.
-    const SavedGLState stockState = captureGLState();
+    // Cocos changes its cached VAO/texture bindings during stock atlas draws.
+    // Capture the actual state at each stock -> GPU boundary, not once for the
+    // entire batch. Restoring an older snapshot desynchronizes real GL from
+    // ccGLBindVAO/ccGLBindTexture2D, so a later stock run can read another atlas's
+    // vertices. Dirty-atlas warmup used to hide this until a later clean frame.
+    SavedGLState stockState;
     kmMat4 matrixP;
     kmMat4 matrixMV;
     kmMat4 matrixMVP;
@@ -640,6 +641,9 @@ bool AtlasInterleaveRegistry::drawBatch(
         const auto owner = drawDataFor(ownerRecord);
         auto objectStateTexture = owner.resolvedState->getObjectStateTexture();
         auto spriteStateTexture = owner.resolvedState->getSpriteStateTexture();
+
+        if (!gpuStateActive)
+            stockState = captureGLState();
 
         // Stock runs may switch program/texture state. Re-enter the assist state
         // only at GPU block boundaries; consecutive GPU owners stay in one state

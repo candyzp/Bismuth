@@ -34,9 +34,9 @@ struct Scene {
     ~Scene() { AtlasInterleaveRegistry::unregisterDeferred(&owner); Renderer::current=nullptr; }
 };
 static void checkStateRestored() {
-    assert(fixture::vao==99 && fixture::program==77 && fixture::arrayBuffer==88);
+    assert(fixture::vao==fixture::cachedVAO && fixture::program==77 && fixture::arrayBuffer==88);
     assert(fixture::activeTexture==GL_TEXTURE0);
-    assert((fixture::textures==std::array<GLint,3>{11,22,33}));
+    assert(fixture::textures==fixture::cachedTextures);
     assert(fixture::frontMask==7 && fixture::backMask==13 && fixture::depthMask==1);
     assert(fixture::elements.at(40)==123);
 }
@@ -103,7 +103,8 @@ int main() {
     {
         Scene s(4); s.claim({3,1});
         StandaloneAssistBatch other;
-        other.resolvedState=&s.resolved; other.shader=&s.shader; other.indexBuffer=&s.buffer;
+        Buffer otherBuffer; otherBuffer.id=124;
+        other.resolvedState=&s.resolved; other.shader=&s.shader; other.indexBuffer=&otherBuffer;
         other.vao=41; other.ownedSprites={&s.sprites[2],&s.sprites[0]};
         fixture::elements[41]=124; fixture::vaoSpriteIDs[41]={2,0};
         s.renderer.owned.insert(&s.sprites[0]); s.renderer.owned.insert(&s.sprites[2]);
@@ -177,6 +178,23 @@ int main() {
         s.renderer.owned.insert(&s.sprites[0]); s.draw();
         assert((fixture::pixels==std::vector<int>{0,1,2}) && fixture::gpuDraws==1);
         AtlasInterleaveRegistry::unregisterImmediate(&immediate);
+    }
+    {
+        Scene s(5); s.claim({1,3});
+        s.draw(); // Dirty warmup establishes this atlas's VAO.
+        assert((fixture::pixels==std::vector<int>{0,1,2,3,4}));
+        // The floor or an earlier batch draws before the next frame. This atlas
+        // is now clean, so the first stock run changes the cached VAO after the
+        // old code took its batch-wide snapshot. Exercise many later frames.
+        for(int frame=0;frame<120;++frame) {
+            ccGLBindVAO(99);
+            ccGLBindTexture2D(11);
+            fixture::vaoSpriteIDs[99]={-10,-11,-12,-13,-14};
+            s.draw();
+            assert((fixture::pixels==std::vector<int>{0,1,2,3,4}));
+            checkStateRestored();
+        }
+        std::cout << "PASS: 120 clean frames after unrelated floor/atlas draws; Cocos cache stays synchronized\n";
     }
     assert(registry().spriteOwners.empty() && registry().indexCaches.empty());
     std::cout << "PASS: mixed stock/GPU order, strict owned-batch failures, batch migration, masks, VAO/EBO state, teardown, u16 limits\n";

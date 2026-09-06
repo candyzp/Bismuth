@@ -31,8 +31,10 @@ enum { GL_TEXTURE0=100, GL_TEXTURE_2D=200, GL_ARRAY_BUFFER,
     GL_DYNAMIC_DRAW, GL_TRIANGLES, GL_UNSIGNED_SHORT, GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA };
 namespace fixture {
 inline GLuint vao=99, program=77, arrayBuffer=88, nextBuffer=1000;
+inline GLuint cachedVAO=99;
 inline GLenum activeTexture=GL_TEXTURE0;
 inline std::array<GLint, 3> textures{11,22,33};
+inline std::array<GLint, 3> cachedTextures{11,22,33};
 inline std::array<GLboolean,4> colorMask{1,1,1,1};
 inline GLboolean depthMask=1;
 inline GLint frontMask=7, backMask=13;
@@ -72,6 +74,17 @@ inline void glActiveTexture(GLenum x) { fixture::activeTexture=x; }
 inline void glBindTexture(GLenum,GLuint x) { fixture::textures.at(fixture::activeTexture-GL_TEXTURE0)=x; }
 inline void glBindVertexArray(GLuint x) { fixture::vao=x; }
 inline void glUseProgram(GLuint x) { fixture::program=x; }
+inline void ccGLBindVAO(GLuint x) {
+    if(fixture::cachedVAO!=x) { fixture::cachedVAO=x; glBindVertexArray(x); }
+}
+inline void ccGLBindTexture2D(GLuint x) {
+    if(fixture::cachedTextures[0]!=static_cast<GLint>(x)) {
+        fixture::cachedTextures[0]=x; glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D,x);
+    }
+}
+inline void glUniformMatrix4fv(GLint,int,GLboolean,const float*) {}
+inline void glUniform1i(GLint,int) {}
+inline void glUniform2f(GLint,float,float) {}
 inline void glBindBuffer(GLenum target,GLuint x) {
     if(target==GL_ARRAY_BUFFER) fixture::arrayBuffer=x;
     else { assert(target==GL_ELEMENT_ARRAY_BUFFER); fixture::elements[fixture::vao]=x; }
@@ -131,13 +144,25 @@ struct CCTexture2D { u32 name=5; u32 getName() { return name; } };
 struct CCTextureAtlas {
     std::vector<int> quads;
     bool dirty=true;
+    GLuint vao=fixture::nextBuffer++;
+    GLuint texture=5;
     bool isDirty() { return dirty; }
     u32 getTotalQuads() { return quads.size(); }
     void drawNumberOfQuads(u32 n,u32 first) {
         assert(first+n<=quads.size());
-        if(!fixture::writes()) { if(!fixture::failAtlasSync) dirty=false; return; }
-        dirty=false; ++fixture::stockDraws;
-        fixture::pixels.insert(fixture::pixels.end(),quads.begin()+first,quads.begin()+first+n);
+        ccGLBindTexture2D(texture);
+        ccGLBindVAO(vao);
+        if(dirty && !fixture::failAtlasSync) {
+            fixture::vaoSpriteIDs[vao]=quads;
+            dirty=false;
+        }
+        if(!fixture::writes()) return;
+        ++fixture::stockDraws;
+        // Read the actual bound VAO, not this atlas's CPU vector. A raw restore
+        // to an old VAO can disagree with Cocos' cache on a clean later frame.
+        auto& resident=fixture::vaoSpriteIDs[fixture::vao];
+        for(u32 i=first;i<first+n;++i)
+            fixture::pixels.push_back(i<resident.size() ? resident[i] : -999);
     }
     void drawQuads() { drawNumberOfQuads(quads.size(),0); }
 };
@@ -199,7 +224,8 @@ inline void ccGLBlendFunc(u32,u32) {}
 struct PlayLayer { cocos2d::CCArray* m_batchNodes=nullptr; };
 struct DataTexture {
     void bind(int unit) { glActiveTexture(GL_TEXTURE0+unit); glBindTexture(GL_TEXTURE_2D,600+unit); }
-    std::array<float,2> getSize() { return {1024,1}; }
+    struct Size { float x,y; };
+    Size getSize() { return {1024,1}; }
 };
 struct ResolvedStateLayer {
     bool ready=true;
@@ -210,12 +236,13 @@ struct ResolvedStateLayer {
 };
 struct Shader {
     void use(){glUseProgram(500);}
+    u32 location(const char*) { return 0; }
     void setMatrix4(const char*,const float*){}
     void setInt(const char*,int){}
     void setVec2(const char*,std::array<float,2>){}
     void setTexture(const char*,int unit,u32 id){glActiveTexture(GL_TEXTURE0+unit);glBindTexture(GL_TEXTURE_2D,id);}
 };
-struct Buffer {};
+struct Buffer { u32 id=123; u32 getId(){return id;} };
 struct Renderer {
     inline static Renderer* current=nullptr;
     bool enabled=true;
@@ -230,6 +257,10 @@ struct Renderer {
     bool isGPUInterleavedBatch(cocos2d::CCSpriteBatchNode*) const;
     bool drawGPUInterleavedBatch(cocos2d::CCSpriteBatchNode*);
 };
+namespace GPUTruth {
+inline void recordObjectBatch(Renderer*,cocos2d::CCSpriteBatchNode*) {}
+inline void recordObjectFailure(Renderer*) {}
+}
 struct BatchStats { bool ready=true; usize drawCallsLastFrame=0,indicesLastFrame=0; };
 struct AssistShadowBatch : cocos2d::CCNode {
     BatchStats stats;
