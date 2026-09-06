@@ -12,7 +12,9 @@ state=source('src/renderer/ios/ResolvedStateLayer.cpp')
 active=source('src/renderer/ios/ResolvedStateActive.cpp')
 pieces=[
     '#define GEODE_IS_IOS', '#include "ios_state_fixture.hpp"', header,
+    'using namespace geode::prelude;',
     state[state.index('namespace {'):state.index('void uploadDirtyRecordSpans(')]+'}',
+    state[state.index('ResolvedStateLayer::SafetyClass ResolvedStateLayer::classifyObject('):state.index('bool ResolvedStateLayer::isShadowValidationCandidate(')],
     state[state.index('ResolvedStateLayer::ObjectState ResolvedStateLayer::captureObjectState('):state.index('bool ResolvedStateLayer::init(')],
     state[state.index('bool ResolvedStateLayer::canDrawSprite('):state.index('void ResolvedStateLayer::setGPUOwnedSprites(')],
     'namespace { ResolvedStateLayer* g_currentResolvedState=nullptr; }',

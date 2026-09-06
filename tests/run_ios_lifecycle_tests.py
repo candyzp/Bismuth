@@ -125,6 +125,16 @@ int main(){
     assert(currentRenderer==next && old->restores==1);
     auto state=iosState(next);
     assert(ResolvedStateLayer::getCurrent()==state->resolvedState.get());
+    next->suspendGPU();
+    assert(currentRenderer==nullptr && !next->isEnabled());
+    static_cast<PlayLayer&>(second).resetLevel();
+    assert(currentRenderer==next && next->isEnabled());
+    assert(ResolvedStateLayer::getCurrent()==state->resolvedState.get());
+    next->setEnabled(false);
+    next->suspendGPU();
+    static_cast<PlayLayer&>(second).resetLevel();
+    assert(!next->isEnabled());
+    next->setEnabled(true);
     old->resumeGPU(); assert(currentRenderer==old && old->isEnabled() && !next->isEnabled());
     next->resumeGPU(); assert(currentRenderer==next && next->isEnabled());
     next->setEnabled(false); next->suspendGPU(); next->suspendGPU(); next->resumeGPU();

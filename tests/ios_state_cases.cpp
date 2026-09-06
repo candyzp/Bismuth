@@ -8,6 +8,32 @@ int main() {
     state.spriteIndexByPointer.emplace(&object,0);
     state.objectTexels.resize(2); state.spriteTexels.resize(3);
     assert(state.canDrawSprite(&object));
+    {
+        GameObject glow, detail;
+        object.m_objectType=GameObjectType::Hazard;
+        object.m_glowSprite=&glow; object.m_colorSprite=&detail;
+        std::vector<cocos2d::CCSprite*> accepted;
+        ResolvedStateLayer::CollectionDiagnostics diagnostics;
+        auto classify=[&]{accepted.clear();return state.classifyObject(&object,accepted,diagnostics);};
+        assert(classify()==ResolvedStateLayer::SafetyClass::StaticSafe);
+        assert(accepted.size()==1 && accepted.front()==&object);
+        assert(state.canDrawSprite(&object));
+        object.m_groupCount=1;
+        assert(classify()==ResolvedStateLayer::SafetyClass::DynamicSafe);
+        object.m_groupCount=0;
+        object.m_classType=GameObjectClassType::Animated;
+        assert(classify()==ResolvedStateLayer::SafetyClass::StockOnly && !state.canDrawSprite(&object));
+        object.m_classType=GameObjectClassType::Normal;
+        object.synced=true; assert(classify()==ResolvedStateLayer::SafetyClass::StockOnly);
+        object.synced=false;
+        object.children.size=1;
+        assert(classify()==ResolvedStateLayer::SafetyClass::StockOnly && !state.canDrawSprite(&object));
+        object.children.size=0;
+        object.dontDraw=true; assert(!state.canDrawSprite(&object)); object.dontDraw=false;
+        object.flipX=true; assert(!state.canDrawSprite(&object)); object.flipX=false;
+        object.m_glowSprite=nullptr; object.m_colorSprite=nullptr;
+        object.m_objectType=GameObjectType::Solid;
+    }
     object.transform={0.7f,1.3f,-0.2f,-2.f,84000.f,700.f};
     object.vertexZ=9;
     auto next=state.captureObjectState(&object);

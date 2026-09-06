@@ -35,7 +35,19 @@ struct CCSprite {
     CCTexture2D* getTexture(){return &tex;}
 };
 }
+enum class GameObjectType { Solid, Hazard, AnimatedHazard };
+enum class GameObjectClassType { Normal, Animated };
 struct GameObject : cocos2d::CCSprite {
+    virtual ~GameObject()=default;
+    GameObjectType m_objectType=GameObjectType::Solid;
+    GameObjectClassType m_classType=GameObjectClassType::Normal;
+    bool synced=false, dontDraw=false, trigger=false, m_isHide=false, m_isInvisibleBlock=false;
+    bool rotate=false, m_usesAudioScale=false;
+    int m_groupCount=0;
+    bool getHasSyncedAnimation(){return synced;}
+    bool getDontDraw(){return dontDraw;}
+    bool isTrigger(){return trigger;}
+    bool getHasRotateAction(){return rotate;}
     cocos2d::CCArray children;
     cocos2d::CCSprite *m_glowSprite=nullptr,*m_colorSprite=nullptr;
     bool m_isInvisible=false;
@@ -49,4 +61,16 @@ struct GameObject : cocos2d::CCSprite {
 };
 struct PlayLayer {};
 struct DataTexture {};
-namespace geode { namespace prelude {} }
+struct CheckpointGameObject : GameObject {};
+struct SpriteUnpackStats { usize nonSpriteChildren=0, duplicateSprites=0; };
+struct UnpackedSprite { cocos2d::CCSprite* sprite; };
+namespace ObjectUtils {
+inline bool isInteractiveVisualObject(GameObject*){return false;}
+template<class F> bool unpackObjectIntoSprites(GameObject* o,F callback,SpriteUnpackStats*) {
+    callback(UnpackedSprite{o});
+    return true;
+}
+}
+namespace geode { namespace prelude {
+template<class T> T typeinfo_cast(GameObject* o){return dynamic_cast<T>(o);}
+} }

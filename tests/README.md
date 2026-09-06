@@ -26,6 +26,8 @@ Coverage includes:
 - Eight simulation updates per rendered frame with exactly one resolved-state capture, including frames with no GPU draw.
 - Safe geometry disappearing and returning in the same atlas, unchanged draw-plan reuse, and recovery after a failed replacement index upload.
 - Spatial grouping of 33,000 safe objects across three u16 GPU buffers without changing live atlas draw order.
+- Menu restart of a suspended renderer without an enter-transition callback, including explicit-disable preservation.
+- Simple spike roots with separate stock glow/detail sprites; animated, nested, and changed-geometry cases remain excluded.
 
 These are host regression tests, not an iOS build or a Geometry Dash performance benchmark. They do not measure Future Funk FPS, Apple driver behavior, or runtime Geode hook ABI compatibility. The workflow remains manual-only and was not run for this change.
 

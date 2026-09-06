@@ -53,10 +53,14 @@ class $modify(RendererPlayLayer, PlayLayer) {
 
         PlayLayer::resetLevel();
 
-        auto renderer = Renderer::get();
 #ifdef GEODE_IS_IOS
-        if (renderer && renderer->getPlayLayer() != this)
-            return;
+        // Menu restart may reuse this layer without another enter-transition
+        // callback. The active singleton is null while its renderer is suspended.
+        auto renderer = Renderer::forPlayLayer(this);
+        if (renderer)
+            renderer->resumeGPU();
+#else
+        auto renderer = Renderer::get();
 #endif
         if (renderer) {
             renderer->reset();

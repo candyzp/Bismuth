@@ -16,6 +16,17 @@ constexpr usize OBJECT_TEXELS_PER_STATE = 2;
 constexpr usize SPRITE_TEXELS_PER_STATE = 3;
 constexpr usize DIRTY_RECORD_MERGE_GAP = 2;
 
+bool isSimpleSpikeRoot(GameObject* object) {
+    // Only the root quad is GPU-owned. Separate glow/detail nodes keep their
+    // stock draws and lifecycle; nested or animated visuals remain stock.
+    return object && object->m_objectType == GameObjectType::Hazard &&
+        object->m_classType != GameObjectClassType::Animated &&
+        !object->getHasSyncedAnimation() && !object->getDontDraw() &&
+        object->getTexture() &&
+        (!object->getChildren() || object->getChildren()->count() == 0) &&
+        object->m_glowSprite != object && object->m_colorSprite != object;
+}
+
 inline bool changedFloat(float a, float b, float epsilon = 0.0001f) {
     return std::abs(a - b) > epsilon;
 }
@@ -99,6 +110,13 @@ ResolvedStateLayer::SafetyClass ResolvedStateLayer::classifyObject(
         return SafetyClass::StockOnly;
     if (object->m_isInvisibleBlock)
         return SafetyClass::StockOnly;
+
+    if (isSimpleSpikeRoot(object)) {
+        outSprites.push_back(object);
+        const bool dynamic = object->m_groupCount > 0 ||
+            object->getHasRotateAction() || object->m_usesAudioScale;
+        return dynamic ? SafetyClass::DynamicSafe : SafetyClass::StaticSafe;
+    }
 
     bool invalidSprite = false;
     SpriteUnpackStats unpackStats;
@@ -463,7 +481,9 @@ bool ResolvedStateLayer::canDrawSprite(cocos2d::CCSprite* sprite) const {
         return false;
     const auto& record = sprites[it->second];
     auto object = objects[record.objectIndex].object;
-    if (object != sprite || object->m_glowSprite || object->m_colorSprite ||
+    if (object != sprite ||
+        ((object->m_glowSprite || object->m_colorSprite ||
+          object->m_objectType == GameObjectType::Hazard) && !isSimpleSpikeRoot(object)) ||
         (object->getChildren() && object->getChildren()->count() != 0))
         return false;
     const auto current = captureSpriteState(sprite);
