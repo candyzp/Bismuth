@@ -31,6 +31,7 @@ struct GroundGPUResources {
 
     bool attemptedInit = false;
     bool announced = false;
+    bool failureAnnounced = false;
 };
 
 struct SavedGroundGLState {
@@ -133,7 +134,7 @@ void main() {
 
     state.shader = Shader::create({ vertexSource, fragmentSource });
     if (!state.shader) {
-        log::error("Bismuth iOS ground GPU shader unavailable; leaving literal ground on stock draw path");
+        log::error("Bismuth iOS STRICT ground GPU shader unavailable; stock ground fallback is disabled");
         return false;
     }
 
@@ -165,7 +166,7 @@ void main() {
     glGenBuffers(1, &state.indexBuffer);
     if (!state.vao || !state.vertexBuffer || !state.indexBuffer) {
         restoreGroundGLState(saved);
-        log::error("Bismuth iOS ground GPU buffer allocation failed; leaving literal ground on stock draw path");
+        log::error("Bismuth iOS STRICT ground GPU buffer allocation failed; stock ground fallback is disabled");
         return false;
     }
 
@@ -181,7 +182,7 @@ void main() {
     const GLenum error = glGetError();
     restoreGroundGLState(saved);
     if (error != GL_NO_ERROR) {
-        log::error("Bismuth iOS ground GPU setup failed with GL error {}; leaving literal ground on stock draw path", static_cast<u32>(error));
+        log::error("Bismuth iOS STRICT ground GPU setup failed with GL error {}; stock ground fallback is disabled", static_cast<u32>(error));
         return false;
     }
 
@@ -205,6 +206,11 @@ GJGroundLayer* groundOwner(cocos2d::CCSprite* sprite) {
     return nullptr;
 }
 
+bool strictGroundTarget(cocos2d::CCSprite* sprite) {
+    auto renderer = Renderer::get();
+    return renderer && renderer->isEnabled() && groundOwner(sprite);
+}
+
 inline glm::vec3 vertexPosition(const cocos2d::ccV3F_C4B_T2F& vertex) {
     return { vertex.vertices.x, vertex.vertices.y, vertex.vertices.z };
 }
@@ -214,15 +220,12 @@ inline glm::vec2 vertexUV(const cocos2d::ccV3F_C4B_T2F& vertex) {
 }
 
 bool drawGroundOnGPU(cocos2d::CCSprite* sprite) {
-    auto renderer = Renderer::get();
-    if (!renderer || !renderer->isEnabled() || !sprite)
+    if (!strictGroundTarget(sprite))
         return false;
 
-    if (!groundOwner(sprite))
-        return false;
-
-    // Stock ground sprites are standalone on the iOS gameplay path. If a future
-    // GD build moves one into a batch, do not double-submit it behind that batch.
+    // Ground ownership is strict while Bismuth is enabled. If GD ever moves a
+    // literal ground sprite into a stock batch, that is treated as an unsupported
+    // state rather than silently returning to the stock renderer.
     if (sprite->getBatchNode())
         return false;
 
@@ -287,7 +290,12 @@ bool drawGroundOnGPU(cocos2d::CCSprite* sprite) {
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, state.indexBuffer);
     glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, nullptr);
 
+    const GLenum error = glGetError();
     restoreGroundGLState(saved);
+    if (error != GL_NO_ERROR) {
+        log::error("Bismuth iOS STRICT ground GPU draw failed with GL error {}; stock ground fallback is disabled", static_cast<u32>(error));
+        return false;
+    }
 
     if (!state.announced) {
         state.announced = true;
@@ -299,9 +307,21 @@ bool drawGroundOnGPU(cocos2d::CCSprite* sprite) {
 
 class $modify(RendererGroundOwnedCCSprite, cocos2d::CCSprite) {
     void draw() {
-        if (drawGroundOnGPU(this))
+        if (!strictGroundTarget(this)) {
+            cocos2d::CCSprite::draw();
             return;
-        cocos2d::CCSprite::draw();
+        }
+
+        // Deliberately no stock fallback here. A target ground sprite is owned by
+        // the GPU path while Bismuth is enabled. If submission fails, the failure
+        // remains visible and logged instead of being hidden by stock rendering.
+        if (!drawGroundOnGPU(this)) {
+            auto& state = groundGPU();
+            if (!state.failureAnnounced) {
+                state.failureAnnounced = true;
+                log::error("Bismuth iOS STRICT ground GPU submission failed; ground stock draw intentionally suppressed");
+            }
+        }
     }
 };
 
