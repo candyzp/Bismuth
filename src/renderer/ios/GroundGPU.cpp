@@ -32,6 +32,15 @@ struct GroundGPUResources {
     bool attemptedInit = false;
     bool announced = false;
     bool failureAnnounced = false;
+
+    // Debug proof is intentionally based only on successful custom GL submits.
+    // It never infers floor ownership from renderer state or from a fallback.
+    usize successfulDraws = 0;
+    usize failedDraws = 0;
+    bool ground1Proven = false;
+    bool ground2Proven = false;
+    bool lineProven = false;
+    bool truthAnnounced = false;
 };
 
 struct SavedGroundGLState {
@@ -41,6 +50,14 @@ struct SavedGroundGLState {
     GLint program = 0;
     GLint activeTexture = GL_TEXTURE0;
     GLint texture0 = 0;
+
+    // The ground path changes the blend function. Preserve it exactly so a
+    // ground submit cannot leak alpha state into later GD sprites/objects.
+    GLboolean blendEnabled = GL_FALSE;
+    GLint blendSrcRGB = GL_SRC_ALPHA;
+    GLint blendDstRGB = GL_ONE_MINUS_SRC_ALPHA;
+    GLint blendSrcAlpha = GL_SRC_ALPHA;
+    GLint blendDstAlpha = GL_ONE_MINUS_SRC_ALPHA;
 };
 
 GroundGPUResources& groundGPU() {
@@ -55,6 +72,12 @@ SavedGroundGLState captureGroundGLState() {
     glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &state.elementBuffer);
     glGetIntegerv(GL_CURRENT_PROGRAM, &state.program);
     glGetIntegerv(GL_ACTIVE_TEXTURE, &state.activeTexture);
+
+    state.blendEnabled = glIsEnabled(GL_BLEND);
+    glGetIntegerv(GL_BLEND_SRC_RGB, &state.blendSrcRGB);
+    glGetIntegerv(GL_BLEND_DST_RGB, &state.blendDstRGB);
+    glGetIntegerv(GL_BLEND_SRC_ALPHA, &state.blendSrcAlpha);
+    glGetIntegerv(GL_BLEND_DST_ALPHA, &state.blendDstAlpha);
 
     glActiveTexture(GL_TEXTURE0);
     glGetIntegerv(GL_TEXTURE_BINDING_2D, &state.texture0);
@@ -71,6 +94,17 @@ void restoreGroundGLState(const SavedGroundGLState& state) {
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, static_cast<u32>(state.texture0));
     glActiveTexture(static_cast<GLenum>(state.activeTexture));
+
+    glBlendFuncSeparate(
+        static_cast<GLenum>(state.blendSrcRGB),
+        static_cast<GLenum>(state.blendDstRGB),
+        static_cast<GLenum>(state.blendSrcAlpha),
+        static_cast<GLenum>(state.blendDstAlpha)
+    );
+    if (state.blendEnabled)
+        glEnable(GL_BLEND);
+    else
+        glDisable(GL_BLEND);
 }
 
 bool initGroundGPU() {
@@ -219,8 +253,50 @@ inline glm::vec2 vertexUV(const cocos2d::ccV3F_C4B_T2F& vertex) {
     return { vertex.texCoords.u, vertex.texCoords.v };
 }
 
+void recordGroundProof(GJGroundLayer* ground, cocos2d::CCSprite* sprite) {
+    if (!ground || !sprite)
+        return;
+
+    auto& state = groundGPU();
+    ++state.successfulDraws;
+
+    bool changed = false;
+    if (sprite == ground->m_ground1Sprite && !state.ground1Proven) {
+        state.ground1Proven = true;
+        changed = true;
+    }
+    if (sprite == ground->m_ground2Sprite && !state.ground2Proven) {
+        state.ground2Proven = true;
+        changed = true;
+    }
+    if (sprite == ground->m_lineSprite && !state.lineProven) {
+        state.lineProven = true;
+        changed = true;
+    }
+
+    if (!Mod::get()->getSettingValue<bool>("ios_gpu_debug"))
+        return;
+
+    if (!state.truthAnnounced || changed) {
+        state.truthAnnounced = true;
+        log::info(
+            "[Bismuth GPU TRUTH] GPU PROOF=YES | FLOOR GPU={} | GROUND1={} | GROUND2={} | LINE={} | successful={} | failed={}",
+            (state.ground1Proven || state.ground2Proven) ? "YES" : "NO",
+            state.ground1Proven ? "YES" : "NO",
+            state.ground2Proven ? "YES" : "NO",
+            state.lineProven ? "YES" : "NO",
+            state.successfulDraws,
+            state.failedDraws
+        );
+    }
+}
+
 bool drawGroundOnGPU(cocos2d::CCSprite* sprite) {
     if (!strictGroundTarget(sprite))
+        return false;
+
+    auto ground = groundOwner(sprite);
+    if (!ground)
         return false;
 
     // Ground ownership is strict while Bismuth is enabled. If GD ever moves a
@@ -293,9 +369,19 @@ bool drawGroundOnGPU(cocos2d::CCSprite* sprite) {
     const GLenum error = glGetError();
     restoreGroundGLState(saved);
     if (error != GL_NO_ERROR) {
+        ++state.failedDraws;
         log::error("Bismuth iOS STRICT ground GPU draw failed with GL error {}; stock ground fallback is disabled", static_cast<u32>(error));
+        if (Mod::get()->getSettingValue<bool>("ios_gpu_debug")) {
+            log::error(
+                "[Bismuth GPU TRUTH] FLOOR GPU=NO | failed submit | successful={} | failed={}",
+                state.successfulDraws,
+                state.failedDraws
+            );
+        }
         return false;
     }
+
+    recordGroundProof(ground, sprite);
 
     if (!state.announced) {
         state.announced = true;
@@ -317,9 +403,17 @@ class $modify(RendererGroundOwnedCCSprite, cocos2d::CCSprite) {
         // remains visible and logged instead of being hidden by stock rendering.
         if (!drawGroundOnGPU(this)) {
             auto& state = groundGPU();
+            ++state.failedDraws;
             if (!state.failureAnnounced) {
                 state.failureAnnounced = true;
                 log::error("Bismuth iOS STRICT ground GPU submission failed; ground stock draw intentionally suppressed");
+            }
+            if (Mod::get()->getSettingValue<bool>("ios_gpu_debug")) {
+                log::error(
+                    "[Bismuth GPU TRUTH] FLOOR GPU=NO | target recognized but GPU submit failed | successful={} | failed={}",
+                    state.successfulDraws,
+                    state.failedDraws
+                );
             }
         }
     }
