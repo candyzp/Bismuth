@@ -480,25 +480,12 @@ bool ResolvedStateLayer::canDrawSprite(cocos2d::CCSprite* sprite) const {
     if (it == spriteIndexByPointer.end())
         return false;
     const auto& record = sprites[it->second];
-    if (record.objectIndex >= objects.size())
-        return false;
-    const auto& objectRecord = objects[record.objectIndex];
-    auto object = objectRecord.object;
+    auto object = objects[record.objectIndex].object;
     if (object != sprite ||
         ((object->m_glowSprite || object->m_colorSprite ||
           object->m_objectType == GameObjectType::Hazard) && !isSimpleSpikeRoot(object)) ||
         (object->getChildren() && object->getChildren()->count() != 0))
         return false;
-
-    // StaticSafe geometry is immutable by classification: no animation, group
-    // transform, rotate action, audio scale, glow/color subtree, or child tree.
-    // Keep that geometry resident and let the GPU reuse the baked quad instead
-    // of re-reading Cocos UV/offset/flip state for every atlas ownership probe.
-    if (objectRecord.safety == SafetyClass::StaticSafe) {
-        auto texture = sprite->getTexture();
-        return texture && texture->getName() == record.geometry.textureId;
-    }
-
     const auto current = captureSpriteState(sprite);
     const auto& baked = record.geometry;
     return !spriteUVChanged(baked, current) &&
@@ -578,21 +565,7 @@ void ResolvedStateLayer::update(bool detailedProbe) {
             continue;
 
         auto& record = objects[i];
-        if (!record.object)
-            continue;
-
-        ObjectState next = record.state;
-        if (record.safety == SafetyClass::StaticSafe) {
-            // The affine transform for StaticSafe objects was captured by resync()
-            // and remains GPU-resident. Only stock-authoritative appearance,
-            // visibility, and z need lightweight CPU observation per frame.
-            next.vertexZ = record.object->getVertexZ();
-            next.opacity = (float)record.object->getDisplayedOpacity() / 255.f;
-            next.visible = record.object->getParent() && record.object->isVisible() &&
-                !record.object->m_isInvisible;
-        } else {
-            next = captureObjectState(record.object);
-        }
+        const ObjectState next = captureObjectState(record.object);
 
         const bool transformDirty = transformChanged(record.state, next);
         const bool appearanceDirty = objectAppearanceChanged(record.state, next);
@@ -620,27 +593,11 @@ void ResolvedStateLayer::update(bool detailedProbe) {
             continue;
 
         auto& record = sprites[i];
-        if (!record.sprite || record.objectIndex >= objects.size())
-            continue;
-
-        const bool staticGeometry =
-            objects[record.objectIndex].safety == SafetyClass::StaticSafe;
-        SpriteState next = record.state;
-        if (staticGeometry) {
-            // Geometry/UV state stays baked for StaticSafe sprites. Keep polling
-            // only GD-resolved color, alpha, and visibility while the GPU reuses
-            // the resident quad and performs the transform math every draw.
-            next.color = record.sprite->getDisplayedColor();
-            next.opacity = record.sprite->getDisplayedOpacity();
-            next.opacityModifyRGB = record.sprite->isOpacityModifyRGB();
-            next.visible = record.sprite->isVisible();
-        } else {
-            next = captureSpriteState(record.sprite);
-        }
+        const SpriteState next = captureSpriteState(record.sprite);
 
         const bool appearanceDirty = spriteAppearanceChanged(record.state, next);
         const bool visibilityDirty = record.state.visible != next.visible;
-        const bool uvDirty = staticGeometry ? false : spriteUVChanged(record.state, next);
+        const bool uvDirty = spriteUVChanged(record.state, next);
 
         if (appearanceDirty)
             ++stats.dirtyAppearance;
@@ -650,8 +607,10 @@ void ResolvedStateLayer::update(bool detailedProbe) {
             ++stats.dirtyUVs;
 
         if (appearanceDirty || visibilityDirty || uvDirty) {
-            if (staticGeometry)
+            if (record.objectIndex < objects.size() &&
+                objects[record.objectIndex].safety == SafetyClass::StaticSafe) {
                 staticTouched[record.objectIndex] = true;
+            }
 
             record.state = next;
             packSpriteState(i, record.state, record.objectIndex);
