@@ -1,6 +1,7 @@
 #ifdef GEODE_IS_IOS
 
 #include "../Renderer.hpp"
+#include <Geode/modify/PauseLayer.hpp>
 #include <Geode/modify/PlayLayer.hpp>
 
 using namespace geode::prelude;
@@ -26,6 +27,20 @@ class $modify(RendererExitGuardPlayLayer, PlayLayer) {
         }
 
         PlayLayer::onExit();
+    }
+};
+
+// Opening GD's pause layer can drive the PlayLayer through the same exit guard,
+// but resuming gameplay does not guarantee another PlayLayer enter-transition.
+// Keep a strong reference across stock onResume(), then reactivate the exact
+// renderer for the still-live PlayLayer after GD has restored its pause state.
+// resumeGPU() is intentionally a no-op unless that renderer was suspended.
+class $modify(RendererResumePauseLayer, PauseLayer) {
+    void onResume(cocos2d::CCObject* sender) {
+        auto renderer = Renderer::forPlayLayer(PlayLayer::get());
+        PauseLayer::onResume(sender);
+        if (renderer)
+            renderer->resumeGPU();
     }
 };
 
