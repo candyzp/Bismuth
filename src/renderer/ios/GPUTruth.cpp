@@ -15,6 +15,7 @@ using namespace geode::prelude;
 namespace {
 struct TruthState {
     Renderer* renderer = nullptr;
+    bool enabled = false;
 
     usize objectSubmits = 0;
     usize objectSprites = 0;
@@ -95,18 +96,18 @@ bool ensureLabels(TruthState& state, Renderer* renderer) {
     state.outline2->setColor({0, 0, 0});
     state.outline2->setOpacity(210);
 
-    state.text->setAnchorPoint({0.f, 1.f});
-    state.text->setPosition({1.f, top});
+    state.text->setAnchorPoint(cocos2d::CCPoint(0.f, 1.f));
+    state.text->setPosition(cocos2d::CCPoint(1.f, top));
     state.text->setScale(0.42f);
     layer->addChild(state.text, 1000);
 
-    state.outline1->setAnchorPoint({0.f, 1.f});
-    state.outline1->setPosition({0.5f, top - 0.5f});
+    state.outline1->setAnchorPoint(cocos2d::CCPoint(0.f, 1.f));
+    state.outline1->setPosition(cocos2d::CCPoint(0.5f, top - 0.5f));
     state.outline1->setScale(0.42f);
     layer->addChild(state.outline1, 999);
 
-    state.outline2->setAnchorPoint({0.f, 1.f});
-    state.outline2->setPosition({1.5f, top + 0.5f});
+    state.outline2->setAnchorPoint(cocos2d::CCPoint(0.f, 1.f));
+    state.outline2->setPosition(cocos2d::CCPoint(1.5f, top + 0.5f));
     state.outline2->setScale(0.42f);
     layer->addChild(state.outline2, 999);
 
@@ -132,12 +133,13 @@ void beginFrame(Renderer* renderer) {
         state.renderer = renderer;
     }
 
+    state.enabled = renderer && Mod::get()->getSettingValue<bool>("ios_gpu_debug");
     resetFrameCounters(state);
 }
 
 void recordObjectBatch(Renderer* renderer, cocos2d::CCSpriteBatchNode* batch) {
     auto& state = truth();
-    if (!renderer || renderer != state.renderer || !batch)
+    if (!state.enabled || !renderer || renderer != state.renderer || !batch)
         return;
 
     ++state.objectSubmits;
@@ -170,7 +172,7 @@ void recordObjectBatch(Renderer* renderer, cocos2d::CCSpriteBatchNode* batch) {
 
 void recordObjectFailure(Renderer* renderer) {
     auto& state = truth();
-    if (renderer && renderer == state.renderer)
+    if (state.enabled && renderer && renderer == state.renderer)
         ++state.objectFailures;
 }
 
@@ -180,7 +182,7 @@ void recordGroundSuccess(
     cocos2d::CCSprite* sprite
 ) {
     auto& state = truth();
-    if (!renderer || renderer != state.renderer || !ground || !sprite)
+    if (!state.enabled || !renderer || renderer != state.renderer || !ground || !sprite)
         return;
 
     ++state.groundSubmits;
@@ -198,7 +200,7 @@ void recordGroundFailure(
     cocos2d::CCSprite*
 ) {
     auto& state = truth();
-    if (renderer && renderer == state.renderer)
+    if (state.enabled && renderer && renderer == state.renderer)
         ++state.groundFailures;
 }
 
@@ -207,8 +209,7 @@ void finishFrame(Renderer* renderer) {
     if (!renderer || renderer != state.renderer)
         return;
 
-    const bool show = Mod::get()->getSettingValue<bool>("ios_gpu_debug");
-    if (!show) {
+    if (!state.enabled) {
         setChartVisible(state, false);
         return;
     }
