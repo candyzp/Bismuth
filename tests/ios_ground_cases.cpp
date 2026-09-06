@@ -26,6 +26,23 @@ int main(){
     static_cast<cocos2d::CCSprite&>(tile2).draw();static_cast<cocos2d::CCSprite&>(line).draw();static_cast<cocos2d::CCSprite&>(shadow).draw();checkRestored();
     assert(fixture::proofs==4 && fixture::stockDraws==0);
     assert(groundGPU().ground1Proven && groundGPU().ground2Proven && groundGPU().lineProven);
+
+    // Real GD floor tiles live in CCSpriteBatchNodes, so their child draw()
+    // methods are not the render path. Prove each scrolling ground branch works
+    // through the batch hook and still reports literal G1/G2 GPU submissions.
+    cocos2d::CCSpriteBatchNode batch1,batch2;
+    RendererGroundOwnedCCSprite batched1,batched2;
+    batch1.parent=&g1;batch2.parent=&nested;
+    batched1.parent=&batch1;batched2.parent=&batch2;
+    batched1.batch=&batch1;batched2.batch=&batch2;
+    batch1.descendants.nodes={&batched1};batch2.descendants.nodes={&batched2};
+    const auto beforeBatchDraws=fixture::gpuDraws;
+    const auto beforeBatchProofs=fixture::proofs;
+    assert(GroundGPU::ownsBatch(&renderer,&batch1) && GroundGPU::ownsBatch(&renderer,&batch2));
+    assert(GroundGPU::drawBatch(&renderer,&batch1));checkRestored();
+    assert(GroundGPU::drawBatch(&renderer,&batch2));checkRestored();
+    assert(fixture::gpuDraws==beforeBatchDraws+2 && fixture::proofs==beforeBatchProofs+2);
+
     // Current texture/quad changes are consumed each frame, never cached as a
     // new floor shape; child membership survives tile recycling and scrolling.
     for(int frame=0;frame<120;++frame){
@@ -42,5 +59,5 @@ int main(){
     assert(!initGroundGPU());fixture::failSetup=false;
     assert(!initGroundGPU()); // Allocated IDs alone do not prove successful setup.
     checkRestored();
-    std::cout<<"PASS: both ground tile trees, line/shadows, empty containers, exact corner color/UV, scrolling, strict failures and GL restoration\n";
+    std::cout<<"PASS: batched G1/G2 floor, line/shadows, empty containers, exact corner color/UV, scrolling, strict failures and GL restoration\n";
 }

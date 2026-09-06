@@ -75,12 +75,26 @@ struct kmMat4{float mat[16]{};}; constexpr int KM_GL_PROJECTION=0,KM_GL_MODELVIE
 inline void kmGLGetMatrix(int,kmMat4*){} inline void kmMat4Multiply(kmMat4*,const kmMat4*,const kmMat4*){}
 namespace glm { struct vec2{float x,y;};struct vec3{float x,y,z;}; }
 namespace cocos2d {
+struct CCNode;
+struct CCArray {
+    std::vector<CCNode*> nodes;
+    u32 count() const { return nodes.size(); }
+    CCNode* objectAtIndex(u32 i) { return nodes.at(i); }
+};
 struct CCNode {CCNode* parent=nullptr;virtual ~CCNode()=default;CCNode* getParent(){return parent;}virtual void draw(){}};
 struct ccColor4B{std::uint8_t r=255,g=255,b=255,a=255;};
 struct ccV3F_C4B_T2F{struct{float x=0,y=0,z=0;}vertices;ccColor4B colors;struct{float u=0,v=0;}texCoords;};
 struct ccV3F_C4B_T2F_Quad{ccV3F_C4B_T2F tl,bl,tr,br;};
 struct CCTexture2D{GLuint id=77;GLuint getName(){return id;}};
-struct CCSpriteBatchNode {};
+struct CCSpriteBatchNode : CCNode {
+    CCArray descendants;
+    CCTexture2D texture;
+    struct Blend{GLenum src=GL_SRC_ALPHA,dst=GL_ONE_MINUS_SRC_ALPHA;};
+    CCArray* getDescendants(){return &descendants;}
+    CCTexture2D* getTexture(){return &texture;}
+    Blend getBlendFunc(){return {};}
+    void draw()override{++fixture::stockDraws;}
+};
 struct CCSprite : CCNode {
     bool dontDraw=false;CCTexture2D texture;CCSpriteBatchNode* batch=nullptr;
     struct Rect{struct{float width=30,height=30;}size;}rect;

@@ -298,11 +298,31 @@ class $modify(RendererOwnedCCSprite, cocos2d::CCSprite) {
 };
 
 #include <Geode/modify/CCSpriteBatchNode.hpp>
+namespace GroundGPU {
+bool ownsBatch(Renderer* renderer, cocos2d::CCSpriteBatchNode* batch);
+bool drawBatch(Renderer* renderer, cocos2d::CCSpriteBatchNode* batch);
+}
+
 class $modify(RendererInterleavedSpriteBatchNode, cocos2d::CCSpriteBatchNode) {
     void draw() {
         auto renderer = Renderer::get();
         if (!renderer || !renderer->isEnabled()) {
             cocos2d::CCSpriteBatchNode::draw();
+            return;
+        }
+
+        // Literal ground tiles are CCSpriteBatchNode descendants in GD. Route
+        // those batches to the strict ground shader before gameplay-object atlas
+        // ownership checks, otherwise G1/G2 never reach a CCSprite::draw hook.
+        if (GroundGPU::ownsBatch(renderer.data(), this)) {
+            renderer->prepareGPUFrame();
+
+            CC_NODE_DRAW_SETUP();
+            const auto blend = this->getBlendFunc();
+            ccGLBlendFunc(blend.src, blend.dst);
+
+            if (!GroundGPU::drawBatch(renderer.data(), this))
+                log::error("Bismuth iOS strict ground batch submission failed");
             return;
         }
 

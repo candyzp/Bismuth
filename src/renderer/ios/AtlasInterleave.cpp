@@ -561,7 +561,13 @@ bool AtlasInterleaveRegistry::drawBatch(
     bool hasStock = false;
     for (const auto& run : cache.runs)
         hasStock |= state.atlasOwners[run.firstSlot].empty();
-    if (hasStock && !synchronizeDirtyAtlasWithStockDraw(atlas))
+
+    // If the first visible run is already stock, that real stock draw performs
+    // the dirty-atlas upload itself. Avoid the old hidden full-atlas warmup in
+    // that common case; it duplicated work and showed up as frame-time spikes.
+    const bool firstRunIsStock = !cache.runs.empty() &&
+        state.atlasOwners[cache.runs.front().firstSlot].empty();
+    if (hasStock && !firstRunIsStock && !synchronizeDirtyAtlasWithStockDraw(atlas))
         return false;
 
     auto drawDataFor = [&](const SpriteOwner& record) -> OwnerDrawData {
@@ -588,12 +594,14 @@ bool AtlasInterleaveRegistry::drawBatch(
         };
     };
 
-    // Cocos changes its cached VAO/texture bindings during stock atlas draws.
-    // Capture the actual state at each stock -> GPU boundary, not once for the
-    // entire batch. Restoring an older snapshot desynchronizes real GL from
-    // ccGLBindVAO/ccGLBindTexture2D, so a later stock run can read another atlas's
-    // vertices. Dirty-atlas warmup used to hide this until a later clean frame.
+    // A stock draw changes Cocos' real VAO/texture state, but all stock runs of
+    // one atlas converge on the same post-draw state. Capture that state once and
+    // reuse it instead of issuing synchronous glGet* queries at every stock->GPU
+    // boundary. This keeps the clean-frame corruption fix without driver stalls
+    // scaling with the amount of stock/GPU interleaving in a level.
     SavedGLState stockState;
+    bool stockStateReady = false;
+    bool postStockStateReady = false;
     kmMat4 matrixP;
     kmMat4 matrixMV;
     kmMat4 matrixMVP;
@@ -622,7 +630,8 @@ bool AtlasInterleaveRegistry::drawBatch(
 
     auto restoreStockState = [&]() {
         restoreActiveOwnerVAO();
-        restoreGLState(stockState);
+        if (stockStateReady)
+            restoreGLState(stockState);
         gpuStateActive = false;
         activeShader = nullptr;
         activeResolvedState = nullptr;
@@ -635,6 +644,14 @@ bool AtlasInterleaveRegistry::drawBatch(
                 restoreStockState();
             atlas->drawNumberOfQuads(static_cast<unsigned int>(run.slotCount),
                 static_cast<unsigned int>(run.firstSlot));
+
+            // The first real stock run establishes the exact state Cocos leaves
+            // behind for this atlas. Reuse it for every later GPU->stock handoff.
+            if (!postStockStateReady) {
+                stockState = captureGLState();
+                stockStateReady = true;
+                postStockStateReady = true;
+            }
             continue;
         }
 
@@ -642,8 +659,13 @@ bool AtlasInterleaveRegistry::drawBatch(
         auto objectStateTexture = owner.resolvedState->getObjectStateTexture();
         auto spriteStateTexture = owner.resolvedState->getSpriteStateTexture();
 
-        if (!gpuStateActive)
+        // A batch that starts with GPU geometry has not had a stock run yet, so
+        // preserve the exact entry state once. Once stock draws, the cached
+        // post-stock snapshot replaces it and remains valid for this batch.
+        if (!gpuStateActive && !stockStateReady) {
             stockState = captureGLState();
+            stockStateReady = true;
+        }
 
         // Stock runs may switch program/texture state. Re-enter the assist state
         // only at GPU block boundaries; consecutive GPU owners stay in one state

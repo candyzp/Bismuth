@@ -23,6 +23,7 @@ code = '\n'.join([
     atlas_header,
     source('src/renderer/ios/AtlasInterleave.cpp'),
     'bool Renderer::prepareGPUOwnedSprite(cocos2d::CCSprite* s) { return enabled && AtlasInterleaveRegistry::shouldSkipTransform(this,s); }',
+    'namespace GroundGPU { inline bool ownsBatch(Renderer*, cocos2d::CCSpriteBatchNode*) { return false; } inline bool drawBatch(Renderer*, cocos2d::CCSpriteBatchNode*) { return false; } }',
     hooks[start:end],
     (root / 'tests/ios_atlas_cases.cpp').read_text(),
 ])
