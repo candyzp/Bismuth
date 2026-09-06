@@ -7,10 +7,7 @@
 
 #include <Geode/binding/GJGroundLayer.hpp>
 #include <Geode/modify/CCSprite.hpp>
-#include <Geode/cocos/sprite_nodes/CCSpriteBatchNode.h>
 #include "Geode/cocos/kazmath/include/kazmath/mat4.h"
-
-#include <vector>
 
 using namespace geode::prelude;
 
@@ -238,28 +235,20 @@ void main() {
     return true;
 }
 
-GJGroundLayer* groundOwner(cocos2d::CCNode* node) {
-    return GroundOwnership::owner(node);
+GJGroundLayer* groundOwner(cocos2d::CCSprite* sprite) {
+    return GroundOwnership::owner(sprite);
 }
 
-bool strictGroundTarget(Renderer* renderer, cocos2d::CCNode* node) {
-    if (!renderer || !renderer->isEnabled() || !node)
+bool strictGroundTarget(cocos2d::CCSprite* sprite) {
+    auto renderer = Renderer::get();
+    if (!renderer || !renderer->isEnabled())
         return false;
-
-    auto ground = groundOwner(node);
-    if (!ground)
-        return false;
-
-    for (auto current = static_cast<cocos2d::CCNode*>(ground); current; current = current->getParent()) {
-        if (current == renderer->getPlayLayer())
+    auto ground = groundOwner(sprite);
+    for (auto node = static_cast<cocos2d::CCNode*>(ground); node; node = node->getParent()) {
+        if (node == renderer->getPlayLayer())
             return true;
     }
     return false;
-}
-
-bool strictGroundTarget(cocos2d::CCNode* node) {
-    auto renderer = Renderer::get();
-    return renderer && strictGroundTarget(renderer.data(), node);
 }
 
 inline glm::vec3 vertexPosition(const cocos2d::ccV3F_C4B_T2F& vertex) {
@@ -268,34 +257,6 @@ inline glm::vec3 vertexPosition(const cocos2d::ccV3F_C4B_T2F& vertex) {
 
 inline glm::vec2 vertexUV(const cocos2d::ccV3F_C4B_T2F& vertex) {
     return { vertex.texCoords.u, vertex.texCoords.v };
-}
-
-void uploadGroundQuad(GroundGPUResources& state, const cocos2d::ccV3F_C4B_T2F_Quad& quad) {
-    const auto pBL = vertexPosition(quad.bl);
-    const auto pBR = vertexPosition(quad.br);
-    const auto pTL = vertexPosition(quad.tl);
-    const auto pTR = vertexPosition(quad.tr);
-    glUniform3f(state.posBL, pBL.x, pBL.y, pBL.z);
-    glUniform3f(state.posBR, pBR.x, pBR.y, pBR.z);
-    glUniform3f(state.posTL, pTL.x, pTL.y, pTL.z);
-    glUniform3f(state.posTR, pTR.x, pTR.y, pTR.z);
-
-    const auto uvBL = vertexUV(quad.bl);
-    const auto uvBR = vertexUV(quad.br);
-    const auto uvTL = vertexUV(quad.tl);
-    const auto uvTR = vertexUV(quad.tr);
-    glUniform2f(state.uvBL, uvBL.x, uvBL.y);
-    glUniform2f(state.uvBR, uvBR.x, uvBR.y);
-    glUniform2f(state.uvTL, uvTL.x, uvTL.y);
-    glUniform2f(state.uvTR, uvTR.x, uvTR.y);
-
-    const auto setColor = [](GLint location, const cocos2d::ccColor4B& color) {
-        glUniform4f(location, color.r / 255.f, color.g / 255.f, color.b / 255.f, color.a / 255.f);
-    };
-    setColor(state.colorBL, quad.bl.colors);
-    setColor(state.colorBR, quad.br.colors);
-    setColor(state.colorTL, quad.tl.colors);
-    setColor(state.colorTR, quad.tr.colors);
 }
 
 void recordGroundProof(GJGroundLayer* ground, cocos2d::CCSprite* sprite) {
@@ -337,70 +298,26 @@ void recordGroundProof(GJGroundLayer* ground, cocos2d::CCSprite* sprite) {
     }
 }
 
-void recordGroundFailure(Renderer* renderer, GJGroundLayer* ground, cocos2d::CCSprite* sprite) {
-    auto& state = groundGPU();
-    ++state.failedDraws;
-    if (renderer)
-        GPUTruth::recordGroundFailure(renderer, ground, sprite);
-    if (!state.failureAnnounced) {
-        state.failureAnnounced = true;
-        log::error("Bismuth iOS STRICT ground GPU submission failed; ground stock draw intentionally suppressed");
-    }
-    if (Mod::get()->getSettingValue<bool>("ios_gpu_debug")) {
-        log::error(
-            "[Bismuth GPU TRUTH] FLOOR GPU=NO | target recognized but GPU submit failed | successful={} | failed={}",
-            state.successfulDraws,
-            state.failedDraws
-        );
-    }
-}
-
-bool prepareGroundSubmission(
-    cocos2d::CCTexture2D* texture,
-    const kmMat4& mvp,
-    GLenum blendSrc,
-    GLenum blendDst,
-    SavedGroundGLState& saved
-) {
-    if (!texture || !texture->getName() || !initGroundGPU())
-        return false;
-
-    auto& state = groundGPU();
-    saved = captureGroundGLState();
-
-    state.shader->use();
-    glUniformMatrix4fv(state.mvp, 1, GL_FALSE, mvp.mat);
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, texture->getName());
-    glUniform1i(state.texture, 0);
-
-    glEnable(GL_BLEND);
-    glBlendFunc(blendSrc, blendDst);
-
-    glBindVertexArray(state.vao);
-    glBindBuffer(GL_ARRAY_BUFFER, state.vertexBuffer);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, state.indexBuffer);
-
-    return true;
-}
-
 bool drawGroundOnGPU(cocos2d::CCSprite* sprite) {
-    auto rendererRef = Renderer::get();
-    auto renderer = rendererRef.data();
-    if (!strictGroundTarget(renderer, sprite))
+    if (!strictGroundTarget(sprite))
         return false;
 
     auto ground = groundOwner(sprite);
     if (!ground)
         return false;
 
-    // Batched floor tiles are handled as one batch by GroundGPU::drawBatch().
-    // Individual sprite draw hooks only own standalone line/shadow sprites.
+    // Ground ownership is strict while Bismuth is enabled. If GD ever moves a
+    // literal ground sprite into a stock batch, that is treated as an unsupported
+    // state rather than silently returning to the stock renderer.
     if (sprite->getBatchNode())
         return false;
 
     auto texture = sprite->getTexture();
-    const auto blend = sprite->getBlendFunc();
+    if (!texture || !texture->getName() || !initGroundGPU())
+        return false;
+
+    auto& state = groundGPU();
+    const auto quad = sprite->getQuad();
 
     kmMat4 projection;
     kmMat4 modelView;
@@ -409,17 +326,50 @@ bool drawGroundOnGPU(cocos2d::CCSprite* sprite) {
     kmGLGetMatrix(KM_GL_MODELVIEW, &modelView);
     kmMat4Multiply(&mvp, &projection, &modelView);
 
-    SavedGroundGLState saved;
-    if (!prepareGroundSubmission(
-            texture,
-            mvp,
-            static_cast<GLenum>(blend.src),
-            static_cast<GLenum>(blend.dst),
-            saved))
-        return false;
+    const auto saved = captureGroundGLState();
 
-    auto& state = groundGPU();
-    uploadGroundQuad(state, sprite->getQuad());
+    state.shader->use();
+    glUniformMatrix4fv(state.mvp, 1, GL_FALSE, mvp.mat);
+
+    const auto pBL = vertexPosition(quad.bl);
+    const auto pBR = vertexPosition(quad.br);
+    const auto pTL = vertexPosition(quad.tl);
+    const auto pTR = vertexPosition(quad.tr);
+    glUniform3f(state.posBL, pBL.x, pBL.y, pBL.z);
+    glUniform3f(state.posBR, pBR.x, pBR.y, pBR.z);
+    glUniform3f(state.posTL, pTL.x, pTL.y, pTL.z);
+    glUniform3f(state.posTR, pTR.x, pTR.y, pTR.z);
+
+    const auto uvBL = vertexUV(quad.bl);
+    const auto uvBR = vertexUV(quad.br);
+    const auto uvTL = vertexUV(quad.tl);
+    const auto uvTR = vertexUV(quad.tr);
+    glUniform2f(state.uvBL, uvBL.x, uvBL.y);
+    glUniform2f(state.uvBR, uvBR.x, uvBR.y);
+    glUniform2f(state.uvTL, uvTL.x, uvTL.y);
+    glUniform2f(state.uvTR, uvTR.x, uvTR.y);
+
+    const auto setColor = [](GLint location, const cocos2d::ccColor4B& color) {
+        glUniform4f(location, color.r / 255.f, color.g / 255.f, color.b / 255.f, color.a / 255.f);
+    };
+    setColor(state.colorBL, quad.bl.colors);
+    setColor(state.colorBR, quad.br.colors);
+    setColor(state.colorTL, quad.tl.colors);
+    setColor(state.colorTR, quad.tr.colors);
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, texture->getName());
+    glUniform1i(state.texture, 0);
+
+    // Raw GL on purpose. ccGLBlendFunc() updates Cocos' blend cache, and this
+    // custom draw restores the previous real GL state before returning.
+    const auto blend = sprite->getBlendFunc();
+    glEnable(GL_BLEND);
+    glBlendFunc(static_cast<GLenum>(blend.src), static_cast<GLenum>(blend.dst));
+
+    glBindVertexArray(state.vao);
+    glBindBuffer(GL_ARRAY_BUFFER, state.vertexBuffer);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, state.indexBuffer);
     glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, nullptr);
 
     const GLenum error = glGetError();
@@ -429,110 +379,18 @@ bool drawGroundOnGPU(cocos2d::CCSprite* sprite) {
         return false;
     }
 
-    GPUTruth::recordGroundSuccess(renderer, ground, sprite);
+    // Only a successful custom draw call is allowed to report ground GPU=YES.
+    if (auto renderer = Renderer::get())
+        GPUTruth::recordGroundSuccess(renderer.data(), ground, sprite);
     recordGroundProof(ground, sprite);
 
     if (!state.announced) {
         state.announced = true;
-        log::info("Bismuth iOS ground GPU assist active: batched floor tiles, line and shadows use persistent GPU quad expansion");
+        log::info("Bismuth iOS ground GPU assist active: tiled ground descendants, line and shadows use persistent GPU quad expansion");
     }
     return true;
 }
 } // namespace
-
-namespace GroundGPU {
-bool ownsBatch(Renderer* renderer, cocos2d::CCSpriteBatchNode* batch) {
-    return strictGroundTarget(renderer, batch);
-}
-
-bool drawBatch(Renderer* renderer, cocos2d::CCSpriteBatchNode* batch) {
-    if (!strictGroundTarget(renderer, batch))
-        return false;
-
-    auto ground = groundOwner(batch);
-    auto descendants = batch->getDescendants();
-    auto texture = batch->getTexture();
-    if (!ground || !descendants || !texture || !texture->getName()) {
-        recordGroundFailure(renderer, ground, nullptr);
-        return false;
-    }
-
-    std::vector<cocos2d::CCSprite*> sprites;
-    sprites.reserve(descendants->count());
-    for (u32 i = 0; i < descendants->count(); ++i) {
-        auto sprite = typeinfo_cast<cocos2d::CCSprite*>(descendants->objectAtIndex(i));
-        if (!sprite || sprite->getBatchNode() != batch || groundOwner(sprite) != ground) {
-            recordGroundFailure(renderer, ground, sprite);
-            return false;
-        }
-        auto spriteTexture = sprite->getTexture();
-        if (!spriteTexture || spriteTexture->getName() != texture->getName()) {
-            recordGroundFailure(renderer, ground, sprite);
-            return false;
-        }
-        sprites.push_back(sprite);
-    }
-
-    // An empty ground atlas has no stock pixels to replace.
-    if (sprites.empty())
-        return true;
-
-    kmMat4 projection;
-    kmMat4 modelView;
-    kmMat4 mvp;
-    kmGLGetMatrix(KM_GL_PROJECTION, &projection);
-    kmGLGetMatrix(KM_GL_MODELVIEW, &modelView);
-    kmMat4Multiply(&mvp, &projection, &modelView);
-
-    const auto blend = batch->getBlendFunc();
-    SavedGroundGLState saved;
-    if (!prepareGroundSubmission(
-            texture,
-            mvp,
-            static_cast<GLenum>(blend.src),
-            static_cast<GLenum>(blend.dst),
-            saved)) {
-        recordGroundFailure(renderer, ground, sprites.front());
-        return false;
-    }
-
-    auto& state = groundGPU();
-    usize submitted = 0;
-    for (auto sprite : sprites) {
-        const auto size = sprite->getTextureRect().size;
-        if (sprite->getDontDraw() || size.width == 0.f || size.height == 0.f)
-            continue;
-
-        uploadGroundQuad(state, sprite->getQuad());
-        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, nullptr);
-        ++submitted;
-    }
-
-    const GLenum error = glGetError();
-    restoreGroundGLState(saved);
-    if (error != GL_NO_ERROR) {
-        log::error("Bismuth iOS STRICT ground batch GPU draw failed with GL error {}; stock ground fallback is disabled", static_cast<u32>(error));
-        recordGroundFailure(renderer, ground, sprites.front());
-        return false;
-    }
-
-    if (submitted != 0) {
-        for (auto sprite : sprites) {
-            const auto size = sprite->getTextureRect().size;
-            if (sprite->getDontDraw() || size.width == 0.f || size.height == 0.f)
-                continue;
-            GPUTruth::recordGroundSuccess(renderer, ground, sprite);
-            recordGroundProof(ground, sprite);
-        }
-
-        if (!state.announced) {
-            state.announced = true;
-            log::info("Bismuth iOS ground GPU assist active: batched floor tiles, line and shadows use persistent GPU quad expansion");
-        }
-    }
-    return true;
-}
-} // namespace GroundGPU
 
 class $modify(RendererGroundOwnedCCSprite, cocos2d::CCSprite) {
     void draw() {
@@ -551,8 +409,21 @@ class $modify(RendererGroundOwnedCCSprite, cocos2d::CCSprite) {
         // the GPU path while Bismuth is enabled. If submission fails, the failure
         // remains visible and logged instead of being hidden by stock rendering.
         if (!drawGroundOnGPU(this)) {
-            auto rendererRef = Renderer::get();
-            recordGroundFailure(rendererRef.data(), groundOwner(this), this);
+            auto& state = groundGPU();
+            ++state.failedDraws;
+            if (auto renderer = Renderer::get())
+                GPUTruth::recordGroundFailure(renderer.data(), groundOwner(this), this);
+            if (!state.failureAnnounced) {
+                state.failureAnnounced = true;
+                log::error("Bismuth iOS STRICT ground GPU submission failed; ground stock draw intentionally suppressed");
+            }
+            if (Mod::get()->getSettingValue<bool>("ios_gpu_debug")) {
+                log::error(
+                    "[Bismuth GPU TRUTH] FLOOR GPU=NO | target recognized but GPU submit failed | successful={} | failed={}",
+                    state.successfulDraws,
+                    state.failedDraws
+                );
+            }
         }
     }
 };
