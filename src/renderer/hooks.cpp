@@ -20,6 +20,16 @@ class $modify(RendererPlayLayer, PlayLayer) {
     }
 
     void resetLevel() {
+#ifdef GEODE_IS_IOS
+        // A replacement PlayLayer can finish setup before the outgoing layer's
+        // destructor runs. Its renderer must not block this level's creation.
+        if (newPlayLayer) {
+            if (auto existing = Renderer::forPlayLayer(this))
+                existing->resumeGPU();
+            else if (auto previous = Renderer::get())
+                previous->suspendGPU();
+        }
+#endif
         if (newPlayLayer && Renderer::get() == nullptr) {
             PlayLayer::resetLevel();
 
@@ -44,6 +54,10 @@ class $modify(RendererPlayLayer, PlayLayer) {
         PlayLayer::resetLevel();
 
         auto renderer = Renderer::get();
+#ifdef GEODE_IS_IOS
+        if (renderer && renderer->getPlayLayer() != this)
+            return;
+#endif
         if (renderer) {
             renderer->reset();
 #ifdef GEODE_IS_IOS
@@ -88,12 +102,13 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
         timer.end();
 
         auto renderer = Renderer::get();
+#ifdef GEODE_IS_IOS
+        if (renderer && static_cast<GJBaseGameLayer*>(renderer->getPlayLayer()) !=
+            static_cast<GJBaseGameLayer*>(this))
+            return;
+#endif
         if (renderer) {
             renderer->update(dt);
-#ifdef GEODE_IS_IOS
-            if (auto resolved = ResolvedStateLayer::getCurrent())
-                resolved->finishEventFrame();
-#endif
         }
     }
 
@@ -290,6 +305,8 @@ class $modify(RendererInterleavedSpriteBatchNode, cocos2d::CCSpriteBatchNode) {
             cocos2d::CCSpriteBatchNode::draw();
             return;
         }
+
+        renderer->prepareGPUFrame();
 
         CC_NODE_DRAW_SETUP();
         const auto blend = this->getBlendFunc();

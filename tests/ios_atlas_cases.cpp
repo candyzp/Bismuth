@@ -66,7 +66,9 @@ int main() {
         s.claim(shuffled); s.draw();
         assert(fixture::pixels==order && fixture::gpuDraws==1 && fixture::stockTransforms==0);
         auto uploads=fixture::uploads;
+        const auto* cachedRuns=registry().indexCaches.at(&s.batch).runs.data();
         s.draw(); assert(fixture::uploads==uploads && fixture::pixels==order);
+        assert(registry().indexCaches.at(&s.batch).runs.data()==cachedRuns);
         for(int i=0;i<20;++i) {
             std::shuffle(order.begin(),order.end(),random); s.reorder(order); s.draw();
             assert(fixture::pixels==order && fixture::gpuDraws==1 && fixture::stockTransforms==0);
@@ -149,6 +151,31 @@ int main() {
         assert((fixture::pixels==std::vector<int>{0,1,2}) && fixture::gpuDraws==2);
         s.claim({0}); s.draw();
         assert((fixture::pixels==std::vector<int>{0,1,2}) && fixture::gpuDraws==0);
+        AtlasInterleaveRegistry::unregisterImmediate(&immediate);
+    }
+    {
+        Scene s(3); s.claim({0,1,2}); s.draw();
+        s.reorder({2,1,0}); fixture::failUpload=true;
+        s.draw(); assert(fixture::pixels.empty());
+        fixture::failUpload=false; s.reorder({0,1,2});
+        const auto uploads=fixture::uploads;
+        s.draw(); assert((fixture::pixels==std::vector<int>{0,1,2}));
+        assert(fixture::uploads>uploads); // A failed replacement cannot reuse old cache metadata.
+    }
+    {
+        Scene s(3);
+        AssistShadowBatch immediate;
+        immediate.stockBatch=&s.batch; immediate.resolvedState=&s.resolved;
+        immediate.shader=&s.shader; immediate.indexBuffer=&s.buffer; immediate.vao=40;
+        immediate.ownedSprites={&s.sprites[0]};
+        fixture::vaoSpriteIDs[40]={0}; s.renderer.owned.insert(&s.sprites[0]);
+        AtlasInterleaveRegistry::registerImmediate(&immediate);
+        s.draw(); assert(fixture::gpuDraws==1);
+        // All GPU-eligible geometry disappears, then returns without rejoining.
+        s.renderer.owned.clear(); s.draw();
+        assert((fixture::pixels==std::vector<int>{0,1,2}) && fixture::gpuDraws==0);
+        s.renderer.owned.insert(&s.sprites[0]); s.draw();
+        assert((fixture::pixels==std::vector<int>{0,1,2}) && fixture::gpuDraws==1);
         AtlasInterleaveRegistry::unregisterImmediate(&immediate);
     }
     assert(registry().spriteOwners.empty() && registry().indexCaches.empty());

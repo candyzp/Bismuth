@@ -76,6 +76,7 @@ public:
     // activateObject/deactivateObject first, then these methods mirror the final
     // lifecycle result into the GPU polling set.
     static ResolvedStateLayer* getCurrent();
+    void setCurrent(bool active);
     void reseedActiveFromStock();
     void onObjectActivated(GameObject* object);
     void onObjectDeactivated(GameObject* object);

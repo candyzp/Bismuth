@@ -54,5 +54,15 @@ int main() {
         assert(ResolvedStateLayer::getCurrent()==&temporary);
     }
     assert(ResolvedStateLayer::getCurrent()==nullptr);
+    state.setCurrent(true);
+    {
+        ResolvedStateLayer newer;
+        state.setCurrent(false);
+        assert(ResolvedStateLayer::getCurrent()==&newer);
+        newer.setCurrent(false);
+        assert(ResolvedStateLayer::getCurrent()==nullptr);
+        state.setCurrent(true);
+    }
+    assert(ResolvedStateLayer::getCurrent()==&state);
     std::cout << "PASS: exact affine state, detached visibility, small transform changes, mutable geometry rejection, 65,536 stock opacity/color pairs, current-state teardown\n";
 }

@@ -12,6 +12,8 @@
 #include <Geode/utils/cocos.hpp>
 
 #include <cstring>
+#include <algorithm>
+#include <cmath>
 #include <memory>
 #include <unordered_map>
 #include <unordered_set>
@@ -81,6 +83,11 @@ struct IOSRendererState {
     usize batchTransformSkipsCurrentFrame = 0;
     usize batchTransformSkipsLastFrame = 0;
     std::string lastDebugText;
+    bool suspended = false;
+    bool enabledBeforeSuspend = false;
+    bool gpuFramePrepared = false;
+    bool debugWasEnabled = false;
+    usize debugFrames = 0;
 
     ~IOSRendererState() {
         if (assistShader)
@@ -94,14 +101,6 @@ static Renderer* currentRenderer = nullptr;
 static IOSRendererState* iosState(Renderer* renderer) {
     auto it = g_iosStates.find(renderer);
     return it == g_iosStates.end() ? nullptr : it->second.get();
-}
-
-static std::string byteSizeToString(usize size) {
-    if (size < 1024)
-        return fmt::format("{} B", size);
-    if (size < 1024 * 1024)
-        return fmt::format("{:.2f} KiB", (double)size / 1024.0);
-    return fmt::format("{:.2f} MiB", (double)size / (1024.0 * 1024.0));
 }
 
 static bool isDescendantOf(cocos2d::CCNode* node, cocos2d::CCNode* ancestor) {
@@ -128,8 +127,20 @@ static void restoreOwnedStockQuads(IOSRendererState* state) {
 }
 
 static std::vector<StandaloneChunkDesc> buildStandaloneChunks(
-    const std::vector<StandaloneObjectDesc>& objects
+    std::vector<StandaloneObjectDesc>& objects
 ) {
+    // Buffer assignment is spatial and deterministic. The live atlas still
+    // dictates draw order; nearby sprites simply share more persistent VAOs.
+    const auto coordinate = [](float value) { return std::isfinite(value) ? value : 0.f; };
+    std::sort(objects.begin(), objects.end(), [&](const auto& a, const auto& b) {
+        const auto ax = coordinate(a.root ? a.root->getPositionX() : 0.f);
+        const auto bx = coordinate(b.root ? b.root->getPositionX() : 0.f);
+        if (ax != bx)
+            return ax < bx;
+        const auto ai = a.candidates.empty() ? 0 : a.candidates.front().objectStateIndex;
+        const auto bi = b.candidates.empty() ? 0 : b.candidates.front().objectStateIndex;
+        return ai < bi;
+    });
     std::vector<StandaloneChunkDesc> chunks;
     StandaloneChunkDesc current;
 
@@ -439,7 +450,8 @@ bool Renderer::init(PlayLayer* playLayer) {
                     auto gpuBuffer = StandaloneAssistBatch::create(
                         state->resolvedState.get(),
                         state->assistShader,
-                        chunk.candidates
+                        chunk.candidates,
+                        false // Explicit deferred-atlas ownership, even if GD reparents a root.
                     );
                     if (!gpuBuffer || !gpuBuffer->getStats().ready)
                         continue;
@@ -627,163 +639,39 @@ void Renderer::generateStaticRenderingBuffer(ObjectSorter&) {}
 void Renderer::draw() {}
 
 void Renderer::updateDebugText() {
-    if (!debugText)
+    auto state = iosState(this);
+    if (!state || !debugText || !debugTextOutline1 || !debugTextOutline2)
         return;
 
+    const bool show = Mod::get()->getSettingValue<bool>("ios_gpu_debug");
     std::string text;
-    if (Mod::get()->getSettingValue<bool>("ios_gpu_debug")) {
-        const char* gpuRenderer = reinterpret_cast<const char*>(glGetString(GL_RENDERER));
-        auto state = iosState(this);
-        auto resolved = state ? state->resolvedState.get() : nullptr;
-
-        if (resolved) {
-            const auto& stats = resolved->getStats();
-
-            usize residentVertices = 0;
-            usize gpuDraws = 0;
-            usize gpuIndices = 0;
-            usize textureRanges = 0;
-            usize rejectedSprites = 0;
-
-            if (state) {
-                for (const auto& batch : state->gpuBatches) {
-                    if (!batch)
-                        continue;
-                    const auto& s = batch->getStats();
-                    residentVertices += s.verticesResident;
-                    gpuDraws += s.drawCallsLastFrame;
-                    gpuIndices += s.indicesLastFrame;
-                    textureRanges += s.textureBatches;
-                    rejectedSprites += s.rejectedSprites;
-                }
-
-                for (const auto& buffer : state->standaloneBatches) {
-                    if (!buffer)
-                        continue;
-                    const auto& s = buffer->getStats();
-                    residentVertices += s.verticesResident;
-                    gpuDraws += s.drawCallsLastFrame;
-                    gpuIndices += s.indicesLastFrame;
-                    textureRanges += s.textureRanges;
-                }
+    if (show) {
+        usize calls = 0;
+        usize indices = 0;
+        for (const auto& batch : state->gpuBatches) {
+            if (batch) {
+                calls += batch->getStats().drawCallsLastFrame;
+                indices += batch->getStats().indicesLastFrame;
             }
-
-            const usize atlasBatchCount = state ? state->gpuBatches.size() : 0;
-            const usize allExtraBufferCount = state ? state->standaloneBatches.size() : 0;
-            const usize deferredBufferCount = state ? state->deferredAtlasBufferCount : 0;
-            const usize trueStandaloneBuffers = allExtraBufferCount >= deferredBufferCount
-                ? allExtraBufferCount - deferredBufferCount
-                : 0;
-            const usize ownedSprites = state ? state->ownedSprites.size() : 0;
-            const usize batchOwned = state ? state->batchOwnedSprites.size() : 0;
-            const usize deferredOwned = state ? state->deferredAtlasOwnedSprites.size() : 0;
-            const usize standaloneOwned = state ? state->standaloneOwnedSprites.size() : 0;
-            const usize standaloneRoots = state ? state->standaloneOwnedRoots.size() : 0;
-            const usize rootVisits = state ? state->standaloneRootVisitsLastFrame : 0;
-            const usize transformSkips = state ? state->batchTransformSkipsLastFrame : 0;
-            const bool ownsPixels = enabled && gpuDraws > 0;
-
-            text = fmt::format(
-                "Bismuth iOS GPU Assist\n"
-                "Visible output: {}\n"
-                "GPU: {}\n"
-                "Resolved GPU state: {} | transform shader: {}\n"
-                "Safe objects: {} ({} static / {} dynamic)\n"
-                "Stock animation/complex: {} | safe sprite records: {}\n"
-                "Collection safety: {} unsafe object(s) | {} non-sprite child | {} duplicate | {} invalid | init retained {} obj / {} sprites | revalidate {}\n"
-                "Init discovery: {} sprites | {} atlas-now | {} parentless/standalone\n"
-                "Standalone candidates: {} | ownership-eligible {}\n"
-                "Reject: {} mixed | {} duplicate | {} shared | {} external [glow {} / color {} / other {}] | {} invalid | {} root-batched\n"
-                "Deferred atlas: {} parentless -> {} mapped object(s) | {} target batch(es) | {} buffer(s) | {} unmapped\n"
-                "GPU storage: {} immediate atlas + {} deferred atlas + {} true standalone buffer(s) | owned roots: {}\n"
-                "Visual sprites: {} total | {} atlas-path ({} deferred) + {} true standalone\n"
-                "Active GPU state: {} objects | {} sprites\n"
-                "Dirty: {} transform | {} appearance | {} visibility | {} UV\n"
-                "Static GPU reused: {}/{} | uploads: {} in {} call(s)\n"
-                "Resident verts: {} | GPU draws: {} / frame | indices: {} | ranges: {} | rejected: {}\n"
-                "CPU skipped last frame: {} atlas transforms | {} standalone root visit(s)\n"
-                "Framebuffer writes: {}\n"
-                "Animation lifecycle ownership: STOCK GD",
-                ownsPixels ? "GPU SAFE SPRITES + STOCK ANIMATION" : "STOCK GD",
-                gpuRenderer ? gpuRenderer : "unknown",
-                resolved->isGPUStateReady() ? "READY" : "UNAVAILABLE",
-                state && state->assistShader ? "READY" : "UNAVAILABLE",
-                stats.safeObjects,
-                stats.staticObjects,
-                stats.dynamicObjects,
-                stats.stockObjects,
-                stats.safeSprites,
-                stats.unsafeCollectionObjects,
-                stats.invalidChildNodes,
-                stats.duplicateSpriteRecords,
-                stats.invalidSpriteRecords,
-                stats.retainedInitObjects,
-                stats.retainedInitSprites,
-                stats.initRevalidationFailures,
-                state ? state->gpuCandidateSprites : 0,
-                state ? state->candidatesWithBatch : 0,
-                state ? state->candidatesWithoutBatch : 0,
-                state ? state->standaloneObjectCandidates : 0,
-                state ? state->standaloneObjectEligible : 0,
-                state ? state->standaloneMixedRejected : 0,
-                state ? state->standaloneDuplicateRejected : 0,
-                state ? state->standaloneSharedRejected : 0,
-                state ? state->standaloneExternalRejected : 0,
-                state ? state->standaloneExternalGlowObjects : 0,
-                state ? state->standaloneExternalColorObjects : 0,
-                state ? state->standaloneExternalOtherObjects : 0,
-                state ? state->standaloneInvalidVisualRejected : 0,
-                state ? state->standaloneRootBatchRejected : 0,
-                state ? state->standaloneParentlessAtInit : 0,
-                state ? state->deferredAtlasObjects : 0,
-                state ? state->deferredAtlasBatchNodes : 0,
-                deferredBufferCount,
-                state ? state->deferredAtlasUnmapped : 0,
-                atlasBatchCount,
-                deferredBufferCount,
-                trueStandaloneBuffers,
-                standaloneRoots,
-                ownedSprites,
-                batchOwned,
-                deferredOwned,
-                standaloneOwned,
-                stats.activeGPUObjects,
-                stats.activeGPUSprites,
-                stats.dirtyTransforms,
-                stats.dirtyAppearance,
-                stats.dirtyVisibility,
-                stats.dirtyUVs,
-                stats.staticObjectsReused,
-                stats.activeStaticObjects,
-                byteSizeToString(stats.bytesUploaded),
-                stats.uploadCalls,
-                residentVertices,
-                gpuDraws,
-                gpuIndices,
-                textureRanges,
-                rejectedSprites,
-                transformSkips,
-                rootVisits,
-                ownsPixels ? "ON (owned safe sprites)" : "OFF"
-            );
-        } else {
-            text = fmt::format(
-                "Bismuth iOS GPU Assist\n"
-                "Visible output: STOCK GD\n"
-                "GPU: {}\n"
-                "Resolved GPU state: UNAVAILABLE\n"
-                "GPU transform shader: UNAVAILABLE\n"
-                "Animation lifecycle ownership: STOCK GD",
-                gpuRenderer ? gpuRenderer : "unknown"
-            );
         }
+        for (const auto& batch : state->standaloneBatches) {
+            if (batch) {
+                calls += batch->getStats().drawCallsLastFrame;
+                indices += batch->getStats().indicesLastFrame;
+            }
+        }
+        const bool ready = state->assistShader && state->resolvedState &&
+            state->resolvedState->isGPUStateReady();
+        const char* status = !enabled ? "OFF" : !ready ? "UNAVAILABLE" : calls ? "ACTIVE" : "IDLE";
+        text = fmt::format(
+            "Bismuth GPU [{}]\nGPU Draw: {} sprites/frame\nCalls: {} | CPU Saved: {}",
+            status, indices / 6, calls,
+            state->batchTransformSkipsLastFrame + state->standaloneRootVisitsLastFrame
+        );
     }
-
-    if (auto state = iosState(this)) {
-        if (state->lastDebugText == text)
-            return;
-        state->lastDebugText = text;
-    }
+    if (state->lastDebugText == text)
+        return;
+    state->lastDebugText = text;
     debugText->setString(text.c_str());
     debugTextOutline1->setString(text.c_str());
     debugTextOutline2->setString(text.c_str());
@@ -794,30 +682,47 @@ void Renderer::finishDraw() {}
 
 void Renderer::update(float dt) {
     gameTimer += dt;
+}
 
+void Renderer::beginGPUFrame() {
     auto state = iosState(this);
-    if (state) {
-        state->standaloneRootVisitsLastFrame = state->standaloneRootVisitsCurrentFrame;
-        state->standaloneRootVisitsCurrentFrame = 0;
-        state->batchTransformSkipsLastFrame = state->batchTransformSkipsCurrentFrame;
-        state->batchTransformSkipsCurrentFrame = 0;
-    }
-
-    const bool detailedProbe = Mod::get()->getSettingValue<bool>("ios_gpu_debug");
-    if (state && state->resolvedState) {
-        const bool gpuConsumesResolvedState = enabled && !state->ownedSprites.empty();
-        state->resolvedState->update(detailedProbe || gpuConsumesResolvedState);
-    }
-
-    updateDebugText();
+    if (!state)
+        return;
+    state->gpuFramePrepared = false;
+    state->standaloneRootVisitsCurrentFrame = 0;
+    state->batchTransformSkipsCurrentFrame = 0;
     AtlasInterleaveRegistry::beginFrame();
-
-    if (state) {
-        for (auto& buffer : state->standaloneBatches) {
-            if (buffer)
-                buffer->beginFrame();
-        }
+    for (auto& buffer : state->standaloneBatches) {
+        if (buffer)
+            buffer->beginFrame();
     }
+}
+
+void Renderer::prepareGPUFrame() {
+    auto state = iosState(this);
+    if (!state || state->gpuFramePrepared || !enabled)
+        return;
+    state->gpuFramePrepared = true;
+    // Called from render traversal, after stock scheduler/actions/physics. One
+    // state capture per displayed frame, independent of simulation substeps.
+    if (state->resolvedState) {
+        state->resolvedState->update(!state->ownedSprites.empty());
+        state->resolvedState->finishEventFrame();
+    }
+}
+
+void Renderer::finishGPUFrame() {
+    auto state = iosState(this);
+    if (!state)
+        return;
+    // Also retire deactivations on frames with no eligible GPU draw.
+    prepareGPUFrame();
+    state->standaloneRootVisitsLastFrame = state->standaloneRootVisitsCurrentFrame;
+    state->batchTransformSkipsLastFrame = state->batchTransformSkipsCurrentFrame;
+    const bool show = Mod::get()->getSettingValue<bool>("ios_gpu_debug");
+    if (show != state->debugWasEnabled || (show && state->debugFrames++ % 12 == 0))
+        updateDebugText();
+    state->debugWasEnabled = show;
 }
 
 bool Renderer::isColorChannelBlending(i32 channel) {
@@ -845,6 +750,46 @@ Ref<Renderer> Renderer::create(PlayLayer* playLayer) {
 }
 
 Ref<Renderer> Renderer::get() { return currentRenderer; }
+
+Ref<Renderer> Renderer::forPlayLayer(PlayLayer* playLayer) {
+    for (const auto& [renderer, state] : g_iosStates) {
+        if (renderer->layer == playLayer)
+            return renderer;
+    }
+    return nullptr;
+}
+
+void Renderer::suspendGPU() {
+    auto state = iosState(this);
+    if (!state)
+        return;
+    if (!state->suspended) {
+        state->enabledBeforeSuspend = enabled;
+        state->suspended = true;
+        setEnabled(false); // Restore quads while the outgoing layer is alive.
+    }
+    if (currentRenderer == this)
+        currentRenderer = nullptr;
+    if (state->resolvedState)
+        state->resolvedState->setCurrent(false);
+}
+
+void Renderer::resumeGPU() {
+    auto state = iosState(this);
+    if (!state || !state->suspended)
+        return;
+    if (currentRenderer && currentRenderer != this)
+        currentRenderer->suspendGPU();
+    currentRenderer = this;
+    if (state->resolvedState) {
+        state->resolvedState->setCurrent(true);
+        state->resolvedState->resync();
+        state->resolvedState->reseedActiveFromStock();
+    }
+    state->suspended = false;
+    beginGPUFrame();
+    setEnabled(state->enabledBeforeSuspend && Mod::get()->getSettingValue<bool>("enabled"));
+}
 
 bool Renderer::useOptimizations() {
     return false;
@@ -893,7 +838,10 @@ bool Renderer::isGPUOwnedStandaloneSprite(cocos2d::CCSprite* sprite) const {
         return false;
 
     auto& buffer = state->standaloneBatches[it->second];
-    if (!buffer || !buffer->drawRoot(object))
+    if (!buffer)
+        return false;
+    const_cast<Renderer*>(this)->prepareGPUFrame();
+    if (!buffer->drawRoot(object))
         return false;
 
     ++state->standaloneRootVisitsCurrentFrame;

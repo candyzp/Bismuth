@@ -226,6 +226,7 @@ struct Renderer {
     PlayLayer* getPlayLayer(){return &layer;}
     bool isGPUOwnedSprite(cocos2d::CCSprite* s) const {return enabled && owned.contains(s);}
     bool prepareGPUOwnedSprite(cocos2d::CCSprite* s);
+    void prepareGPUFrame() {}
     bool isGPUInterleavedBatch(cocos2d::CCSpriteBatchNode*) const;
     bool drawGPUInterleavedBatch(cocos2d::CCSpriteBatchNode*);
 };

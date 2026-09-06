@@ -48,6 +48,15 @@ protected:
 public:
     void update(float dt) override;
 
+#ifdef GEODE_IS_IOS
+    static Ref<Renderer> forPlayLayer(PlayLayer* layer);
+    void suspendGPU();
+    void resumeGPU();
+    void beginGPUFrame();
+    void prepareGPUFrame();
+    void finishGPUFrame();
+#endif
+
     bool isColorChannelBlending(i32 channel);
 
     cocos2d::CCSpriteBatchNode* getSpriteBatchNodeWithLayerId(LayerKey id);

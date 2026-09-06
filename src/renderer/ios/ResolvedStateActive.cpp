@@ -36,6 +36,13 @@ ResolvedStateLayer* ResolvedStateLayer::getCurrent() {
     return g_currentResolvedState;
 }
 
+void ResolvedStateLayer::setCurrent(bool active) {
+    if (active)
+        g_currentResolvedState = this;
+    else if (g_currentResolvedState == this)
+        g_currentResolvedState = nullptr;
+}
+
 void ResolvedStateLayer::ensureEventOwnership() {
     if (eventOwnershipReady)
         return;

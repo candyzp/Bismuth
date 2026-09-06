@@ -10,13 +10,19 @@ using namespace geode::prelude;
 // CCSpriteBatchNode::draw() calling AtlasInterleaveRegistry::ownsBatch() after
 // PlayLayer's m_batchNodes storage had already entered teardown.
 class $modify(RendererExitGuardPlayLayer, PlayLayer) {
+    void onEnterTransitionDidFinish() {
+        PlayLayer::onEnterTransitionDidFinish();
+        if (auto renderer = Renderer::forPlayLayer(this))
+            renderer->resumeGPU();
+    }
+
     void onExit() {
-        auto renderer = Renderer::get();
-        if (renderer && renderer->getPlayLayer() == this && renderer->isEnabled()) {
+        auto renderer = Renderer::forPlayLayer(this);
+        if (renderer) {
             // Restore stock atlas quads while the PlayLayer and its batches are
             // still alive. Once enabled is false, all later sprite/batch hooks
             // immediately use the stock Cocos path during scene destruction.
-            renderer->setEnabled(false);
+            renderer->suspendGPU();
         }
 
         PlayLayer::onExit();

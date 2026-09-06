@@ -11,6 +11,7 @@
 #include "Geode/cocos/textures/CCTextureAtlas.h"
 
 #include <climits>
+#include <algorithm>
 #include <cmath>
 #include <unordered_map>
 #include <unordered_set>
@@ -47,6 +48,8 @@ struct OwnerDrawData {
 struct BatchIndexCache {
     u32 buffer = 0;
     std::vector<u16> indices;
+    std::vector<SpriteOwner> owners;
+    std::vector<AtlasDrawRun> runs;
 };
 
 struct RegistryState {
@@ -404,13 +407,6 @@ bool AtlasInterleaveRegistry::ownsBatch(
     if (state.invalidRenderers.contains(renderer))
         return false;
 
-    if (auto it = state.immediateByBatch.find(batch); it != state.immediateByBatch.end()) {
-        auto owner = it->second;
-        auto rendererIt = state.immediateRenderers.find(owner);
-        if (owner && rendererIt != state.immediateRenderers.end() && rendererIt->second == renderer)
-            return true;
-    }
-
     auto descendants = batch->getDescendants();
     if (!descendants)
         return false;
@@ -424,7 +420,13 @@ bool AtlasInterleaveRegistry::ownsBatch(
         if (ownerIt == state.spriteOwners.end())
             continue;
         const auto& record = ownerIt->second;
-        if (record.renderer == renderer && record.deferred)
+        // Registered storage can outlive its visible sprites. A stock-only
+        // live batch must not enter the strict GPU-submit path and retry forever.
+        if (record.renderer == renderer &&
+            (record.deferred || (record.immediate && record.immediate->stockBatch == batch)) &&
+            sprite->getParent() == batch && renderer->isGPUOwnedSprite(sprite) &&
+            sprite->getTexture() && batch->getTexture() &&
+            sprite->getTexture()->getName() == batch->getTexture()->getName())
             return true;
     }
 
@@ -520,10 +522,22 @@ bool AtlasInterleaveRegistry::drawBatch(
             return false;
     }
 
-    buildAtlasDrawPlan(state.atlasOwners, state.runs, state.indices);
     auto& cache = state.indexCaches[batch];
-    if (!updateIndexCache(cache, state.indices))
-        return false;
+    const bool samePlan = cache.buffer && cache.owners.size() == state.atlasOwners.size() &&
+        std::equal(cache.owners.begin(), cache.owners.end(), state.atlasOwners.begin(),
+            [](const auto& a, const auto& b) {
+                return a.sameOwner(b) && a.baseVertex == b.baseVertex;
+            });
+    if (!samePlan) {
+        buildAtlasDrawPlan(state.atlasOwners, state.runs, state.indices);
+        if (!updateIndexCache(cache, state.indices)) {
+            cache.owners.clear();
+            cache.runs.clear();
+            return false;
+        }
+        cache.owners = state.atlasOwners;
+        cache.runs = state.runs;
+    }
 
     state.activeRenderer = renderer;
     state.activeBatch = batch;
@@ -548,7 +562,7 @@ bool AtlasInterleaveRegistry::drawBatch(
     }
 
     bool hasStock = false;
-    for (const auto& run : state.runs)
+    for (const auto& run : cache.runs)
         hasStock |= state.atlasOwners[run.firstSlot].empty();
     if (hasStock && !synchronizeDirtyAtlasWithStockDraw(atlas))
         return false;
@@ -575,7 +589,7 @@ bool AtlasInterleaveRegistry::drawBatch(
         };
     };
 
-    for (const auto& run : state.runs) {
+    for (const auto& run : cache.runs) {
         const auto& owner = state.atlasOwners[run.firstSlot];
         if (owner.empty()) {
             atlas->drawNumberOfQuads(static_cast<unsigned int>(run.slotCount),

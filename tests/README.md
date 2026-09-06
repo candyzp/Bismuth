@@ -5,6 +5,7 @@ Run from the repository root with Python 3 and a C++23-capable GCC:
 ```sh
 python tests/run_ios_atlas_tests.py
 python tests/run_ios_state_tests.py
+python tests/run_ios_lifecycle_tests.py
 glslang -l resources/shaders/assist_ios.vert resources/shaders/assist_ios.frag
 ```
 
@@ -21,6 +22,10 @@ Coverage includes:
 - Detached object visibility clearing so GPU geometry cannot linger after stock removes an object from its render parent.
 - All 65,536 color-byte/opacity combinations against Cocos' premultiplied-color expression.
 - Clearing the active resolved-state pointer on destruction.
+- Overlapping PlayLayer setup/exit, returning to a suspended layer, and preserving an explicit disable.
+- Eight simulation updates per rendered frame with exactly one resolved-state capture, including frames with no GPU draw.
+- Safe geometry disappearing and returning in the same atlas, unchanged draw-plan reuse, and recovery after a failed replacement index upload.
+- Spatial grouping of 33,000 safe objects across three u16 GPU buffers without changing live atlas draw order.
 
 These are host regression tests, not an iOS build or a Geometry Dash performance benchmark. They do not measure Future Funk FPS, Apple driver behavior, or runtime Geode hook ABI compatibility. The workflow remains manual-only and was not run for this change.
 
