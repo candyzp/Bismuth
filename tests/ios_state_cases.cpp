@@ -36,6 +36,34 @@ int main() {
     }
     object.transform={0.7f,1.3f,-0.2f,-2.f,84000.f,700.f};
     object.vertexZ=9;
+
+    // Static-safe roots reuse their previously resolved affine transform while
+    // still mirroring stock lifecycle visibility. Dynamic-safe roots continue to
+    // capture the live matrix each frame.
+    auto staticBaseline=state.captureObjectState(&object);
+    object.transform.tx+=37.f;
+    auto staticFrame=state.captureFrameObjectState(
+        &object,
+        ResolvedStateLayer::SafetyClass::StaticSafe,
+        staticBaseline
+    );
+    assert(staticFrame.transform.tx==staticBaseline.transform.tx);
+    auto dynamicFrame=state.captureFrameObjectState(
+        &object,
+        ResolvedStateLayer::SafetyClass::DynamicSafe,
+        staticBaseline
+    );
+    assert(dynamicFrame.transform.tx==object.transform.tx);
+    object.parent=nullptr;
+    staticFrame=state.captureFrameObjectState(
+        &object,
+        ResolvedStateLayer::SafetyClass::StaticSafe,
+        staticBaseline
+    );
+    assert(!staticFrame.visible);
+    object.parent=&object;
+    object.transform=staticBaseline.transform;
+
     auto next=state.captureObjectState(&object);
     state.packObjectState(0,next,ResolvedStateLayer::SafetyClass::DynamicSafe);
     auto a=state.objectTexels[0], b=state.objectTexels[1];
@@ -90,5 +118,23 @@ int main() {
         state.setCurrent(true);
     }
     assert(ResolvedStateLayer::getCurrent()==&state);
-    std::cout << "PASS: exact affine state, detached visibility, small transform changes, mutable geometry rejection, 65,536 stock opacity/color pairs, current-state teardown\n";
+
+    // A live geometry check is paid once per displayed frame. Repeated atlas
+    // ownership queries in that frame reuse the exact result, while a new frame
+    // invalidates the memoized answer and observes later stock geometry changes.
+    state.beginFrameValidation();
+    assert(state.canDrawSprite(&object));
+    assert(state.canDrawSprite(&object));
+    assert(state.getStats().spriteValidations==1);
+    assert(state.getStats().spriteValidationReuses==1);
+    object.flipX=true;
+    state.beginFrameValidation();
+    assert(!state.canDrawSprite(&object));
+    assert(state.getStats().spriteValidations==1);
+    assert(state.getStats().spriteValidationReuses==0);
+    object.flipX=false;
+    state.beginFrameValidation();
+    assert(state.canDrawSprite(&object));
+
+    std::cout << "PASS: exact affine state, static transform reuse, detached visibility, small transform changes, mutable geometry rejection, per-frame validation cache, 65,536 stock opacity/color pairs, current-state teardown\n";
 }

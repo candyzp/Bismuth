@@ -149,8 +149,7 @@ ResolvedStateLayer::SafetyClass ResolvedStateLayer::classifyObject(
 
     const bool dynamic =
         object->m_groupCount > 0 ||
-        object->getHasRotateAction() ||
-        object->m_usesAudioScale;
+        object->getHasRotateAction() || object->m_usesAudioScale;
 
     return dynamic ? SafetyClass::DynamicSafe : SafetyClass::StaticSafe;
 }
@@ -184,6 +183,23 @@ ResolvedStateLayer::ObjectState ResolvedStateLayer::captureObjectState(GameObjec
     state.vertexZ = object->getVertexZ();
     state.opacity = (float)object->getDisplayedOpacity() / 255.f;
     state.visible = object->getParent() && object->isVisible() && !object->m_isInvisible;
+    return state;
+}
+
+ResolvedStateLayer::ObjectState ResolvedStateLayer::captureFrameObjectState(
+    GameObject* object,
+    SafetyClass safety,
+    const ObjectState& previous
+) const {
+    if (safety != SafetyClass::StaticSafe)
+        return captureObjectState(object);
+
+    // StaticSafe means this root has no group-driven transform, rotate action or
+    // audio scale. Its exact affine matrix/vertex Z were captured by resync().
+    // Reuse those values and sample only stock lifecycle visibility. This removes
+    // one Cocos nodeToParentTransform build for every active static GPU root.
+    ObjectState state = previous;
+    state.visible = object && object->getParent() && object->isVisible() && !object->m_isInvisible;
     return state;
 }
 
@@ -299,6 +315,9 @@ bool ResolvedStateLayer::init(PlayLayer* playLayer) {
     objects.clear();
     sprites.clear();
     spriteIndexByPointer.clear();
+    spriteValidationEpoch.clear();
+    spriteValidationResult.clear();
+    validationEpoch = 0;
     eventOwnershipReady = false;
     shadowCandidates.clear();
     objectTexels.clear();
@@ -415,6 +434,8 @@ bool ResolvedStateLayer::init(PlayLayer* playLayer) {
 
     objectTexels.resize(objects.size() * OBJECT_TEXELS_PER_STATE);
     spriteTexels.resize(sprites.size() * SPRITE_TEXELS_PER_STATE);
+    spriteValidationEpoch.assign(sprites.size(), 0);
+    spriteValidationResult.assign(sprites.size(), 0);
 
     objectStateTexture = DataTexture::create(
         "Resolved object state",
@@ -475,22 +496,61 @@ void ResolvedStateLayer::resync() {
         spriteStateTexture->upload(spriteTexels.data(), spriteTexels.size());
 }
 
-bool ResolvedStateLayer::canDrawSprite(cocos2d::CCSprite* sprite) const {
+bool ResolvedStateLayer::canDrawSprite(cocos2d::CCSprite* sprite) {
     auto it = spriteIndexByPointer.find(sprite);
     if (it == spriteIndexByPointer.end())
         return false;
-    const auto& record = sprites[it->second];
-    auto object = objects[record.objectIndex].object;
-    if (object != sprite ||
-        ((object->m_glowSprite || object->m_colorSprite ||
-          object->m_objectType == GameObjectType::Hazard) && !isSimpleSpikeRoot(object)) ||
-        (object->getChildren() && object->getChildren()->count() != 0))
+
+    const usize spriteIndex = it->second;
+    if (spriteIndex >= sprites.size())
         return false;
-    const auto current = captureSpriteState(sprite);
-    const auto& baked = record.geometry;
-    return !spriteUVChanged(baked, current) &&
-        baked.offset.x == current.offset.x && baked.offset.y == current.offset.y &&
-        baked.textureWidth == current.textureWidth && baked.textureHeight == current.textureHeight;
+
+    if (spriteValidationEpoch.size() != sprites.size()) {
+        spriteValidationEpoch.assign(sprites.size(), 0);
+        spriteValidationResult.assign(sprites.size(), 0);
+    }
+
+    if (validationEpoch != 0 && spriteValidationEpoch[spriteIndex] == validationEpoch) {
+        ++stats.spriteValidationReuses;
+        return spriteValidationResult[spriteIndex] != 0;
+    }
+
+    ++stats.spriteValidations;
+    bool result = false;
+
+    const auto& record = sprites[spriteIndex];
+    if (record.objectIndex < objects.size()) {
+        auto object = objects[record.objectIndex].object;
+        if (object == sprite &&
+            !(((object->m_glowSprite || object->m_colorSprite ||
+                object->m_objectType == GameObjectType::Hazard) && !isSimpleSpikeRoot(object))) &&
+            (!object->getChildren() || object->getChildren()->count() == 0)) {
+            const auto current = captureSpriteState(sprite);
+            const auto& baked = record.geometry;
+            result = !spriteUVChanged(baked, current) &&
+                baked.offset.x == current.offset.x && baked.offset.y == current.offset.y &&
+                baked.textureWidth == current.textureWidth && baked.textureHeight == current.textureHeight;
+        }
+    }
+
+    if (validationEpoch != 0) {
+        spriteValidationEpoch[spriteIndex] = validationEpoch;
+        spriteValidationResult[spriteIndex] = result ? 1 : 0;
+    }
+    return result;
+}
+
+void ResolvedStateLayer::beginFrameValidation() {
+    stats.spriteValidations = 0;
+    stats.spriteValidationReuses = 0;
+
+    // Unsigned wrap is defined. If it ever happens after billions of rendered
+    // frames, clear the tiny epoch table so no ancient result can look current.
+    ++validationEpoch;
+    if (validationEpoch == 0) {
+        std::fill(spriteValidationEpoch.begin(), spriteValidationEpoch.end(), 0);
+        validationEpoch = 1;
+    }
 }
 
 void ResolvedStateLayer::setGPUOwnedSprites(
@@ -546,6 +606,7 @@ void ResolvedStateLayer::update(bool detailedProbe) {
     stats.dirtyVisibility = 0;
     stats.dirtyUVs = 0;
     stats.staticObjectsReused = stats.activeStaticObjects;
+    stats.staticTransformBuildsAvoided = 0;
     stats.bytesUploaded = 0;
     stats.uploadCalls = 0;
 
@@ -565,12 +626,21 @@ void ResolvedStateLayer::update(bool detailedProbe) {
             continue;
 
         auto& record = objects[i];
-        const ObjectState next = captureObjectState(record.object);
+        const bool staticTransform = record.safety == SafetyClass::StaticSafe;
+        const ObjectState next = captureFrameObjectState(
+            record.object,
+            record.safety,
+            record.state
+        );
 
-        const bool transformDirty = transformChanged(record.state, next);
-        const bool appearanceDirty = objectAppearanceChanged(record.state, next);
+        // StaticSafe's matrix and vertex Z stay resident. Only DynamicSafe pays
+        // Cocos' affine rebuild cost on the render hot path.
+        const bool transformDirty = !staticTransform && transformChanged(record.state, next);
+        const bool appearanceDirty = !staticTransform && objectAppearanceChanged(record.state, next);
         const bool visibilityDirty = record.state.visible != next.visible;
 
+        if (staticTransform)
+            ++stats.staticTransformBuildsAvoided;
         if (transformDirty)
             ++stats.dirtyTransforms;
         if (appearanceDirty)

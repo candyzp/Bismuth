@@ -2,6 +2,7 @@
 
 #include "../Renderer.hpp"
 #include "GPUTruth.hpp"
+#include "ResolvedStateLayer.hpp"
 #include <Geode/modify/CCDirector.hpp>
 
 using namespace geode::prelude;
@@ -11,6 +12,11 @@ class $modify(BismuthFrameVisualSync, cocos2d::CCDirector) {
         if (auto renderer = Renderer::get()) {
             GPUTruth::beginFrame(renderer.data());
             renderer->beginGPUFrame();
+            // Geometry ownership may be queried several times while one live
+            // atlas is replanned. Start one validation epoch for this rendered
+            // frame so repeated safety checks reuse the first exact result.
+            if (auto resolved = ResolvedStateLayer::getCurrent())
+                resolved->beginFrameValidation();
         } else {
             GPUTruth::beginFrame(nullptr);
         }

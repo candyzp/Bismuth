@@ -48,6 +48,13 @@ public:
         usize dirtyUVs = 0;
         usize staticObjectsReused = 0;
 
+        // CPU-work proof. Static-safe roots keep their already-resolved matrix on
+        // the GPU instead of asking Cocos to rebuild nodeToParentTransform every
+        // displayed frame. Sprite geometry validation is memoized per render.
+        usize staticTransformBuildsAvoided = 0;
+        usize spriteValidations = 0;
+        usize spriteValidationReuses = 0;
+
         usize bytesUploaded = 0;
         usize uploadCalls = 0;
     };
@@ -65,7 +72,8 @@ public:
     bool init(PlayLayer* layer);
     void resync();
     void update(bool detailedProbe);
-    bool canDrawSprite(cocos2d::CCSprite* sprite) const;
+    void beginFrameValidation();
+    bool canDrawSprite(cocos2d::CCSprite* sprite);
 
     // Called once after renderer ownership is resolved. RendererIOS still builds
     // the complete ownership list; reseedActiveFromStock() then compiles the much
@@ -213,6 +221,11 @@ private:
         const std::vector<cocos2d::CCSprite*>& sprites
     ) const;
     ObjectState captureObjectState(GameObject* object) const;
+    ObjectState captureFrameObjectState(
+        GameObject* object,
+        SafetyClass safety,
+        const ObjectState& previous
+    ) const;
     SpriteState captureSpriteState(cocos2d::CCSprite* sprite) const;
 
     void packObjectState(usize index, const ObjectState& state, SafetyClass safety);
@@ -241,6 +254,14 @@ private:
     std::vector<glm::vec4> objectTexels;
     std::vector<glm::vec4> spriteTexels;
     std::unordered_map<cocos2d::CCSprite*, usize> spriteIndexByPointer;
+
+    // Live-geometry safety checks can be queried several times while one stock
+    // atlas is being replanned. Cache only within one CCDirector::drawScene so a
+    // later rendered frame always revalidates Geometry Dash's current state.
+    std::vector<u32> spriteValidationEpoch;
+    std::vector<u8> spriteValidationResult;
+    u32 validationEpoch = 0;
+
     std::vector<usize> dirtyObjectRecords;
     std::vector<usize> dirtySpriteRecords;
     std::vector<bool> staticTouched;
