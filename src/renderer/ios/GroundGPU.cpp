@@ -2,6 +2,7 @@
 
 #include "../Renderer.hpp"
 #include "../Shader.hpp"
+#include "GPUTruth.hpp"
 
 #include <Geode/binding/GJGroundLayer.hpp>
 #include <Geode/modify/CCSprite.hpp>
@@ -377,6 +378,9 @@ bool drawGroundOnGPU(cocos2d::CCSprite* sprite) {
         return false;
     }
 
+    // Only a successful custom draw call is allowed to report ground GPU=YES.
+    if (auto renderer = Renderer::get())
+        GPUTruth::recordGroundSuccess(renderer.data(), ground, sprite);
     recordGroundProof(ground, sprite);
 
     if (!state.announced) {
@@ -400,6 +404,8 @@ class $modify(RendererGroundOwnedCCSprite, cocos2d::CCSprite) {
         if (!drawGroundOnGPU(this)) {
             auto& state = groundGPU();
             ++state.failedDraws;
+            if (auto renderer = Renderer::get())
+                GPUTruth::recordGroundFailure(renderer.data(), groundOwner(this), this);
             if (!state.failureAnnounced) {
                 state.failureAnnounced = true;
                 log::error("Bismuth iOS STRICT ground GPU submission failed; ground stock draw intentionally suppressed");
