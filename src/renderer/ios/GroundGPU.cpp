@@ -7,6 +7,7 @@
 
 #include <Geode/binding/GJGroundLayer.hpp>
 #include <Geode/modify/CCSprite.hpp>
+#include <Geode/cocos/sprite_nodes/CCSpriteBatchNode.h>
 #include "Geode/cocos/kazmath/include/kazmath/mat4.h"
 
 using namespace geode::prelude;
@@ -177,7 +178,7 @@ void main() {
 
     state.shader = Shader::create({ vertexSource, fragmentSource });
     if (!state.shader) {
-        log::error("Bismuth iOS STRICT ground GPU shader unavailable; stock ground fallback is disabled");
+        log::error("Bismuth iOS ground GPU shader unavailable; stock fallback will be used");
         return false;
     }
 
@@ -211,7 +212,7 @@ void main() {
     glGenBuffers(1, &state.indexBuffer);
     if (!state.vao || !state.vertexBuffer || !state.indexBuffer) {
         restoreGroundGLState(saved);
-        log::error("Bismuth iOS STRICT ground GPU buffer allocation failed; stock ground fallback is disabled");
+        log::error("Bismuth iOS ground GPU buffer allocation failed; stock fallback will be used");
         return false;
     }
 
@@ -227,7 +228,7 @@ void main() {
     const GLenum error = glGetError();
     restoreGroundGLState(saved);
     if (error != GL_NO_ERROR) {
-        log::error("Bismuth iOS STRICT ground GPU setup failed with GL error {}; stock ground fallback is disabled", static_cast<u32>(error));
+        log::error("Bismuth iOS ground GPU setup failed with GL error {}; stock fallback will be used", static_cast<u32>(error));
         return false;
     }
 
@@ -235,20 +236,28 @@ void main() {
     return true;
 }
 
-GJGroundLayer* groundOwner(cocos2d::CCSprite* sprite) {
-    return GroundOwnership::owner(sprite);
+GJGroundLayer* groundOwner(cocos2d::CCNode* node) {
+    return GroundOwnership::owner(node);
 }
 
-bool strictGroundTarget(cocos2d::CCSprite* sprite) {
-    auto renderer = Renderer::get();
-    if (!renderer || !renderer->isEnabled())
+bool strictGroundTarget(Renderer* renderer, cocos2d::CCNode* node) {
+    if (!renderer || !renderer->isEnabled() || !node)
         return false;
-    auto ground = groundOwner(sprite);
-    for (auto node = static_cast<cocos2d::CCNode*>(ground); node; node = node->getParent()) {
-        if (node == renderer->getPlayLayer())
+
+    auto ground = groundOwner(node);
+    if (!ground)
+        return false;
+
+    for (auto current = static_cast<cocos2d::CCNode*>(ground); current; current = current->getParent()) {
+        if (current == renderer->getPlayLayer())
             return true;
     }
     return false;
+}
+
+bool strictGroundTarget(cocos2d::CCNode* node) {
+    auto renderer = Renderer::get();
+    return renderer && strictGroundTarget(renderer.data(), node);
 }
 
 inline glm::vec3 vertexPosition(const cocos2d::ccV3F_C4B_T2F& vertex) {
@@ -257,6 +266,10 @@ inline glm::vec3 vertexPosition(const cocos2d::ccV3F_C4B_T2F& vertex) {
 
 inline glm::vec2 vertexUV(const cocos2d::ccV3F_C4B_T2F& vertex) {
     return { vertex.texCoords.u, vertex.texCoords.v };
+}
+
+void uploadGroundQuad(GroundGPUResources& state, const cocos2d::ccV3F_C4B_T2F_Quad& quad) {
+    uploadGroundQuad(state, quad);
 }
 
 void recordGroundProof(GJGroundLayer* ground, cocos2d::CCSprite* sprite) {
@@ -375,7 +388,7 @@ bool drawGroundOnGPU(cocos2d::CCSprite* sprite) {
     const GLenum error = glGetError();
     restoreGroundGLState(saved);
     if (error != GL_NO_ERROR) {
-        log::error("Bismuth iOS STRICT ground GPU draw failed with GL error {}; stock ground fallback is disabled", static_cast<u32>(error));
+        log::error("Bismuth iOS ground GPU draw failed with GL error {}; stock fallback will be used", static_cast<u32>(error));
         return false;
     }
 
@@ -386,11 +399,102 @@ bool drawGroundOnGPU(cocos2d::CCSprite* sprite) {
 
     if (!state.announced) {
         state.announced = true;
-        log::info("Bismuth iOS ground GPU assist active: tiled ground descendants, line and shadows use persistent GPU quad expansion");
+        log::info("Bismuth iOS ground GPU assist active: live Geometry Dash ground state is submitted by the GPU helper");
     }
     return true;
 }
+
+cocos2d::CCSprite* firstBatchSprite(cocos2d::CCSpriteBatchNode* batch) {
+    auto descendants = batch ? batch->getDescendants() : nullptr;
+    if (!descendants)
+        return nullptr;
+
+    for (u32 i = 0; i < descendants->count(); ++i) {
+        if (auto sprite = typeinfo_cast<cocos2d::CCSprite*>(descendants->objectAtIndex(i)))
+            return sprite;
+    }
+    return nullptr;
+}
 } // namespace
+
+namespace GroundGPU {
+bool ownsBatch(Renderer* renderer, cocos2d::CCSpriteBatchNode* batch) {
+    return strictGroundTarget(renderer, batch);
+}
+
+bool drawBatch(Renderer* renderer, cocos2d::CCSpriteBatchNode* batch) {
+    if (!strictGroundTarget(renderer, batch))
+        return false;
+
+    auto ground = groundOwner(batch);
+    auto atlas = batch ? batch->getTextureAtlas() : nullptr;
+    auto texture = atlas ? atlas->getTexture() : nullptr;
+    const u32 quadCount = atlas ? atlas->getTotalQuads() : 0;
+    auto quads = atlas ? atlas->getQuads() : nullptr;
+
+    if (!ground || !atlas || !texture || !texture->getName() || (quadCount != 0 && !quads))
+        return false;
+
+    // Empty ground batches are valid and contain no pixels to replace.
+    if (quadCount == 0)
+        return true;
+
+    if (!initGroundGPU())
+        return false;
+
+    kmMat4 projection;
+    kmMat4 modelView;
+    kmMat4 mvp;
+    kmGLGetMatrix(KM_GL_PROJECTION, &projection);
+    kmGLGetMatrix(KM_GL_MODELVIEW, &modelView);
+    kmMat4Multiply(&mvp, &projection, &modelView);
+
+    const auto saved = captureGroundGLState();
+    auto& state = groundGPU();
+
+    state.shader->use();
+    glUniformMatrix4fv(state.mvp, 1, GL_FALSE, mvp.mat);
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, texture->getName());
+    glUniform1i(state.texture, 0);
+
+    const auto blend = batch->getBlendFunc();
+    glEnable(GL_BLEND);
+    glBlendFunc(static_cast<GLenum>(blend.src), static_cast<GLenum>(blend.dst));
+
+    glBindVertexArray(state.vao);
+    glBindBuffer(GL_ARRAY_BUFFER, state.vertexBuffer);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, state.indexBuffer);
+
+    // The stock texture atlas is the authority. These are the exact quads Cocos
+    // has already finalized for this render, including ground scrolling, recycled
+    // tiles, UVs, per-corner colors and Z. Never derive a second floor state from
+    // descendant CCSprites or from camera/player movement.
+    for (u32 i = 0; i < quadCount; ++i) {
+        uploadGroundQuad(state, quads[i]);
+        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, nullptr);
+    }
+
+    const GLenum error = glGetError();
+    restoreGroundGLState(saved);
+    if (error != GL_NO_ERROR) {
+        log::warn("Bismuth iOS live-atlas ground draw hit GL error {}; using stock fallback", static_cast<u32>(error));
+        return false;
+    }
+
+    if (auto proofSprite = firstBatchSprite(batch)) {
+        GPUTruth::recordGroundSuccess(renderer, ground, proofSprite);
+        recordGroundProof(ground, proofSprite);
+    }
+
+    if (!state.announced) {
+        state.announced = true;
+        log::info("Bismuth iOS ground GPU assist active: live stock ground atlas quads are mirrored directly");
+    }
+    return true;
+}
+} // namespace GroundGPU
 
 class $modify(RendererGroundOwnedCCSprite, cocos2d::CCSprite) {
     void draw() {
@@ -405,9 +509,8 @@ class $modify(RendererGroundOwnedCCSprite, cocos2d::CCSprite) {
         if (this->getDontDraw() || size.width == 0.f || size.height == 0.f)
             return;
 
-        // Deliberately no stock fallback here. A target ground sprite is owned by
-        // the GPU path while Bismuth is enabled. If submission fails, the failure
-        // remains visible and logged instead of being hidden by stock rendering.
+        // Never let the helper delete the floor. Unsupported or failed custom
+        // submissions immediately hand this draw back to stock Cocos.
         if (!drawGroundOnGPU(this)) {
             auto& state = groundGPU();
             ++state.failedDraws;
@@ -415,15 +518,9 @@ class $modify(RendererGroundOwnedCCSprite, cocos2d::CCSprite) {
                 GPUTruth::recordGroundFailure(renderer.data(), groundOwner(this), this);
             if (!state.failureAnnounced) {
                 state.failureAnnounced = true;
-                log::error("Bismuth iOS STRICT ground GPU submission failed; ground stock draw intentionally suppressed");
+                log::warn("Bismuth iOS ground GPU submission failed; using stock draw fallback");
             }
-            if (Mod::get()->getSettingValue<bool>("ios_gpu_debug")) {
-                log::error(
-                    "[Bismuth GPU TRUTH] FLOOR GPU=NO | target recognized but GPU submit failed | successful={} | failed={}",
-                    state.successfulDraws,
-                    state.failedDraws
-                );
-            }
+            cocos2d::CCSprite::draw();
         }
     }
 };

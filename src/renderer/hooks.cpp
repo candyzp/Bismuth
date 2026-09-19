@@ -298,10 +298,27 @@ class $modify(RendererOwnedCCSprite, cocos2d::CCSprite) {
 };
 
 #include <Geode/modify/CCSpriteBatchNode.hpp>
+namespace GroundGPU {
+bool ownsBatch(Renderer* renderer, cocos2d::CCSpriteBatchNode* batch);
+bool drawBatch(Renderer* renderer, cocos2d::CCSpriteBatchNode* batch);
+}
+
 class $modify(RendererInterleavedSpriteBatchNode, cocos2d::CCSpriteBatchNode) {
     void draw() {
         auto renderer = Renderer::get();
         if (!renderer || !renderer->isEnabled()) {
+            cocos2d::CCSpriteBatchNode::draw();
+            return;
+        }
+
+        // Ground gets first refusal. Its assist consumes the live stock atlas,
+        // so it never owns a separate scrolling/recycling timeline.
+        if (GroundGPU::ownsBatch(renderer.data(), this)) {
+            if (GroundGPU::drawBatch(renderer.data(), this))
+                return;
+
+            GPUTruth::recordGroundFailure(renderer.data(), nullptr, nullptr);
+            log::warn("Bismuth iOS ground batch assist failed; falling back to stock Cocos draw");
             cocos2d::CCSpriteBatchNode::draw();
             return;
         }

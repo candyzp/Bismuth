@@ -113,9 +113,11 @@ ResolvedStateLayer::SafetyClass ResolvedStateLayer::classifyObject(
 
     if (isSimpleSpikeRoot(object)) {
         outSprites.push_back(object);
-        const bool dynamic = object->m_groupCount > 0 ||
-            object->getHasRotateAction() || object->m_usesAudioScale;
-        return dynamic ? SafetyClass::DynamicSafe : SafetyClass::StaticSafe;
+
+        // Spikes are gameplay-critical visuals. Keep simple spike roots on the
+        // GPU path, but always sample their exact live root transform every frame
+        // instead of using the StaticSafe transform cache.
+        return SafetyClass::DynamicSafe;
     }
 
     bool invalidSprite = false;
