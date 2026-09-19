@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cmath>
 #include <vector>
+#include <unordered_set>
 
 using namespace geode::prelude;
 
@@ -25,6 +26,71 @@ bool isSimpleSpikeRoot(GameObject* object) {
         object->getTexture() &&
         (!object->getChildren() || object->getChildren()->count() == 0) &&
         object->m_glowSprite != object && object->m_colorSprite != object;
+}
+
+void collectForcedDecorationSpriteTree(
+    cocos2d::CCSprite* sprite,
+    std::vector<cocos2d::CCSprite*>& outSprites,
+    std::unordered_set<cocos2d::CCSprite*>& seen
+) {
+    if (!sprite || !seen.insert(sprite).second)
+        return;
+
+    std::vector<cocos2d::CCSprite*> negativeChildren;
+    std::vector<cocos2d::CCSprite*> positiveChildren;
+
+    if (auto children = sprite->getChildren()) {
+        negativeChildren.reserve(children->count());
+        positiveChildren.reserve(children->count());
+
+        for (auto childNode : CCArrayExt<cocos2d::CCNode*>(children)) {
+            // Force-decoration mode deliberately ignores non-sprite helper nodes
+            // instead of demoting the entire decoration to stock.
+            auto childSprite = typeinfo_cast<cocos2d::CCSprite*>(childNode);
+            if (!childSprite)
+                continue;
+
+            if (childSprite->getZOrder() < 0)
+                negativeChildren.push_back(childSprite);
+            else
+                positiveChildren.push_back(childSprite);
+        }
+    }
+
+    for (auto child : negativeChildren)
+        collectForcedDecorationSpriteTree(child, outSprites, seen);
+
+    if (!sprite->getDontDraw() && sprite->getTexture())
+        outSprites.push_back(sprite);
+
+    for (auto child : positiveChildren)
+        collectForcedDecorationSpriteTree(child, outSprites, seen);
+}
+
+void collectForcedDecorationSprites(
+    GameObject* object,
+    std::vector<cocos2d::CCSprite*>& outSprites
+) {
+    if (!object)
+        return;
+
+    std::unordered_set<cocos2d::CCSprite*> seen;
+    seen.reserve(16);
+
+    auto colorSprite = object->m_colorSprite;
+    const bool externalColor = colorSprite && colorSprite->getParent() != object;
+    const bool colorInFront = object->m_colorZLayerRelated;
+
+    if (object->m_glowSprite)
+        collectForcedDecorationSpriteTree(object->m_glowSprite, outSprites, seen);
+
+    if (externalColor && !colorInFront)
+        collectForcedDecorationSpriteTree(colorSprite, outSprites, seen);
+
+    collectForcedDecorationSpriteTree(object, outSprites, seen);
+
+    if (externalColor && colorInFront)
+        collectForcedDecorationSpriteTree(colorSprite, outSprites, seen);
 }
 
 inline bool changedFloat(float a, float b, float epsilon = 0.0001f) {
@@ -100,6 +166,14 @@ ResolvedStateLayer::SafetyClass ResolvedStateLayer::classifyObject(
     if (!object || object->isTrigger() || object->m_isHide || object->m_isInvisible)
         return SafetyClass::StockOnly;
 
+    // Decoration is a hard GPU-owned category. Complexity, animation, glow,
+    // detail sprites, nested sprite trees and non-sprite helper children do not
+    // demote it back to stock.
+    if (object->m_objectType == GameObjectType::Decoration) {
+        collectForcedDecorationSprites(object, outSprites);
+        return outSprites.empty() ? SafetyClass::StockOnly : SafetyClass::DynamicSafe;
+    }
+
     if (object->m_classType == GameObjectClassType::Animated)
         return SafetyClass::StockOnly;
     if (ObjectUtils::isInteractiveVisualObject(object))
@@ -127,10 +201,7 @@ ResolvedStateLayer::SafetyClass ResolvedStateLayer::classifyObject(
     //
     // Portal/pad/ring/etc. types are filtered by isInteractiveVisualObject()
     // before this point, and ground is not owned by this object renderer.
-    const bool gpuVisualType =
-        object->m_objectType == GameObjectType::Solid ||
-        object->m_objectType == GameObjectType::Decoration;
-    if (!gpuVisualType)
+    if (object->m_objectType != GameObjectType::Solid)
         return SafetyClass::StockOnly;
 
     bool invalidSprite = false;
@@ -536,7 +607,12 @@ bool ResolvedStateLayer::canDrawSprite(cocos2d::CCSprite* sprite) {
     const auto& record = sprites[spriteIndex];
     if (record.objectIndex < objects.size()) {
         auto object = objects[record.objectIndex].object;
-        if (object == sprite &&
+
+        if (object && object->m_objectType == GameObjectType::Decoration) {
+            // Forced decorations never fail back to stock because their tree is
+            // complex or because live frame/UV geometry changed.
+            result = sprite && sprite->getTexture();
+        } else if (object == sprite &&
             !(((object->m_glowSprite || object->m_colorSprite ||
                 object->m_objectType == GameObjectType::Hazard) && !isSimpleSpikeRoot(object))) &&
             (!object->getChildren() || object->getChildren()->count() == 0)) {
@@ -553,6 +629,19 @@ bool ResolvedStateLayer::canDrawSprite(cocos2d::CCSprite* sprite) {
         spriteValidationResult[spriteIndex] = result ? 1 : 0;
     }
     return result;
+}
+
+bool ResolvedStateLayer::isForcedDecorationSprite(cocos2d::CCSprite* sprite) const {
+    auto it = spriteIndexByPointer.find(sprite);
+    if (it == spriteIndexByPointer.end() || it->second >= sprites.size())
+        return false;
+
+    const auto& spriteRecord = sprites[it->second];
+    if (spriteRecord.objectIndex >= objects.size())
+        return false;
+
+    auto object = objects[spriteRecord.objectIndex].object;
+    return object && object->m_objectType == GameObjectType::Decoration;
 }
 
 void ResolvedStateLayer::beginFrameValidation() {

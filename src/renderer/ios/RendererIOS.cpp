@@ -296,24 +296,42 @@ bool Renderer::init(PlayLayer* playLayer) {
 
                 ++state->standaloneObjectCandidates;
 
-                if (anyAtlas) {
+                const bool forcedDecoration =
+                    object->m_objectType == GameObjectType::Decoration;
+
+                // Complex decorations may have some sprites already atlas-owned
+                // and others still standalone. Keep the atlas sprites in their
+                // GPU batch and build a second GPU buffer for the standalone
+                // subset instead of demoting the whole decoration.
+                std::vector<ResolvedStateLayer::ShadowCandidate> standaloneCandidates;
+                if (forcedDecoration && anyAtlas) {
+                    standaloneCandidates.reserve(objectCandidates.size());
+                    for (const auto& candidate : objectCandidates) {
+                        if (candidate.sprite && !candidate.sprite->getBatchNode())
+                            standaloneCandidates.push_back(candidate);
+                    }
+                    if (standaloneCandidates.empty())
+                        continue;
+                } else {
+                    standaloneCandidates = objectCandidates;
+                }
+
+                if (!forcedDecoration && anyAtlas) {
                     ++state->standaloneMixedRejected;
                     continue;
                 }
 
-                if (duplicateVisual) {
+                if (!forcedDecoration && duplicateVisual) {
                     ++state->standaloneDuplicateRejected;
                     continue;
                 }
 
-                if (sharedVisualObjects.contains(object)) {
+                if (!forcedDecoration && sharedVisualObjects.contains(object)) {
                     ++state->standaloneSharedRejected;
                     continue;
                 }
 
-                // External color/glow sprites are legitimate GD arrangements,
-                // but a single root/batch handoff cannot suppress them completely.
-                if (externalVisual) {
+                if (!forcedDecoration && externalVisual) {
                     ++state->standaloneExternalRejected;
                     if (externalGlow)
                         ++state->standaloneExternalGlowObjects;
@@ -324,12 +342,12 @@ bool Renderer::init(PlayLayer* playLayer) {
                     continue;
                 }
 
-                if (invalidVisual) {
+                if (!forcedDecoration && invalidVisual) {
                     ++state->standaloneInvalidVisualRejected;
                     continue;
                 }
 
-                if (object->getBatchNode()) {
+                if (!forcedDecoration && object->getBatchNode()) {
                     ++state->standaloneRootBatchRejected;
                     continue;
                 }
@@ -344,9 +362,14 @@ bool Renderer::init(PlayLayer* playLayer) {
                     // one-root-sprite shape here; more complex visual trees remain
                     // stock until we have an equally exact render-home proof.
                     const bool simpleDeferredRoot =
-                        objectCandidates.size() == 1 &&
-                        objectCandidates[0].sprite == static_cast<cocos2d::CCSprite*>(object);
-                    if (!simpleDeferredRoot || !layer->m_batchNodes) {
+                        standaloneCandidates.size() == 1 &&
+                        standaloneCandidates[0].sprite == static_cast<cocos2d::CCSprite*>(object);
+
+                    // Forced decorations do not require the historical simple-root
+                    // proof. Parentless complex decoration buffers register as
+                    // deferred GPU owners and bind when GD later inserts sprites
+                    // into a live stock atlas.
+                    if ((!forcedDecoration && !simpleDeferredRoot) || !layer->m_batchNodes) {
                         ++state->deferredAtlasUnmapped;
                         continue;
                     }
@@ -381,14 +404,14 @@ bool Renderer::init(PlayLayer* playLayer) {
 
                     ++state->standaloneObjectEligible;
                     ++state->deferredAtlasObjects;
-                    deferredAtlasObjectsByBatch[targetBatch].push_back({ object, objectCandidates });
+                    deferredAtlasObjectsByBatch[targetBatch].push_back({ object, standaloneCandidates });
                     continue;
                 }
 
                 // A genuinely parented non-batch root can still use the root-visit
                 // path. This is separate from the parentless/deferred-atlas case.
                 ++state->standaloneObjectEligible;
-                standaloneObjects.push_back({ object, objectCandidates });
+                standaloneObjects.push_back({ object, standaloneCandidates });
             }
 
             for (auto batch : candidateBatches) {
@@ -584,7 +607,7 @@ bool Renderer::init(PlayLayer* playLayer) {
     setVisible(false);
     rendererStartTime = getTime();
 
-    log::info("Bismuth iOS initialized: GPU geometry/math for safe solids + decorations + simple spikes; stock Cocos owns ground and interactive portal/pad/ring visuals");
+    log::info("Bismuth iOS initialized: GPU geometry/math for safe solids + FORCED complex decorations + simple spikes; stock Cocos owns ground and interactive portal/pad/ring visuals");
     return true;
 }
 
@@ -810,6 +833,27 @@ bool Renderer::isGPUOwnedSprite(cocos2d::CCSprite* sprite) const {
         return false;
 
     return true;
+}
+
+bool Renderer::hasForcedDecorationInBatch(cocos2d::CCSpriteBatchNode* batch) const {
+    if (!enabled || !batch)
+        return false;
+
+    auto state = iosState(const_cast<Renderer*>(this));
+    if (!state || !state->resolvedState)
+        return false;
+
+    auto descendants = batch->getDescendants();
+    if (!descendants)
+        return false;
+
+    for (u32 i = 0; i < descendants->count(); ++i) {
+        auto sprite = typeinfo_cast<cocos2d::CCSprite*>(descendants->objectAtIndex(i));
+        if (sprite && sprite->getBatchNode() == batch &&
+            state->resolvedState->isForcedDecorationSprite(sprite))
+            return true;
+    }
+    return false;
 }
 
 bool Renderer::prepareGPUOwnedSprite(cocos2d::CCSprite* sprite) {

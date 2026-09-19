@@ -35,7 +35,17 @@ static bool getSpriteLocalTransform(
         node = node->getParent();
     }
 
-    return node == object;
+    if (node == object)
+        return true;
+
+    // Forced complex decorations can keep glow/detail sprites in separate GD
+    // visual homes. Derive sprite-local -> object-local from live world matrices
+    // instead of rejecting those external sprite arrangements.
+    out = cocos2d::CCAffineTransformConcat(
+        sprite->nodeToWorldTransform(),
+        object->worldToNodeTransform()
+    );
+    return true;
 }
 } // namespace
 

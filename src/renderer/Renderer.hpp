@@ -107,6 +107,10 @@ public:
     // A rejection occurs before visible output and leaves stock quads restorable.
     bool drawGPUInterleavedBatch(cocos2d::CCSpriteBatchNode* batch);
 
+    // True when this live stock batch contains at least one decoration that
+    // Bismuth has marked as hard GPU-owned.
+    bool hasForcedDecorationInBatch(cocos2d::CCSpriteBatchNode* batch) const;
+
     // True standalone ownership is queried at the GameObject root visit. The
     // parentless-at-init objects that GD later inserts into sprite batch nodes do
     // NOT use this path; they are handled by deferred atlas buffers instead.

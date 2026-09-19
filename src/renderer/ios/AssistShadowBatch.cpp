@@ -51,7 +51,17 @@ static bool getSpriteLocalTransform(
         out = cocos2d::CCAffineTransformConcat(out, node->nodeToParentTransform());
         node = node->getParent();
     }
-    return node == object;
+    if (node == object)
+        return true;
+
+    // Forced complex decorations can keep glow/detail sprites in separate GD
+    // visual homes. Derive sprite-local -> object-local from live world matrices
+    // instead of rejecting those external sprite arrangements.
+    out = cocos2d::CCAffineTransformConcat(
+        sprite->nodeToWorldTransform(),
+        object->worldToNodeTransform()
+    );
+    return true;
 }
 
 static glm::vec2 quadUV(const cocos2d::ccV3F_C4B_T2F& vertex) {

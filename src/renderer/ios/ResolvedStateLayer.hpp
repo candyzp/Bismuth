@@ -158,6 +158,8 @@ public:
         return candidates;
     }
 
+    bool isForcedDecorationSprite(cocos2d::CCSprite* sprite) const;
+
     inline bool isGPUStateReady() const {
         return objectStateTexture != nullptr && spriteStateTexture != nullptr;
     }
