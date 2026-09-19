@@ -298,26 +298,12 @@ class $modify(RendererOwnedCCSprite, cocos2d::CCSprite) {
 };
 
 #include <Geode/modify/CCSpriteBatchNode.hpp>
-namespace GroundGPU {
-bool ownsBatch(Renderer* renderer, cocos2d::CCSpriteBatchNode* batch);
-bool drawBatch(Renderer* renderer, cocos2d::CCSpriteBatchNode* batch);
-}
 
 class $modify(RendererInterleavedSpriteBatchNode, cocos2d::CCSpriteBatchNode) {
     void draw() {
         auto renderer = Renderer::get();
         if (!renderer || !renderer->isEnabled()) {
             cocos2d::CCSpriteBatchNode::draw();
-            return;
-        }
-
-        // Ground gets first refusal. Its assist consumes the live stock atlas,
-        // so it never owns a separate scrolling/recycling timeline.
-        if (GroundGPU::ownsBatch(renderer.data(), this)) {
-            if (!GroundGPU::drawBatch(renderer.data(), this)) {
-                GPUTruth::recordGroundFailure(renderer.data(), nullptr, nullptr);
-                log::error("Bismuth iOS STRICT ground batch GPU submission failed; stock draw suppressed");
-            }
             return;
         }
 
@@ -342,7 +328,8 @@ class $modify(RendererInterleavedSpriteBatchNode, cocos2d::CCSpriteBatchNode) {
             GPUTruth::recordObjectBatch(renderer.data(), this);
         } else {
             GPUTruth::recordObjectFailure(renderer.data());
-            log::error("Bismuth iOS interleave failed after live-atlas replanning");
+            log::warn("Bismuth iOS object/spike GPU batch became unsafe; drawing this batch with stock Cocos");
+            cocos2d::CCSpriteBatchNode::draw();
         }
     }
 };

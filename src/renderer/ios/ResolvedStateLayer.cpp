@@ -120,6 +120,13 @@ ResolvedStateLayer::SafetyClass ResolvedStateLayer::classifyObject(
         return SafetyClass::DynamicSafe;
     }
 
+    // HARD ownership boundary:
+    // GPU visuals are limited to ordinary Solid roots plus the simple spikes
+    // handled above. Portals, pads, rings, decorations, collectibles, ground,
+    // animated objects and every other GameObject type remain 100% stock.
+    if (object->m_objectType != GameObjectType::Solid)
+        return SafetyClass::StockOnly;
+
     bool invalidSprite = false;
     SpriteUnpackStats unpackStats;
     const bool collectionSafe = ObjectUtils::unpackObjectIntoSprites(

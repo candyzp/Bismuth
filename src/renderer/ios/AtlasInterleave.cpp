@@ -405,29 +405,39 @@ bool AtlasInterleaveRegistry::ownsBatch(
         return false;
 
     auto descendants = batch->getDescendants();
-    if (!descendants)
+    auto batchTexture = batch->getTexture();
+    if (!descendants || !batchTexture || !batchTexture->getName() || descendants->count() == 0)
         return false;
+
+    bool hasGPU = false;
 
     for (u32 i = 0; i < descendants->count(); ++i) {
         auto sprite = typeinfo_cast<cocos2d::CCSprite*>(descendants->objectAtIndex(i));
-        if (!sprite || sprite->getBatchNode() != batch)
-            continue;
+
+        // Mixed/complex batches are stock territory. Never partially hijack a
+        // batch containing portals, decoration, animated nodes or other sprites.
+        if (!sprite || sprite->getBatchNode() != batch || sprite->getParent() != batch)
+            return false;
+        if (!renderer->isGPUOwnedSprite(sprite))
+            return false;
+
+        auto spriteTexture = sprite->getTexture();
+        if (!spriteTexture || spriteTexture->getName() != batchTexture->getName())
+            return false;
 
         auto ownerIt = state.spriteOwners.find(sprite);
         if (ownerIt == state.spriteOwners.end())
-            continue;
+            return false;
+
         const auto& record = ownerIt->second;
-        // Registered storage can outlive its visible sprites. A stock-only
-        // live batch must not enter the strict GPU-submit path and retry forever.
-        if (record.renderer == renderer &&
-            (record.deferred || (record.immediate && record.immediate->stockBatch == batch)) &&
-            sprite->getParent() == batch && renderer->isGPUOwnedSprite(sprite) &&
-            sprite->getTexture() && batch->getTexture() &&
-            sprite->getTexture()->getName() == batch->getTexture()->getName())
-            return true;
+        if (record.renderer != renderer ||
+            !(record.deferred || (record.immediate && record.immediate->stockBatch == batch)))
+            return false;
+
+        hasGPU = true;
     }
 
-    return false;
+    return hasGPU;
 }
 
 bool AtlasInterleaveRegistry::drawBatch(
@@ -497,15 +507,15 @@ bool AtlasInterleaveRegistry::drawBatch(
         state.atlasSprites[atlasIndex] = sprite;
 
         if (!renderer->isGPUOwnedSprite(sprite) || sprite->getParent() != batch)
-            continue;
+            return false;
 
         auto spriteTexture = sprite->getTexture();
         if (!spriteTexture || spriteTexture->getName() != texture->getName())
-            continue;
+            return false;
 
         auto recordIt = state.spriteOwners.find(sprite);
         if (recordIt == state.spriteOwners.end() || !ownerReady(recordIt->second))
-            continue;
+            return false;
 
         state.atlasOwners[atlasIndex] = recordIt->second;
         hasGPU = true;
@@ -557,12 +567,6 @@ bool AtlasInterleaveRegistry::drawBatch(
         if (slot >= totalQuads || state.atlasSprites[slot] != sprite)
             return false;
     }
-
-    bool hasStock = false;
-    for (const auto& run : cache.runs)
-        hasStock |= state.atlasOwners[run.firstSlot].empty();
-    if (hasStock && !synchronizeDirtyAtlasWithStockDraw(atlas))
-        return false;
 
     auto drawDataFor = [&](const SpriteOwner& record) -> OwnerDrawData {
         if (record.immediate) {
