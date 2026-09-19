@@ -314,12 +314,10 @@ class $modify(RendererInterleavedSpriteBatchNode, cocos2d::CCSpriteBatchNode) {
         // Ground gets first refusal. Its assist consumes the live stock atlas,
         // so it never owns a separate scrolling/recycling timeline.
         if (GroundGPU::ownsBatch(renderer.data(), this)) {
-            if (GroundGPU::drawBatch(renderer.data(), this))
-                return;
-
-            GPUTruth::recordGroundFailure(renderer.data(), nullptr, nullptr);
-            log::warn("Bismuth iOS ground batch assist failed; falling back to stock Cocos draw");
-            cocos2d::CCSpriteBatchNode::draw();
+            if (!GroundGPU::drawBatch(renderer.data(), this)) {
+                GPUTruth::recordGroundFailure(renderer.data(), nullptr, nullptr);
+                log::error("Bismuth iOS STRICT ground batch GPU submission failed; stock draw suppressed");
+            }
             return;
         }
 
