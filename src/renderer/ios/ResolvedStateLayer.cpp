@@ -120,11 +120,17 @@ ResolvedStateLayer::SafetyClass ResolvedStateLayer::classifyObject(
         return SafetyClass::DynamicSafe;
     }
 
-    // HARD ownership boundary:
-    // GPU visuals are limited to ordinary Solid roots plus the simple spikes
-    // handled above. Portals, pads, rings, decorations, collectibles, ground,
-    // animated objects and every other GameObject type remain 100% stock.
-    if (object->m_objectType != GameObjectType::Solid)
+    // Explicit GPU visual ownership:
+    // - ordinary blocks / objects (Solid)
+    // - decorations (Decoration)
+    // - simple spike roots, handled above
+    //
+    // Portal/pad/ring/etc. types are filtered by isInteractiveVisualObject()
+    // before this point, and ground is not owned by this object renderer.
+    const bool gpuVisualType =
+        object->m_objectType == GameObjectType::Solid ||
+        object->m_objectType == GameObjectType::Decoration;
+    if (!gpuVisualType)
         return SafetyClass::StockOnly;
 
     bool invalidSprite = false;

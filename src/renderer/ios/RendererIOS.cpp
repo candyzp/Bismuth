@@ -584,7 +584,7 @@ bool Renderer::init(PlayLayer* playLayer) {
     setVisible(false);
     rendererStartTime = getTime();
 
-    log::info("Bismuth iOS initialized: GPU geometry/math only for safe solids + simple spikes; stock Cocos owns ground, portals, decorations and mixed batches");
+    log::info("Bismuth iOS initialized: GPU geometry/math for safe solids + decorations + simple spikes; stock Cocos owns ground and interactive portal/pad/ring visuals");
     return true;
 }
 
