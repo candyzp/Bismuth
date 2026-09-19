@@ -20,6 +20,8 @@
 using namespace geode::prelude;
 
 namespace {
+constexpr usize MAX_REASONABLE_ATLAS_QUADS = 262144;
+
 struct SpriteOwner {
     Renderer* renderer = nullptr;
     AssistShadowBatch* immediate = nullptr;
@@ -78,6 +80,11 @@ struct RegistryState {
     std::unordered_set<Renderer*> invalidRenderers;
 
     std::unordered_map<cocos2d::CCSpriteBatchNode*, BatchIndexCache> indexCaches;
+    // Positive ownership cache. The first frame proves a live batch by scanning
+    // descendants; later frames can take the O(1) gate and let drawBatch do the
+    // single authoritative live-atlas validation.
+    std::unordered_map<cocos2d::CCSpriteBatchNode*, Renderer*> ownedBatches;
+    std::unordered_map<Shader*, AssistUniformLocations> uniformLocations;
     std::vector<cocos2d::CCSprite*> atlasSprites;
     std::vector<SpriteOwner> atlasOwners;
     std::vector<AtlasDrawRun> runs;
@@ -132,6 +139,18 @@ static void invalidateRenderer(Renderer* renderer, const char* reason) {
         log::error("Bismuth iOS atlas interleave disabled for this PlayLayer: {}", reason);
 }
 
+static void clearOwnedBatchCache(Renderer* renderer) {
+    if (!renderer)
+        return;
+    auto& state = registry();
+    for (auto it = state.ownedBatches.begin(); it != state.ownedBatches.end();) {
+        if (it->second == renderer)
+            it = state.ownedBatches.erase(it);
+        else
+            ++it;
+    }
+}
+
 static bool rendererHasRegisteredOwners(Renderer* renderer) {
     if (!renderer)
         return false;
@@ -158,6 +177,8 @@ static void releaseScratchIfUnused() {
             glDeleteBuffers(1, &cache.buffer);
     }
     state.indexCaches.clear();
+    state.ownedBatches.clear();
+    state.uniformLocations.clear();
     state.runs.clear();
     state.indices.clear();
     state.activeRenderer = nullptr;
@@ -167,7 +188,10 @@ static void releaseScratchIfUnused() {
     state.invalidRenderers.clear();
 }
 
-static bool synchronizeDirtyAtlasWithStockDraw(cocos2d::CCTextureAtlas* atlas) {
+static bool synchronizeDirtyAtlasWithStockDraw(
+    cocos2d::CCTextureAtlas* atlas,
+    usize stockSlot
+) {
     if (!atlas)
         return false;
     if (!atlas->isDirty())
@@ -176,6 +200,8 @@ static bool synchronizeDirtyAtlasWithStockDraw(cocos2d::CCTextureAtlas* atlas) {
     const usize totalQuads = static_cast<usize>(atlas->getTotalQuads());
     if (totalQuads == 0)
         return true;
+    if (stockSlot >= totalQuads)
+        return false;
 
     GLboolean previousColorMask[4] = { GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE };
     GLboolean previousDepthMask = GL_TRUE;
@@ -187,11 +213,15 @@ static bool synchronizeDirtyAtlasWithStockDraw(cocos2d::CCTextureAtlas* atlas) {
     glGetIntegerv(GL_STENCIL_WRITEMASK, &previousStencilMask);
     glGetIntegerv(GL_STENCIL_BACK_WRITEMASK, &previousBackStencilMask);
 
+    // CCTextureAtlas uploads its dirty VBO before issuing the draw. We only
+    // need to force that upload and verify it completed; drawing the entire
+    // ~10k-sprite atlas invisibly was pure duplicate GPU work. One known stock
+    // quad is enough to trigger the exact same upload path.
     glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
     glDepthMask(GL_FALSE);
     glStencilMask(0);
 
-    atlas->drawNumberOfQuads(static_cast<unsigned int>(totalQuads), 0);
+    atlas->drawNumberOfQuads(1, static_cast<unsigned int>(stockSlot));
 
     glColorMask(
         previousColorMask[0],
@@ -266,6 +296,38 @@ static AssistUniformLocations queryAssistUniformLocations(Shader* shader) {
     locations.spriteSheetTexture = static_cast<GLint>(shader->location("u_spriteSheetTexture"));
     return locations;
 }
+
+static const AssistUniformLocations& getAssistUniformLocations(Shader* shader) {
+    auto& state = registry();
+    auto it = state.uniformLocations.find(shader);
+    if (it != state.uniformLocations.end())
+        return it->second;
+    return state.uniformLocations.emplace(shader, queryAssistUniformLocations(shader)).first->second;
+}
+
+static bool cachedPlanSane(const BatchIndexCache& cache, usize totalQuads) {
+    if (!cache.buffer || cache.owners.size() != totalQuads)
+        return false;
+
+    usize previousEnd = 0;
+    for (const auto& run : cache.runs) {
+        if (run.slotCount == 0 || run.firstSlot >= totalQuads ||
+            run.slotCount > totalQuads - run.firstSlot)
+            return false;
+        if (run.firstSlot != previousEnd)
+            return false;
+        previousEnd = run.firstSlot + run.slotCount;
+
+        if (!cache.owners[run.firstSlot].empty()) {
+            if (run.firstIndex > cache.indices.size())
+                return false;
+            const usize maxSprites = (cache.indices.size() - run.firstIndex) / 6;
+            if (run.slotCount > maxSprites)
+                return false;
+        }
+    }
+    return previousEnd == totalQuads;
+}
 } // namespace
 
 void AtlasInterleaveRegistry::registerImmediate(AssistShadowBatch* owner) {
@@ -332,8 +394,11 @@ void AtlasInterleaveRegistry::unregisterImmediate(AssistShadowBatch* owner) {
             ++it;
     }
 
-    if (renderer && !rendererHasRegisteredOwners(renderer))
-        state.invalidRenderers.erase(renderer);
+    if (renderer) {
+        clearOwnedBatchCache(renderer);
+        if (!rendererHasRegisteredOwners(renderer))
+            state.invalidRenderers.erase(renderer);
+    }
     releaseScratchIfUnused();
 }
 
@@ -388,8 +453,11 @@ void AtlasInterleaveRegistry::unregisterDeferred(StandaloneAssistBatch* owner) {
             ++it;
     }
 
-    if (renderer && !rendererHasRegisteredOwners(renderer))
-        state.invalidRenderers.erase(renderer);
+    if (renderer) {
+        clearOwnedBatchCache(renderer);
+        if (!rendererHasRegisteredOwners(renderer))
+            state.invalidRenderers.erase(renderer);
+    }
     releaseScratchIfUnused();
 }
 
@@ -403,6 +471,10 @@ bool AtlasInterleaveRegistry::ownsBatch(
     auto& state = registry();
     if (state.invalidRenderers.contains(renderer))
         return false;
+
+    if (auto cached = state.ownedBatches.find(batch);
+        cached != state.ownedBatches.end() && cached->second == renderer)
+        return true;
 
     auto descendants = batch->getDescendants();
     if (!descendants)
@@ -423,8 +495,10 @@ bool AtlasInterleaveRegistry::ownsBatch(
             (record.deferred || (record.immediate && record.immediate->stockBatch == batch)) &&
             sprite->getParent() == batch && renderer->isGPUOwnedSprite(sprite) &&
             sprite->getTexture() && batch->getTexture() &&
-            sprite->getTexture()->getName() == batch->getTexture()->getName())
+            sprite->getTexture()->getName() == batch->getTexture()->getName()) {
+            state.ownedBatches[batch] = renderer;
             return true;
+        }
     }
 
     return false;
@@ -448,8 +522,12 @@ bool AtlasInterleaveRegistry::drawBatch(
         return false;
 
     const usize totalQuads = static_cast<usize>(atlas->getTotalQuads());
-    if (totalQuads == 0 || descendants->count() != totalQuads)
+    const usize descendantCount = static_cast<usize>(descendants->count());
+    if (totalQuads == 0 || descendantCount != totalQuads ||
+        totalQuads > MAX_REASONABLE_ATLAS_QUADS) {
+        state.ownedBatches.erase(batch);
         return false;
+    }
 
     state.atlasSprites.assign(totalQuads, nullptr);
     state.atlasOwners.assign(totalQuads, {});
@@ -511,8 +589,11 @@ bool AtlasInterleaveRegistry::drawBatch(
         hasGPU = true;
     }
 
-    if (!hasGPU)
+    if (!hasGPU) {
+        state.ownedBatches.erase(batch);
         return false;
+    }
+    state.ownedBatches[batch] = renderer;
 
     for (usize i = 0; i < totalQuads; ++i) {
         if (!state.atlasSprites[i])
@@ -520,7 +601,8 @@ bool AtlasInterleaveRegistry::drawBatch(
     }
 
     auto& cache = state.indexCaches[batch];
-    const bool samePlan = cache.buffer && cache.owners.size() == state.atlasOwners.size() &&
+    const bool saneCache = cachedPlanSane(cache, totalQuads);
+    const bool samePlan = saneCache &&
         std::equal(cache.owners.begin(), cache.owners.end(), state.atlasOwners.begin(),
             [](const auto& a, const auto& b) {
                 return a.sameOwner(b) && a.baseVertex == b.baseVertex;
@@ -559,9 +641,21 @@ bool AtlasInterleaveRegistry::drawBatch(
     }
 
     bool hasStock = false;
-    for (const auto& run : cache.runs)
-        hasStock |= state.atlasOwners[run.firstSlot].empty();
-    if (hasStock && !synchronizeDirtyAtlasWithStockDraw(atlas))
+    usize firstStockSlot = 0;
+    for (const auto& run : cache.runs) {
+        if (run.slotCount == 0 || run.firstSlot >= totalQuads ||
+            run.slotCount > totalQuads - run.firstSlot) {
+            cache.owners.clear();
+            cache.runs.clear();
+            cache.indices.clear();
+            return false;
+        }
+        if (!hasStock && state.atlasOwners[run.firstSlot].empty()) {
+            hasStock = true;
+            firstStockSlot = run.firstSlot;
+        }
+    }
+    if (hasStock && !synchronizeDirtyAtlasWithStockDraw(atlas, firstStockSlot))
         return false;
 
     auto drawDataFor = [&](const SpriteOwner& record) -> OwnerDrawData {
@@ -588,12 +682,18 @@ bool AtlasInterleaveRegistry::drawBatch(
         };
     };
 
-    // Cocos changes its cached VAO/texture bindings during stock atlas draws.
-    // Capture the actual state at each stock -> GPU boundary, not once for the
-    // entire batch. Restoring an older snapshot desynchronizes real GL from
-    // ccGLBindVAO/ccGLBindTexture2D, so a later stock run can read another atlas's
-    // vertices. Dirty-atlas warmup used to hide this until a later clean frame.
-    SavedGLState stockState;
+    // glGet* is a synchronization point on mobile drivers. The old path queried
+    // VAO/program/three textures at every stock -> GPU transition, which became
+    // thousands of driver queries per frame on heavily interleaved levels.
+    //
+    // Capture the entry state once. After the first real stock run, capture the
+    // stable state that Cocos established for this exact atlas once more. Raw
+    // Bismuth bindings do not update Cocos' cache, so restoring that learned
+    // state keeps real GL and Cocos' cached state synchronized for every later
+    // boundary without querying the driver again.
+    const SavedGLState entryState = captureGLState();
+    SavedGLState stockState = entryState;
+    bool learnedStockState = false;
     kmMat4 matrixP;
     kmMat4 matrixMV;
     kmMat4 matrixMVP;
@@ -629,21 +729,46 @@ bool AtlasInterleaveRegistry::drawBatch(
     };
 
     for (const auto& run : cache.runs) {
+        if (run.slotCount == 0 || run.firstSlot >= totalQuads ||
+            run.slotCount > totalQuads - run.firstSlot) {
+            if (gpuStateActive)
+                restoreStockState();
+            return false;
+        }
+
         const auto& ownerRecord = state.atlasOwners[run.firstSlot];
         if (ownerRecord.empty()) {
             if (gpuStateActive)
                 restoreStockState();
             atlas->drawNumberOfQuads(static_cast<unsigned int>(run.slotCount),
                 static_cast<unsigned int>(run.firstSlot));
+            if (!learnedStockState) {
+                stockState = captureGLState();
+                learnedStockState = true;
+            }
             continue;
         }
 
+        if (run.firstIndex > cache.indices.size() ||
+            run.slotCount > (cache.indices.size() - run.firstIndex) / 6) {
+            if (gpuStateActive)
+                restoreStockState();
+            return false;
+        }
+
         const auto owner = drawDataFor(ownerRecord);
+        if (!owner.resolvedState || !owner.shader || !owner.vao || !owner.ownerIndexBuffer) {
+            if (gpuStateActive)
+                restoreStockState();
+            return false;
+        }
         auto objectStateTexture = owner.resolvedState->getObjectStateTexture();
         auto spriteStateTexture = owner.resolvedState->getSpriteStateTexture();
-
-        if (!gpuStateActive)
-            stockState = captureGLState();
+        if (!objectStateTexture || !spriteStateTexture) {
+            if (gpuStateActive)
+                restoreStockState();
+            return false;
+        }
 
         // Stock runs may switch program/texture state. Re-enter the assist state
         // only at GPU block boundaries; consecutive GPU owners stay in one state
@@ -654,7 +779,7 @@ bool AtlasInterleaveRegistry::drawBatch(
         }
 
         if (configuredShader != owner.shader || configuredResolvedState != owner.resolvedState) {
-            configuredLocations = queryAssistUniformLocations(owner.shader);
+            configuredLocations = getAssistUniformLocations(owner.shader);
             glUniformMatrix4fv(configuredLocations.mvp, 1, GL_FALSE, matrixMVP.mat);
             glUniform1i(configuredLocations.objectStateTexture, 1);
             const auto objectTextureSize = objectStateTexture->getSize();
