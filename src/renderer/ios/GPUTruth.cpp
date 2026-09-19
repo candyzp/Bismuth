@@ -157,9 +157,10 @@ void beginFrame(Renderer* renderer) {
     }
 
     state.enabled = renderer && Mod::get()->getSettingValue<bool>("ios_gpu_debug");
-    // Refresh the expensive per-sprite diagnostic fields at 5 Hz on a 60 Hz
-    // render while keeping submit/failure truth frame-exact.
-    state.deepScanThisFrame = state.enabled && (state.deepScanFrame++ % 12 == 0);
+    // The deep diagnostic walk is intentionally rare on decoration-heavy
+    // scenes. Submit/failure truth remains frame-exact; opacity/sprite totals are
+    // sampled once per second at 60 Hz so the overlay cannot become the 4k+ wall.
+    state.deepScanThisFrame = state.enabled && (state.deepScanFrame++ % 60 == 0);
     resetFrameCounters(state);
 }
 
