@@ -13,7 +13,11 @@ using namespace geode::prelude;
 class $modify(RendererExitGuardPlayLayer, PlayLayer) {
     void onEnterTransitionDidFinish() {
         PlayLayer::onEnterTransitionDidFinish();
-        if (auto renderer = Renderer::forPlayLayer(this))
+
+        // Final scene/batch topology is now available. Rebuild once here so
+        // level-to-level transitions cannot strand Bismuth with early stale
+        // ownership and a permanent IDLE/zero-submit state.
+        if (auto renderer = Renderer::rebuildForPlayLayer(this))
             renderer->resumeGPU();
     }
 

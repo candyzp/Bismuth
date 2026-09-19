@@ -44,6 +44,15 @@ TruthState& truth() {
 }
 
 void clearLabels(TruthState& state) {
+    // Labels live on PlayLayer, so dropping Ref<> alone leaves the nodes in the
+    // scene. That created a new overlapping copy after every pause/resume.
+    if (state.text)
+        state.text->removeFromParentAndCleanup(true);
+    if (state.outline1)
+        state.outline1->removeFromParentAndCleanup(true);
+    if (state.outline2)
+        state.outline2->removeFromParentAndCleanup(true);
+
     state.text = nullptr;
     state.outline1 = nullptr;
     state.outline2 = nullptr;
@@ -90,7 +99,7 @@ bool ensureLabels(TruthState& state, Renderer* renderer) {
         return false;
     }
 
-    const float top = cocos2d::CCDirector::get()->getWinSize().height - 38.f;
+    const float top = cocos2d::CCDirector::get()->getWinSize().height - 48.f;
 
     state.outline1->setColor({0, 0, 0});
     state.outline1->setOpacity(210);
@@ -221,27 +230,18 @@ void finishFrame(Renderer* renderer) {
     setChartVisible(state, true);
 
     const bool objectsYES = state.objectSubmits > 0;
-    const bool floorYES = (state.ground1 || state.ground2) && state.groundFailures == 0;
-    const bool gpuYES = objectsYES || state.groundSubmits > 0;
+    const bool gpuYES = objectsYES;
 
     const std::string chart = fmt::format(
-        "GPU TRUTH | CONCLUSION: {}\n"
-        "Objects: {} | submits {} | sprites {}\n"
-        "Floor: {} | G1 {} | G2 {} | Line {}\n"
+        "GPU TRUTH: {} | submits {} | sprites {}\n"
         "Clear suspects: {} | spikes {}\n"
-        "Failures: objects {} | floor {}",
+        "Failures: objects {}",
         gpuYES ? "YES" : "NO",
-        objectsYES ? "YES" : "NO",
         state.objectSubmits,
         state.objectSprites,
-        floorYES ? "YES" : "NO",
-        state.ground1 ? "YES" : "NO",
-        state.ground2 ? "YES" : "NO",
-        state.line ? "YES" : "NO",
         state.clearSuspects,
         state.spikeClearSuspects,
-        state.objectFailures,
-        state.groundFailures
+        state.objectFailures
     );
 
     if (state.lastText == chart)

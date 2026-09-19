@@ -3,12 +3,22 @@
 #include "../Renderer.hpp"
 #include "GPUTruth.hpp"
 #include "ResolvedStateLayer.hpp"
+#include <Geode/binding/PlayLayer.hpp>
 #include <Geode/modify/CCDirector.hpp>
 
 using namespace geode::prelude;
 
 class $modify(BismuthFrameVisualSync, cocos2d::CCDirector) {
     void drawScene() {
+        // Recovery net for missed pause/transition callbacks. Never wake the GPU
+        // while stock GD says the PlayLayer is paused.
+        if (auto playLayer = PlayLayer::get(); playLayer && !playLayer->m_isPaused) {
+            auto exact = Renderer::forPlayLayer(playLayer);
+            auto active = Renderer::get();
+            if (exact && (!active || active.data() != exact.data()))
+                exact->resumeGPU();
+        }
+
         if (auto renderer = Renderer::get()) {
             GPUTruth::beginFrame(renderer.data());
             renderer->beginGPUFrame();

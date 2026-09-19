@@ -618,6 +618,18 @@ void Renderer::terminate() {
         currentRenderer = nullptr;
     enabled = false;
 
+    // These labels are attached directly to PlayLayer rather than to Renderer.
+    // Remove them explicitly so a renderer rebuild cannot leave ghost copies.
+    if (debugText)
+        debugText->removeFromParentAndCleanup(true);
+    if (debugTextOutline1)
+        debugTextOutline1->removeFromParentAndCleanup(true);
+    if (debugTextOutline2)
+        debugTextOutline2->removeFromParentAndCleanup(true);
+    debugText = nullptr;
+    debugTextOutline1 = nullptr;
+    debugTextOutline2 = nullptr;
+
     auto state = iosState(this);
     if (state) {
         for (auto& gpuBatch : state->gpuBatches) {
@@ -782,6 +794,40 @@ Ref<Renderer> Renderer::forPlayLayer(PlayLayer* playLayer) {
     return nullptr;
 }
 
+Ref<Renderer> Renderer::rebuildForPlayLayer(PlayLayer* playLayer) {
+    if (!playLayer || !playLayer->m_objectLayer)
+        return nullptr;
+
+    // Renderer construction during setup can happen before GD has finished
+    // moving objects into their final CCSpriteBatchNodes. Rebuild once the
+    // enter transition is complete so ownership is compiled from the final
+    // live scene instead of an early/parentless snapshot.
+    if (auto old = forPlayLayer(playLayer)) {
+        old->suspendGPU();
+        old->terminate();
+        old->removeFromParentAndCleanup(true);
+    } else if (currentRenderer) {
+        currentRenderer->suspendGPU();
+    }
+
+    auto fresh = Renderer::create(playLayer);
+    if (!fresh)
+        return nullptr;
+
+    playLayer->m_objectLayer->addChild(fresh, -100000);
+    fresh->reset();
+
+    if (auto state = iosState(fresh.data()); state && state->resolvedState) {
+        state->resolvedState->setCurrent(true);
+        state->resolvedState->resync();
+        state->resolvedState->reseedActiveFromStock();
+    }
+
+    fresh->beginGPUFrame();
+    log::info("Bismuth iOS final-scene GPU ownership rebuilt");
+    return fresh;
+}
+
 void Renderer::suspendGPU() {
     auto state = iosState(this);
     if (!state)
@@ -799,19 +845,29 @@ void Renderer::suspendGPU() {
 
 void Renderer::resumeGPU() {
     auto state = iosState(this);
-    if (!state || !state->suspended)
+    if (!state)
         return;
+
+    // Idempotent rebind: even if the suspended flag was missed or already
+    // cleared, this exact PlayLayer renderer can reclaim the singleton.
     if (currentRenderer && currentRenderer != this)
         currentRenderer->suspendGPU();
     currentRenderer = this;
+
     if (state->resolvedState) {
         state->resolvedState->setCurrent(true);
         state->resolvedState->resync();
         state->resolvedState->reseedActiveFromStock();
     }
+
+    const bool wasSuspended = state->suspended;
     state->suspended = false;
     beginGPUFrame();
-    setEnabled(state->enabledBeforeSuspend && Mod::get()->getSettingValue<bool>("enabled"));
+
+    if (wasSuspended)
+        setEnabled(state->enabledBeforeSuspend && Mod::get()->getSettingValue<bool>("enabled"));
+    else if (Mod::get()->getSettingValue<bool>("enabled") && !enabled)
+        setEnabled(true);
 }
 
 bool Renderer::useOptimizations() {

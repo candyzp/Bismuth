@@ -50,6 +50,11 @@ public:
 
 #ifdef GEODE_IS_IOS
     static Ref<Renderer> forPlayLayer(PlayLayer* layer);
+
+    // Rebuild ownership after Geometry Dash has finished the PlayLayer enter
+    // transition. This makes the final live sprite batches the source of truth.
+    static Ref<Renderer> rebuildForPlayLayer(PlayLayer* layer);
+
     void suspendGPU();
     void resumeGPU();
     void beginGPUFrame();
