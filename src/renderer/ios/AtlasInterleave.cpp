@@ -188,20 +188,15 @@ static void releaseScratchIfUnused() {
     state.invalidRenderers.clear();
 }
 
-static bool synchronizeDirtyAtlasWithStockDraw(
-    cocos2d::CCTextureAtlas* atlas,
-    usize stockSlot
-) {
+static bool synchronizeDirtyAtlasWithStockDraw(cocos2d::CCTextureAtlas* atlas) {
     if (!atlas)
         return false;
     if (!atlas->isDirty())
         return true;
 
     const usize totalQuads = static_cast<usize>(atlas->getTotalQuads());
-    if (totalQuads == 0)
-        return true;
-    if (stockSlot >= totalQuads)
-        return false;
+    if (totalQuads == 0 || totalQuads > MAX_REASONABLE_ATLAS_QUADS)
+        return totalQuads == 0;
 
     GLboolean previousColorMask[4] = { GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE };
     GLboolean previousDepthMask = GL_TRUE;
@@ -213,15 +208,20 @@ static bool synchronizeDirtyAtlasWithStockDraw(
     glGetIntegerv(GL_STENCIL_WRITEMASK, &previousStencilMask);
     glGetIntegerv(GL_STENCIL_BACK_WRITEMASK, &previousBackStencilMask);
 
-    // CCTextureAtlas uploads its dirty VBO before issuing the draw. We only
-    // need to force that upload and verify it completed; drawing the entire
-    // ~10k-sprite atlas invisibly was pure duplicate GPU work. One known stock
-    // quad is enough to trigger the exact same upload path.
+    // IMPORTANT: do not use a partial dirty-atlas draw here. On iOS Cocos the
+    // dirty upload path can derive an invalid copy span when drawNumberOfQuads()
+    // starts inside the atlas. The crash report proves that path reaches
+    // _platform_memmove with a gigantic underflowed byte count.
+    //
+    // Start at slot 0 and use the exact full-atlas upload path that stock Cocos
+    // uses safely. Color/depth/stencil writes are disabled, so this is only a
+    // synchronization pass. The expensive per-boundary GL queries and debug
+    // rescans are still eliminated elsewhere in this build.
     glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
     glDepthMask(GL_FALSE);
     glStencilMask(0);
 
-    atlas->drawNumberOfQuads(1, static_cast<unsigned int>(stockSlot));
+    atlas->drawNumberOfQuads(static_cast<unsigned int>(totalQuads), 0);
 
     glColorMask(
         previousColorMask[0],
@@ -641,7 +641,6 @@ bool AtlasInterleaveRegistry::drawBatch(
     }
 
     bool hasStock = false;
-    usize firstStockSlot = 0;
     for (const auto& run : cache.runs) {
         if (run.slotCount == 0 || run.firstSlot >= totalQuads ||
             run.slotCount > totalQuads - run.firstSlot) {
@@ -650,12 +649,10 @@ bool AtlasInterleaveRegistry::drawBatch(
             cache.indices.clear();
             return false;
         }
-        if (!hasStock && state.atlasOwners[run.firstSlot].empty()) {
+        if (state.atlasOwners[run.firstSlot].empty())
             hasStock = true;
-            firstStockSlot = run.firstSlot;
-        }
     }
-    if (hasStock && !synchronizeDirtyAtlasWithStockDraw(atlas, firstStockSlot))
+    if (hasStock && !synchronizeDirtyAtlasWithStockDraw(atlas))
         return false;
 
     auto drawDataFor = [&](const SpriteOwner& record) -> OwnerDrawData {
