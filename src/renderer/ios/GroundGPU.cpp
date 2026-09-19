@@ -269,7 +269,37 @@ inline glm::vec2 vertexUV(const cocos2d::ccV3F_C4B_T2F& vertex) {
 }
 
 void uploadGroundQuad(GroundGPUResources& state, const cocos2d::ccV3F_C4B_T2F_Quad& quad) {
-    uploadGroundQuad(state, quad);
+    const auto pBL = vertexPosition(quad.bl);
+    const auto pBR = vertexPosition(quad.br);
+    const auto pTL = vertexPosition(quad.tl);
+    const auto pTR = vertexPosition(quad.tr);
+    glUniform3f(state.posBL, pBL.x, pBL.y, pBL.z);
+    glUniform3f(state.posBR, pBR.x, pBR.y, pBR.z);
+    glUniform3f(state.posTL, pTL.x, pTL.y, pTL.z);
+    glUniform3f(state.posTR, pTR.x, pTR.y, pTR.z);
+
+    const auto uvBL = vertexUV(quad.bl);
+    const auto uvBR = vertexUV(quad.br);
+    const auto uvTL = vertexUV(quad.tl);
+    const auto uvTR = vertexUV(quad.tr);
+    glUniform2f(state.uvBL, uvBL.x, uvBL.y);
+    glUniform2f(state.uvBR, uvBR.x, uvBR.y);
+    glUniform2f(state.uvTL, uvTL.x, uvTL.y);
+    glUniform2f(state.uvTR, uvTR.x, uvTR.y);
+
+    const auto setColor = [](GLint location, const cocos2d::ccColor4B& color) {
+        glUniform4f(
+            location,
+            color.r / 255.f,
+            color.g / 255.f,
+            color.b / 255.f,
+            color.a / 255.f
+        );
+    };
+    setColor(state.colorBL, quad.bl.colors);
+    setColor(state.colorBR, quad.br.colors);
+    setColor(state.colorTL, quad.tl.colors);
+    setColor(state.colorTR, quad.tr.colors);
 }
 
 void recordGroundProof(GJGroundLayer* ground, cocos2d::CCSprite* sprite) {
