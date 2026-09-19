@@ -229,6 +229,10 @@ private:
         const ObjectState& previous
     ) const;
     SpriteState captureSpriteState(cocos2d::CCSprite* sprite) const;
+    SpriteState captureFrameSpriteState(
+        cocos2d::CCSprite* sprite,
+        const SpriteState& previous
+    ) const;
 
     void packObjectState(usize index, const ObjectState& state, SafetyClass safety);
     void packSpriteState(usize index, const SpriteState& state, usize objectIndex);
