@@ -24,6 +24,12 @@ struct TruthState {
     usize clearSuspects = 0;
     usize spikeClearSuspects = 0;
 
+    // The truth overlay is diagnostics, not part of rendering. Deep ownership /
+    // opacity scans are sampled instead of repeating another full atlas walk on
+    // every displayed frame. Submit/failure counters remain exact every frame.
+    usize deepScanFrame = 0;
+    bool deepScanThisFrame = true;
+
     usize groundSubmits = 0;
     usize groundFailures = 0;
     bool ground1 = false;
@@ -61,18 +67,20 @@ void clearLabels(TruthState& state) {
 
 void resetFrameCounters(TruthState& state) {
     state.objectSubmits = 0;
-    state.objectSprites = 0;
     state.objectFailures = 0;
-    state.clearSuspects = 0;
-    state.spikeClearSuspects = 0;
+
+    if (state.deepScanThisFrame) {
+        state.objectSprites = 0;
+        state.clearSuspects = 0;
+        state.spikeClearSuspects = 0;
+        state.seenObjectSprites.clear();
+    }
 
     state.groundSubmits = 0;
     state.groundFailures = 0;
     state.ground1 = false;
     state.ground2 = false;
     state.line = false;
-
-    state.seenObjectSprites.clear();
 }
 
 bool ensureLabels(TruthState& state, Renderer* renderer) {
@@ -141,9 +149,17 @@ void beginFrame(Renderer* renderer) {
     if (state.renderer != renderer) {
         clearLabels(state);
         state.renderer = renderer;
+        state.deepScanFrame = 0;
+        state.objectSprites = 0;
+        state.clearSuspects = 0;
+        state.spikeClearSuspects = 0;
+        state.seenObjectSprites.clear();
     }
 
     state.enabled = renderer && Mod::get()->getSettingValue<bool>("ios_gpu_debug");
+    // Refresh the expensive per-sprite diagnostic fields at 5 Hz on a 60 Hz
+    // render while keeping submit/failure truth frame-exact.
+    state.deepScanThisFrame = state.enabled && (state.deepScanFrame++ % 12 == 0);
     resetFrameCounters(state);
 }
 
@@ -153,6 +169,9 @@ void recordObjectBatch(Renderer* renderer, cocos2d::CCSpriteBatchNode* batch) {
         return;
 
     ++state.objectSubmits;
+
+    if (!state.deepScanThisFrame)
+        return;
 
     auto descendants = batch->getDescendants();
     if (!descendants)
