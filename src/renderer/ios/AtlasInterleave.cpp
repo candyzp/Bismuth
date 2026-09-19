@@ -167,6 +167,45 @@ static void releaseScratchIfUnused() {
     state.invalidRenderers.clear();
 }
 
+static bool synchronizeDirtyAtlasWithStockDraw(cocos2d::CCTextureAtlas* atlas) {
+    if (!atlas)
+        return false;
+    if (!atlas->isDirty())
+        return true;
+
+    const usize totalQuads = static_cast<usize>(atlas->getTotalQuads());
+    if (totalQuads == 0)
+        return true;
+
+    GLboolean previousColorMask[4] = { GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE };
+    GLboolean previousDepthMask = GL_TRUE;
+    GLint previousStencilMask = 0;
+    GLint previousBackStencilMask = 0;
+
+    glGetBooleanv(GL_COLOR_WRITEMASK, previousColorMask);
+    glGetBooleanv(GL_DEPTH_WRITEMASK, &previousDepthMask);
+    glGetIntegerv(GL_STENCIL_WRITEMASK, &previousStencilMask);
+    glGetIntegerv(GL_STENCIL_BACK_WRITEMASK, &previousBackStencilMask);
+
+    glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+    glDepthMask(GL_FALSE);
+    glStencilMask(0);
+
+    atlas->drawNumberOfQuads(static_cast<unsigned int>(totalQuads), 0);
+
+    glColorMask(
+        previousColorMask[0],
+        previousColorMask[1],
+        previousColorMask[2],
+        previousColorMask[3]
+    );
+    glDepthMask(previousDepthMask);
+    glStencilMaskSeparate(GL_FRONT, static_cast<u32>(previousStencilMask));
+    glStencilMaskSeparate(GL_BACK, static_cast<u32>(previousBackStencilMask));
+
+    return !atlas->isDirty();
+}
+
 static bool updateIndexCache(BatchIndexCache& cache, const std::vector<u16>& indices) {
     if (cache.buffer && cache.indices == indices)
         return true;
@@ -457,26 +496,15 @@ bool AtlasInterleaveRegistry::drawBatch(
             return false;
         state.atlasSprites[atlasIndex] = sprite;
 
-        if (sprite->getParent() != batch)
+        if (!renderer->isGPUOwnedSprite(sprite) || sprite->getParent() != batch)
             continue;
 
         auto spriteTexture = sprite->getTexture();
         if (!spriteTexture || spriteTexture->getName() != texture->getName())
             continue;
 
-        // Use the registry record we already need instead of routing through
-        // Renderer::isGPUOwnedSprite(), which performs another ownership hash
-        // lookup. The owner record plus live batch/parent checks are the exact
-        // atlas ownership proof here; canDrawSprite() still validates live UV/
-        // frame safety once per render epoch.
         auto recordIt = state.spriteOwners.find(sprite);
         if (recordIt == state.spriteOwners.end() || !ownerReady(recordIt->second))
-            continue;
-
-        auto resolved = recordIt->second.immediate
-            ? recordIt->second.immediate->resolvedState
-            : recordIt->second.deferred->resolvedState;
-        if (!resolved || !resolved->canDrawSprite(sprite))
             continue;
 
         state.atlasOwners[atlasIndex] = recordIt->second;
@@ -508,36 +536,33 @@ bool AtlasInterleaveRegistry::drawBatch(
         cache.runs = state.runs;
     }
 
-    // Only stock-owned sprites need Cocos atlas transform expansion. Calling
-    // updateTransform() on every GPU-owned decoration was pure per-frame CPU
-    // overhead and also dirtied the native atlas, which then forced a hidden
-    // full-atlas stock draw before the real interleaved draw.
-    //
-    // This is intentionally NOT a static-decoration cache. Live GPU state still
-    // updates every frame; we are only stopping duplicate native render prep for
-    // sprites whose transform is already consumed by the Bismuth shader.
     state.activeRenderer = renderer;
     state.activeBatch = batch;
-    for (usize slot = 0; slot < totalQuads; ++slot) {
-        if (!state.atlasOwners[slot].empty())
-            continue;
-        auto sprite = state.atlasSprites[slot];
-        if (sprite)
-            sprite->updateTransform();
+    if (auto children = batch->getChildren()) {
+        for (auto child : CCArrayExt<cocos2d::CCNode*>(children)) {
+            if (auto sprite = typeinfo_cast<cocos2d::CCSprite*>(child))
+                sprite->updateTransform();
+        }
     }
     state.activeBatch = nullptr;
     state.activeRenderer = nullptr;
 
-    // updateTransform() does not reorder atlas membership. The previous second
-    // O(N) descendant walk revalidated ~10k entries every frame after we had
-    // already built the exact atlasIndex -> sprite map above.
     if (atlas->getTotalQuads() != totalQuads || descendants->count() != totalQuads)
         return false;
+    for (usize i = 0; i < totalQuads; ++i) {
+        auto sprite = typeinfo_cast<cocos2d::CCSprite*>(descendants->objectAtIndex(i));
+        if (!sprite || sprite->getBatchNode() != batch)
+            return false;
+        const usize slot = sprite->getAtlasIndex();
+        if (slot >= totalQuads || state.atlasSprites[slot] != sprite)
+            return false;
+    }
 
-    // Do not perform an invisible full-atlas "warmup" draw here. The first real
-    // stock run will let CCTextureAtlas upload any dirty stock quads itself.
-    // When every run is GPU-owned, the native atlas does not need a draw/upload
-    // at all. This removes the worst duplicate work on decoration-heavy levels.
+    bool hasStock = false;
+    for (const auto& run : cache.runs)
+        hasStock |= state.atlasOwners[run.firstSlot].empty();
+    if (hasStock && !synchronizeDirtyAtlasWithStockDraw(atlas))
+        return false;
 
     auto drawDataFor = [&](const SpriteOwner& record) -> OwnerDrawData {
         if (record.immediate) {
