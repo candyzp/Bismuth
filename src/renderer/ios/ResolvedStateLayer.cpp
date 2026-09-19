@@ -14,7 +14,7 @@ using namespace geode::prelude;
 
 namespace {
 constexpr usize OBJECT_TEXELS_PER_STATE = 2;
-constexpr usize SPRITE_TEXELS_PER_STATE = 3;
+constexpr usize SPRITE_TEXELS_PER_STATE = 2;
 constexpr usize DIRTY_RECORD_MERGE_GAP = 2;
 
 bool isSimpleSpikeRoot(GameObject* object) {
@@ -277,15 +277,24 @@ ResolvedStateLayer::ObjectState ResolvedStateLayer::captureFrameObjectState(
     SafetyClass safety,
     const ObjectState& previous
 ) const {
-    if (safety != SafetyClass::StaticSafe)
-        return captureObjectState(object);
+    ObjectState state = previous;
+    if (!object) {
+        state.visible = false;
+        return state;
+    }
+
+    if (safety != SafetyClass::StaticSafe) {
+        // The GPU state texture does not consume root opacity. Avoid asking Cocos
+        // for displayed opacity on every dynamic object and sample only fields
+        // that the vertex shader actually reads.
+        state.transform = object->nodeToParentTransform();
+        state.vertexZ = object->getVertexZ();
+    }
 
     // StaticSafe means this root has no group-driven transform, rotate action or
-    // audio scale. Its exact affine matrix/vertex Z were captured by resync().
-    // Reuse those values and sample only stock lifecycle visibility. This removes
-    // one Cocos nodeToParentTransform build for every active static GPU root.
-    ObjectState state = previous;
-    state.visible = object && object->getParent() && object->isVisible() && !object->m_isInvisible;
+    // audio scale. Its exact affine matrix/vertex Z remain resident; both classes
+    // still mirror stock lifecycle visibility every rendered frame.
+    state.visible = object->getParent() && object->isVisible() && !object->m_isInvisible;
     return state;
 }
 
@@ -313,6 +322,30 @@ ResolvedStateLayer::SpriteState ResolvedStateLayer::captureSpriteState(cocos2d::
     return state;
 }
 
+ResolvedStateLayer::SpriteState ResolvedStateLayer::captureFrameSpriteState(
+    cocos2d::CCSprite* sprite,
+    const SpriteState& previous
+) const {
+    SpriteState state = previous;
+    if (!sprite) {
+        state.visible = false;
+        state.opacity = 0;
+        return state;
+    }
+
+    // Per-frame rendering consumes only final displayed color/alpha and child
+    // visibility. UV/frame/offset/texture geometry is baked in the persistent
+    // GPU geometry and is validated separately by canDrawSprite() for the
+    // conservative solid/spike path. Forced decorations already use persistent
+    // geometry, so polling those unused geometry fields thousands of times per
+    // frame was pure CPU overhead.
+    state.color = sprite->getDisplayedColor();
+    state.opacity = sprite->getDisplayedOpacity();
+    state.opacityModifyRGB = sprite->isOpacityModifyRGB();
+    state.visible = sprite->isVisible();
+    return state;
+}
+
 void ResolvedStateLayer::packObjectState(usize index, const ObjectState& state, SafetyClass) {
     const usize base = index * OBJECT_TEXELS_PER_STATE;
     if (base + 1 >= objectTexels.size())
@@ -334,7 +367,7 @@ void ResolvedStateLayer::packObjectState(usize index, const ObjectState& state, 
 
 void ResolvedStateLayer::packSpriteState(usize index, const SpriteState& state, usize objectIndex) {
     const usize base = index * SPRITE_TEXELS_PER_STATE;
-    if (base + 2 >= spriteTexels.size())
+    if (base + 1 >= spriteTexels.size())
         return;
 
     const auto colorByte = [&](u8 value) -> float {
@@ -348,12 +381,6 @@ void ResolvedStateLayer::packSpriteState(usize index, const SpriteState& state, 
         colorByte(state.color.b),
         (float)state.opacity / 255.f
     };
-    spriteTexels[base + 1] = {
-        state.textureRect.origin.x,
-        state.textureRect.origin.y,
-        state.textureRect.size.width,
-        state.textureRect.size.height
-    };
 
     u32 flags = 0;
     if (state.visible) flags |= 1u;
@@ -361,11 +388,14 @@ void ResolvedStateLayer::packSpriteState(usize index, const SpriteState& state, 
     if (state.flipX) flags |= 4u;
     if (state.flipY) flags |= 8u;
 
-    spriteTexels[base + 2] = {
+    // The assist shader only consumes flags + object index here. Texture rect
+    // and texture dimensions are geometry-validation data, not render-state
+    // data, so keeping a third RGBA texel per sprite wasted 33% of this texture.
+    spriteTexels[base + 1] = {
         (float)flags,
         (float)objectIndex,
-        state.textureWidth,
-        state.textureHeight
+        0.f,
+        0.f
     };
 }
 
@@ -740,19 +770,16 @@ void ResolvedStateLayer::update(bool detailedProbe) {
         // StaticSafe's matrix and vertex Z stay resident. Only DynamicSafe pays
         // Cocos' affine rebuild cost on the render hot path.
         const bool transformDirty = !staticTransform && transformChanged(record.state, next);
-        const bool appearanceDirty = !staticTransform && objectAppearanceChanged(record.state, next);
         const bool visibilityDirty = record.state.visible != next.visible;
 
         if (staticTransform)
             ++stats.staticTransformBuildsAvoided;
         if (transformDirty)
             ++stats.dirtyTransforms;
-        if (appearanceDirty)
-            ++stats.dirtyAppearance;
         if (visibilityDirty)
             ++stats.dirtyVisibility;
 
-        if (transformDirty || appearanceDirty || visibilityDirty) {
+        if (transformDirty || visibilityDirty) {
             if (record.safety == SafetyClass::StaticSafe)
                 staticTouched[i] = true;
 
@@ -767,20 +794,17 @@ void ResolvedStateLayer::update(bool detailedProbe) {
             continue;
 
         auto& record = sprites[i];
-        const SpriteState next = captureSpriteState(record.sprite);
+        const SpriteState next = captureFrameSpriteState(record.sprite, record.state);
 
         const bool appearanceDirty = spriteAppearanceChanged(record.state, next);
         const bool visibilityDirty = record.state.visible != next.visible;
-        const bool uvDirty = spriteUVChanged(record.state, next);
 
         if (appearanceDirty)
             ++stats.dirtyAppearance;
         if (visibilityDirty)
             ++stats.dirtyVisibility;
-        if (uvDirty)
-            ++stats.dirtyUVs;
 
-        if (appearanceDirty || visibilityDirty || uvDirty) {
+        if (appearanceDirty || visibilityDirty) {
             if (record.objectIndex < objects.size() &&
                 objects[record.objectIndex].safety == SafetyClass::StaticSafe) {
                 staticTouched[record.objectIndex] = true;
