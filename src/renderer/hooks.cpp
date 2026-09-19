@@ -318,9 +318,11 @@ class $modify(RendererInterleavedSpriteBatchNode, cocos2d::CCSpriteBatchNode) {
         const auto blend = this->getBlendFunc();
         ccGLBlendFunc(blend.src, blend.dst);
 
-        bool submitted = false;
-        for (int attempt = 0; attempt < 3 && !submitted; ++attempt)
-            submitted = renderer->drawGPUInterleavedBatch(this);
+        // drawGPUInterleavedBatch performs one complete live-atlas validation.
+        // Retrying the exact same batch inside one draw call can repeat expensive
+        // atlas synchronization and leaves less room for a clean next-frame
+        // recovery if GD mutates the batch during traversal.
+        const bool submitted = renderer->drawGPUInterleavedBatch(this);
 
         if (submitted) {
             // This is the truth signal: the live-atlas path actually completed a
