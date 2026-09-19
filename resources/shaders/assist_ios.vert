@@ -46,9 +46,9 @@ void main() {
     t_texCoord = a_texCoord;
 
     float spriteIndex = floor(a_spriteStateIndex + 0.5);
-    float spriteBase = spriteIndex * 3.0;
+    float spriteBase = spriteIndex * 2.0;
     vec4 resolvedColor = fetchData(u_spriteStateTexture, u_spriteStateTextureSize, spriteBase + 0.0);
-    vec4 spriteMeta = fetchData(u_spriteStateTexture, u_spriteStateTextureSize, spriteBase + 2.0);
+    vec4 spriteMeta = fetchData(u_spriteStateTexture, u_spriteStateTextureSize, spriteBase + 1.0);
 
     // Bit 0 of the packed sprite flags is GD's final child visibility. The
     // shader consumes that result instead of trying to reproduce animation or
