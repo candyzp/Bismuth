@@ -178,7 +178,7 @@ void main() {
 
     state.shader = Shader::create({ vertexSource, fragmentSource });
     if (!state.shader) {
-        log::error("Bismuth iOS ground GPU shader unavailable; stock fallback will be used");
+        log::error("Bismuth iOS STRICT ground GPU shader unavailable; stock draw remains suppressed");
         return false;
     }
 
@@ -212,7 +212,7 @@ void main() {
     glGenBuffers(1, &state.indexBuffer);
     if (!state.vao || !state.vertexBuffer || !state.indexBuffer) {
         restoreGroundGLState(saved);
-        log::error("Bismuth iOS ground GPU buffer allocation failed; stock fallback will be used");
+        log::error("Bismuth iOS STRICT ground GPU buffer allocation failed; stock draw remains suppressed");
         return false;
     }
 
@@ -228,7 +228,7 @@ void main() {
     const GLenum error = glGetError();
     restoreGroundGLState(saved);
     if (error != GL_NO_ERROR) {
-        log::error("Bismuth iOS ground GPU setup failed with GL error {}; stock fallback will be used", static_cast<u32>(error));
+        log::error("Bismuth iOS STRICT ground GPU setup failed with GL error {}; stock draw remains suppressed", static_cast<u32>(error));
         return false;
     }
 
@@ -418,7 +418,7 @@ bool drawGroundOnGPU(cocos2d::CCSprite* sprite) {
     const GLenum error = glGetError();
     restoreGroundGLState(saved);
     if (error != GL_NO_ERROR) {
-        log::error("Bismuth iOS ground GPU draw failed with GL error {}; stock fallback will be used", static_cast<u32>(error));
+        log::error("Bismuth iOS STRICT ground GPU draw failed with GL error {}; stock draw remains suppressed", static_cast<u32>(error));
         return false;
     }
 
@@ -509,7 +509,7 @@ bool drawBatch(Renderer* renderer, cocos2d::CCSpriteBatchNode* batch) {
     const GLenum error = glGetError();
     restoreGroundGLState(saved);
     if (error != GL_NO_ERROR) {
-        log::warn("Bismuth iOS live-atlas ground draw hit GL error {}; using stock fallback", static_cast<u32>(error));
+        log::warn("Bismuth iOS STRICT live-atlas ground draw hit GL error {}; stock draw remains suppressed", static_cast<u32>(error));
         return false;
     }
 
@@ -539,8 +539,9 @@ class $modify(RendererGroundOwnedCCSprite, cocos2d::CCSprite) {
         if (this->getDontDraw() || size.width == 0.f || size.height == 0.f)
             return;
 
-        // Never let the helper delete the floor. Unsupported or failed custom
-        // submissions immediately hand this draw back to stock Cocos.
+        // Strict ownership: once a ground sprite is claimed by the GPU path,
+        // never fall back to stock. A failed submission stays visible in logs
+        // and on-screen so renderer regressions cannot hide themselves.
         if (!drawGroundOnGPU(this)) {
             auto& state = groundGPU();
             ++state.failedDraws;
@@ -548,9 +549,8 @@ class $modify(RendererGroundOwnedCCSprite, cocos2d::CCSprite) {
                 GPUTruth::recordGroundFailure(renderer.data(), groundOwner(this), this);
             if (!state.failureAnnounced) {
                 state.failureAnnounced = true;
-                log::warn("Bismuth iOS ground GPU submission failed; using stock draw fallback");
+                log::error("Bismuth iOS STRICT ground GPU submission failed; stock draw suppressed");
             }
-            cocos2d::CCSprite::draw();
         }
     }
 };
