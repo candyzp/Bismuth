@@ -14,10 +14,10 @@ class $modify(RendererExitGuardPlayLayer, PlayLayer) {
     void onEnterTransitionDidFinish() {
         PlayLayer::onEnterTransitionDidFinish();
 
-        // Final scene/batch topology is now available. Rebuild once here so
-        // level-to-level transitions cannot strand Bismuth with early stale
-        // ownership and a permanent IDLE/zero-submit state.
-        if (auto renderer = Renderer::rebuildForPlayLayer(this))
+        // Ownership is compiled during the normal PlayLayer setup path. Do not
+        // destroy/recreate it here: that late rebuild loses the candidate home
+        // information GD exposes during setup and leaves the renderer IDLE.
+        if (auto renderer = Renderer::forPlayLayer(this))
             renderer->resumeGPU();
     }
 

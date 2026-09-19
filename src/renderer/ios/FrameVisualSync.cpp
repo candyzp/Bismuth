@@ -10,8 +10,9 @@ using namespace geode::prelude;
 
 class $modify(BismuthFrameVisualSync, cocos2d::CCDirector) {
     void drawScene() {
-        // Recovery net for missed pause/transition callbacks. Never wake the GPU
-        // while stock GD says the PlayLayer is paused.
+        // Recovery net for missed pause/transition callbacks. This only rebinds
+        // the renderer that was created during the level's normal setup; it never
+        // rebuilds ownership after the fact.
         if (auto playLayer = PlayLayer::get(); playLayer && !playLayer->m_isPaused) {
             auto exact = Renderer::forPlayLayer(playLayer);
             auto active = Renderer::get();

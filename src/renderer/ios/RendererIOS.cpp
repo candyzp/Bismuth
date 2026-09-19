@@ -794,40 +794,6 @@ Ref<Renderer> Renderer::forPlayLayer(PlayLayer* playLayer) {
     return nullptr;
 }
 
-Ref<Renderer> Renderer::rebuildForPlayLayer(PlayLayer* playLayer) {
-    if (!playLayer || !playLayer->m_objectLayer)
-        return nullptr;
-
-    // Renderer construction during setup can happen before GD has finished
-    // moving objects into their final CCSpriteBatchNodes. Rebuild once the
-    // enter transition is complete so ownership is compiled from the final
-    // live scene instead of an early/parentless snapshot.
-    if (auto old = forPlayLayer(playLayer)) {
-        old->suspendGPU();
-        old->terminate();
-        old->removeFromParentAndCleanup(true);
-    } else if (currentRenderer) {
-        currentRenderer->suspendGPU();
-    }
-
-    auto fresh = Renderer::create(playLayer);
-    if (!fresh)
-        return nullptr;
-
-    playLayer->m_objectLayer->addChild(fresh, -100000);
-    fresh->reset();
-
-    if (auto state = iosState(fresh.data()); state && state->resolvedState) {
-        state->resolvedState->setCurrent(true);
-        state->resolvedState->resync();
-        state->resolvedState->reseedActiveFromStock();
-    }
-
-    fresh->beginGPUFrame();
-    log::info("Bismuth iOS final-scene GPU ownership rebuilt");
-    return fresh;
-}
-
 void Renderer::suspendGPU() {
     auto state = iosState(this);
     if (!state)
