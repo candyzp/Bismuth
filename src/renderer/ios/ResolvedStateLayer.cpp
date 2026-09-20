@@ -618,19 +618,23 @@ bool ResolvedStateLayer::canDrawSprite(cocos2d::CCSprite* sprite) {
 
     const auto& record = sprites[spriteIndex];
     if (record.objectIndex < objects.size()) {
-        auto object = objects[record.objectIndex].object;
+        const auto& objectRecord = objects[record.objectIndex];
+        auto object = objectRecord.object;
 
-        if (object && object->m_objectType == GameObjectType::Decoration) {
-            // Forced decorations never fail back to stock because their tree is
-            // complex or because live frame/UV geometry changed.
-            result = sprite && sprite->getTexture();
-        } else if (object == sprite &&
-            !(((object->m_glowSprite || object->m_colorSprite ||
-                object->m_objectType == GameObjectType::Hazard) && !isSimpleSpikeRoot(object))) &&
-            (!object->getChildren() || object->getChildren()->count() == 0)) {
-            // LiveGeometry now uploads changed crop/offset/UV geometry. It is
-            // no longer a reason to demote an owned root to the stock renderer.
-            result = sprite && sprite->getTexture();
+        // Ownership was proven when the level state was built. Once a record is
+        // GPU-owned, runtime child/glow/detail attachment changes must not demote
+        // its root and make an entire atlas batch disappear. LiveGeometry tracks
+        // crop/UV/local-transform changes, while newly attached stock children
+        // still keep their own normal Cocos draw lifecycle.
+        if (object && sprite && sprite->getTexture() &&
+            objectRecord.safety != SafetyClass::StockOnly) {
+            if (object->m_objectType == GameObjectType::Decoration) {
+                result = true;
+            } else if (object == sprite &&
+                (object->m_objectType == GameObjectType::Solid ||
+                 object->m_objectType == GameObjectType::Hazard)) {
+                result = true;
+            }
         }
     }
 
