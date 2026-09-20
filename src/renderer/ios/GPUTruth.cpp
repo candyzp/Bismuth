@@ -2,6 +2,7 @@
 
 #include "GPUTruth.hpp"
 #include "GroundOwnership.hpp"
+#include "AtlasInterleave.hpp"
 #include "../Renderer.hpp"
 
 #include <Geode/Geode.hpp>
@@ -24,6 +25,10 @@ struct TruthState {
     usize objectSubmits = 0;
     usize objectSprites = 0;
     usize objectFailures = 0;
+    std::string lastObjectFailureReason = "none";
+    int lastObjectFailureSlot = -1;
+    u32 lastObjectFailureAtlasSize = 0;
+    u32 lastObjectFailureAge = 9999;
     usize clearSuspects = 0;
     usize spikeClearSuspects = 0;
 
@@ -156,6 +161,10 @@ void beginFrame(Renderer* renderer) {
         state.renderer = renderer;
         state.failureReported = false;
         state.deepScanFrame = 0;
+        state.lastObjectFailureReason = "none";
+        state.lastObjectFailureSlot = -1;
+        state.lastObjectFailureAtlasSize = 0;
+        state.lastObjectFailureAge = 9999;
         state.objectSprites = 0;
         state.clearSuspects = 0;
         state.spikeClearSuspects = 0;
@@ -167,6 +176,8 @@ void beginFrame(Renderer* renderer) {
     // scenes. Submit/failure truth remains frame-exact; opacity/sprite totals are
     // sampled once per second at 60 Hz so the overlay cannot become the 4k+ wall.
     state.deepScanThisFrame = state.enabled && (state.deepScanFrame++ % 60 == 0);
+    if (state.lastObjectFailureAge < 9999)
+        ++state.lastObjectFailureAge;
     resetFrameCounters(state);
 }
 
@@ -208,8 +219,17 @@ void recordObjectBatch(Renderer* renderer, cocos2d::CCSpriteBatchNode* batch) {
 
 void recordObjectFailure(Renderer* renderer) {
     auto& state = truth();
-    if (renderer && renderer == state.renderer)
-        ++state.objectFailures;
+    if (!renderer || renderer != state.renderer)
+        return;
+
+    ++state.objectFailures;
+
+    const char* reason = AtlasInterleaveRegistry::lastFailureReason();
+    state.lastObjectFailureReason =
+        (reason && reason[0] && std::string(reason) != "none") ? reason : "standalone-or-unknown";
+    state.lastObjectFailureSlot = AtlasInterleaveRegistry::lastFailureSlot();
+    state.lastObjectFailureAtlasSize = AtlasInterleaveRegistry::lastFailureAtlasSize();
+    state.lastObjectFailureAge = 0;
 }
 
 void recordBackground(Renderer* renderer, bool submitted) {
@@ -256,8 +276,14 @@ void finishFrame(Renderer* renderer) {
 
     const bool failed = state.objectFailures || state.backgroundFailures;
     if (failed && !state.failureReported) {
-        log::error("Bismuth strict GPU draw failed: objects {}, background {}; stock redraw suppressed",
-            state.objectFailures, state.backgroundFailures);
+        log::error(
+            "Bismuth strict GPU draw failed: batches {}, background {}; reason '{}' slot {}/{}; stock redraw suppressed",
+            state.objectFailures,
+            state.backgroundFailures,
+            state.lastObjectFailureReason,
+            state.lastObjectFailureSlot,
+            state.lastObjectFailureAtlasSize
+        );
         state.failureReported = true;
     } else if (!failed) {
         state.failureReported = false;
@@ -274,18 +300,26 @@ void finishFrame(Renderer* renderer) {
     const bool objectsYES = state.objectSubmits > 0;
     const bool gpuYES = objectsYES || state.backgroundSubmits > 0;
 
+    const bool showStickyFailure =
+        state.lastObjectFailureReason != "none" && state.lastObjectFailureAge <= 120;
+
     const std::string chart = fmt::format(
         "GPU TRUTH: {} | submits {} | sprites {}\n"
         "Clear suspects: {} | spikes {}\n"
         "Background: {} draws | failures {}\n"
-        "Failures: objects {} | strict, no redraw",
+        "Failures: batches {} | strict, no redraw\n"
+        "Last fail: {} | slot {}/{} | {}f ago",
         gpuYES ? "YES" : "NO",
         state.objectSubmits,
         state.objectSprites,
         state.clearSuspects,
         state.spikeClearSuspects,
         state.backgroundSubmits, state.backgroundFailures,
-        state.objectFailures
+        state.objectFailures,
+        showStickyFailure ? state.lastObjectFailureReason : "none",
+        showStickyFailure ? state.lastObjectFailureSlot : -1,
+        showStickyFailure ? state.lastObjectFailureAtlasSize : 0,
+        showStickyFailure ? state.lastObjectFailureAge : 0
     );
 
     if (state.lastText == chart)

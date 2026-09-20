@@ -93,6 +93,10 @@ struct RegistryState {
     std::vector<u16> indices;
     Renderer* activeRenderer = nullptr;
     cocos2d::CCSpriteBatchNode* activeBatch = nullptr;
+
+    const char* lastFailureReason = "none";
+    int lastFailureSlot = -1;
+    u32 lastFailureAtlasSize = 0;
 };
 
 static RegistryState& registry() {
@@ -492,25 +496,32 @@ bool AtlasInterleaveRegistry::drawBatch(
     Renderer* renderer,
     cocos2d::CCSpriteBatchNode* batch
 ) {
-    if (!isExactGameplayBatch(renderer, batch))
-        return false;
-
     auto& state = registry();
-    if (state.invalidRenderers.contains(renderer) || state.activeBatch)
+    auto fail = [&](const char* reason, int slot = -1, u32 atlasSize = 0) -> bool {
+        state.lastFailureReason = reason;
+        state.lastFailureSlot = slot;
+        state.lastFailureAtlasSize = atlasSize;
         return false;
+    };
+
+    if (!isExactGameplayBatch(renderer, batch))
+        return fail("batch-not-exact");
+
+    if (state.invalidRenderers.contains(renderer) || state.activeBatch)
+        return fail(state.activeBatch ? "reentrant-draw" : "renderer-invalid");
 
     auto atlas = batch->getTextureAtlas();
     auto texture = batch->getTexture();
     auto descendants = batch->getDescendants();
     if (!atlas || !texture || !texture->getName() || !descendants)
-        return false;
+        return fail("missing-atlas-state");
 
     const usize totalQuads = static_cast<usize>(atlas->getTotalQuads());
     const usize descendantCount = static_cast<usize>(descendants->count());
     if (totalQuads == 0 || descendantCount != totalQuads ||
         totalQuads > MAX_REASONABLE_ATLAS_QUADS) {
         state.ownedBatches.erase(batch);
-        return false;
+        return fail("atlas-count-mismatch", -1, static_cast<u32>(totalQuads));
     }
 
     state.atlasSprites.assign(totalQuads, nullptr);
@@ -549,13 +560,13 @@ bool AtlasInterleaveRegistry::drawBatch(
     for (u32 i = 0; i < descendants->count(); ++i) {
         auto sprite = typeinfo_cast<cocos2d::CCSprite*>(descendants->objectAtIndex(i));
         if (!sprite || sprite->getBatchNode() != batch)
-            return false;
+            return fail("descendant-not-in-batch", static_cast<int>(i), static_cast<u32>(totalQuads));
 
         const auto atlasIndex = sprite->getAtlasIndex();
         if (atlasIndex == CCSpriteIndexNotInitialized || atlasIndex >= totalQuads)
-            return false;
+            return fail("bad-atlas-index", static_cast<int>(i), static_cast<u32>(totalQuads));
         if (state.atlasSprites[atlasIndex] && state.atlasSprites[atlasIndex] != sprite)
-            return false;
+            return fail("duplicate-atlas-slot", static_cast<int>(atlasIndex), static_cast<u32>(totalQuads));
         state.atlasSprites[atlasIndex] = sprite;
 
         auto recordIt = state.spriteOwners.find(sprite);
@@ -564,29 +575,29 @@ bool AtlasInterleaveRegistry::drawBatch(
         // A registered sprite cannot silently become a stock run when one
         // readiness/geometry check fails inside an otherwise successful batch.
         if (!renderer->isGPUOwnedSprite(sprite) || !ownerReady(recordIt->second))
-            return false;
+            return fail("owned-sprite-not-ready", static_cast<int>(atlasIndex), static_cast<u32>(totalQuads));
         auto spriteTexture = sprite->getTexture();
         if (!spriteTexture || spriteTexture->getName() != texture->getName())
-            return false;
+            return fail("texture-mismatch", static_cast<int>(atlasIndex), static_cast<u32>(totalQuads));
 
         const auto& record = recordIt->second;
         auto& geometry = record.immediate ? record.immediate->liveGeometry : record.deferred->liveGeometry;
         if (!geometry.canUseBatch(record.baseVertex / 4, batch) ||
             !geometry.refresh(record.baseVertex / 4))
-            return false;
+            return fail("live-geometry", static_cast<int>(atlasIndex), static_cast<u32>(totalQuads));
         state.atlasOwners[atlasIndex] = record;
         hasGPU = true;
     }
 
     if (!hasGPU) {
         state.ownedBatches.erase(batch);
-        return false;
+        return fail("no-live-gpu-owner", -1, static_cast<u32>(totalQuads));
     }
     state.ownedBatches[batch] = renderer;
 
     for (usize i = 0; i < totalQuads; ++i) {
         if (!state.atlasSprites[i])
-            return false;
+            return fail("missing-atlas-slot", static_cast<int>(i), static_cast<u32>(totalQuads));
     }
 
     auto& cache = state.indexCaches[batch];
@@ -601,7 +612,7 @@ bool AtlasInterleaveRegistry::drawBatch(
         if (!updateIndexCache(cache, state.indices)) {
             cache.owners.clear();
             cache.runs.clear();
-            return false;
+            return fail("index-cache-upload", -1, static_cast<u32>(totalQuads));
         }
         cache.owners = state.atlasOwners;
         cache.runs = state.runs;
@@ -619,14 +630,14 @@ bool AtlasInterleaveRegistry::drawBatch(
     state.activeRenderer = nullptr;
 
     if (atlas->getTotalQuads() != totalQuads || descendants->count() != totalQuads)
-        return false;
+        return fail("atlas-mutated-after-transform", -1, static_cast<u32>(totalQuads));
     for (usize i = 0; i < totalQuads; ++i) {
         auto sprite = typeinfo_cast<cocos2d::CCSprite*>(descendants->objectAtIndex(i));
         if (!sprite || sprite->getBatchNode() != batch)
-            return false;
+            return fail("post-transform-batch-change", static_cast<int>(i), static_cast<u32>(totalQuads));
         const usize slot = sprite->getAtlasIndex();
         if (slot >= totalQuads || state.atlasSprites[slot] != sprite)
-            return false;
+            return fail("post-transform-order-change", static_cast<int>(slot), static_cast<u32>(totalQuads));
     }
 
     bool hasStock = false;
@@ -636,13 +647,13 @@ bool AtlasInterleaveRegistry::drawBatch(
             cache.owners.clear();
             cache.runs.clear();
             cache.indices.clear();
-            return false;
+            return fail("invalid-draw-plan", static_cast<int>(run.firstSlot), static_cast<u32>(totalQuads));
         }
         if (state.atlasOwners[run.firstSlot].empty())
             hasStock = true;
     }
     if (hasStock && !uploadDirtyAtlas(atlas))
-        return false;
+        return fail("dirty-atlas-upload", -1, static_cast<u32>(totalQuads));
 
     auto drawDataFor = [&](const SpriteOwner& record) -> OwnerDrawData {
         if (record.immediate) {
@@ -724,7 +735,7 @@ bool AtlasInterleaveRegistry::drawBatch(
             run.slotCount > totalQuads - run.firstSlot) {
             if (gpuStateActive)
                 restoreStockState();
-            return false;
+            return fail("draw-run-out-of-range", static_cast<int>(run.firstSlot), static_cast<u32>(totalQuads));
         }
 
         const auto& ownerRecord = state.atlasOwners[run.firstSlot];
@@ -744,26 +755,26 @@ bool AtlasInterleaveRegistry::drawBatch(
             run.slotCount > (cache.indices.size() - run.firstIndex) / 6) {
             if (gpuStateActive)
                 restoreStockState();
-            return false;
+            return fail("owner-index-range", static_cast<int>(run.firstSlot), static_cast<u32>(totalQuads));
         }
 
         const auto owner = drawDataFor(ownerRecord);
         if (!owner.resolvedState || !owner.shader || !owner.vao || !owner.ownerIndexBuffer) {
             if (gpuStateActive)
                 restoreStockState();
-            return false;
+            return fail("owner-draw-data", static_cast<int>(run.firstSlot), static_cast<u32>(totalQuads));
         }
         if (!owner.geometry || !owner.geometry->flush(owner.vertexBuffer)) {
             if (gpuStateActive)
                 restoreStockState();
-            return false;
+            return fail("geometry-upload", static_cast<int>(run.firstSlot), static_cast<u32>(totalQuads));
         }
         auto objectStateTexture = owner.resolvedState->getObjectStateTexture();
         auto spriteStateTexture = owner.resolvedState->getSpriteStateTexture();
         if (!objectStateTexture || !spriteStateTexture) {
             if (gpuStateActive)
                 restoreStockState();
-            return false;
+            return fail("state-texture-missing", static_cast<int>(run.firstSlot), static_cast<u32>(totalQuads));
         }
 
         // Stock runs may switch program/texture state. Re-enter the assist state
@@ -818,7 +829,21 @@ bool AtlasInterleaveRegistry::drawBatch(
 
     if (gpuStateActive)
         restoreStockState();
-    return consumeGLErrors();
+    if (!consumeGLErrors())
+        return fail("gl-submit-error", -1, static_cast<u32>(totalQuads));
+    return true;
+}
+
+const char* AtlasInterleaveRegistry::lastFailureReason() {
+    return registry().lastFailureReason;
+}
+
+int AtlasInterleaveRegistry::lastFailureSlot() {
+    return registry().lastFailureSlot;
+}
+
+unsigned int AtlasInterleaveRegistry::lastFailureAtlasSize() {
+    return registry().lastFailureAtlasSize;
 }
 
 bool AtlasInterleaveRegistry::shouldSkipTransform(
@@ -835,6 +860,9 @@ bool AtlasInterleaveRegistry::shouldSkipTransform(
 
 void AtlasInterleaveRegistry::beginFrame() {
     auto& state = registry();
+    state.lastFailureReason = "none";
+    state.lastFailureSlot = -1;
+    state.lastFailureAtlasSize = 0;
     for (const auto& [owner, renderer] : state.immediateRenderers) {
         owner->stats.drawCallsLastFrame = 0;
         owner->stats.indicesLastFrame = 0;
