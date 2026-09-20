@@ -151,7 +151,7 @@ int main() {
         s.draw();
         assert((fixture::pixels==std::vector<int>{0,1,2}) && fixture::gpuDraws==2);
         s.claim({0}); s.draw();
-        assert((fixture::pixels==std::vector<int>{0,1,2}) && fixture::gpuDraws==0);
+        assert(fixture::pixels.empty() && fixture::gpuDraws==0);
         AtlasInterleaveRegistry::unregisterImmediate(&immediate);
     }
     {
@@ -174,7 +174,7 @@ int main() {
         s.draw(); assert(fixture::gpuDraws==1);
         // All GPU-eligible geometry disappears, then returns without rejoining.
         s.renderer.owned.clear(); s.draw();
-        assert((fixture::pixels==std::vector<int>{0,1,2}) && fixture::gpuDraws==0);
+        assert(fixture::pixels.empty() && fixture::gpuDraws==0);
         s.renderer.owned.insert(&s.sprites[0]); s.draw();
         assert((fixture::pixels==std::vector<int>{0,1,2}) && fixture::gpuDraws==1);
         AtlasInterleaveRegistry::unregisterImmediate(&immediate);

@@ -15,7 +15,7 @@ int main() {
         std::vector<cocos2d::CCSprite*> accepted;
         ResolvedStateLayer::CollectionDiagnostics diagnostics;
         auto classify=[&]{accepted.clear();return state.classifyObject(&object,accepted,diagnostics);};
-        assert(classify()==ResolvedStateLayer::SafetyClass::StaticSafe);
+        assert(classify()==ResolvedStateLayer::SafetyClass::DynamicSafe);
         assert(accepted.size()==1 && accepted.front()==&object);
         assert(state.canDrawSprite(&object));
         object.m_groupCount=1;
@@ -30,7 +30,7 @@ int main() {
         assert(classify()==ResolvedStateLayer::SafetyClass::StockOnly && !state.canDrawSprite(&object));
         object.children.size=0;
         object.dontDraw=true; assert(!state.canDrawSprite(&object)); object.dontDraw=false;
-        object.flipX=true; assert(!state.canDrawSprite(&object)); object.flipX=false;
+        object.flipX=true; assert(state.canDrawSprite(&object)); object.flipX=false;
         object.m_glowSprite=nullptr; object.m_colorSprite=nullptr;
         object.m_objectType=GameObjectType::Solid;
     }
@@ -83,11 +83,11 @@ int main() {
     object.m_isInvisible=false;
     object.children.size=1; assert(!state.canDrawSprite(&object)); object.children.size=0;
     object.m_glowSprite=&object; assert(!state.canDrawSprite(&object)); object.m_glowSprite=nullptr;
-    object.rect.size.width=60; assert(!state.canDrawSprite(&object)); object.rect.size.width=30;
-    object.flipX=true; assert(!state.canDrawSprite(&object)); object.flipX=false;
-    object.offset.x=1; assert(!state.canDrawSprite(&object)); object.offset.x=0;
-    object.tex.id=5; assert(!state.canDrawSprite(&object)); object.tex.id=4;
-    object.tex.width=2048; assert(!state.canDrawSprite(&object)); object.tex.width=1024;
+    object.rect.size.width=60; assert(state.canDrawSprite(&object)); object.rect.size.width=30;
+    object.flipX=true; assert(state.canDrawSprite(&object)); object.flipX=false;
+    object.offset.x=1; assert(state.canDrawSprite(&object)); object.offset.x=0;
+    object.tex.id=5; assert(state.canDrawSprite(&object)); object.tex.id=4;
+    object.tex.width=2048; assert(state.canDrawSprite(&object)); object.tex.width=1024;
     assert(state.canDrawSprite(&object));
     auto sprite=state.captureSpriteState(&object);
     sprite.opacityModifyRGB=true;
@@ -129,12 +129,12 @@ int main() {
     assert(state.getStats().spriteValidationReuses==1);
     object.flipX=true;
     state.beginFrameValidation();
-    assert(!state.canDrawSprite(&object));
+    assert(state.canDrawSprite(&object));
     assert(state.getStats().spriteValidations==1);
     assert(state.getStats().spriteValidationReuses==0);
     object.flipX=false;
     state.beginFrameValidation();
     assert(state.canDrawSprite(&object));
 
-    std::cout << "PASS: exact affine state, static transform reuse, detached visibility, small transform changes, mutable geometry rejection, per-frame validation cache, 65,536 stock opacity/color pairs, current-state teardown\n";
+    std::cout << "PASS: exact affine state, static transform reuse, detached visibility, small transform changes, live geometry eligibility, per-frame validation cache, 65,536 stock opacity/color pairs, current-state teardown\n";
 }

@@ -1,6 +1,7 @@
 #ifdef GEODE_IS_IOS
 
 #include "ResolvedStateLayer.hpp"
+#include "DirtyRanges.hpp"
 #include "../../ObjectUtils.hpp"
 
 #include <Geode/binding/CheckpointGameObject.hpp>
@@ -15,7 +16,6 @@ using namespace geode::prelude;
 namespace {
 constexpr usize OBJECT_TEXELS_PER_STATE = 2;
 constexpr usize SPRITE_TEXELS_PER_STATE = 2;
-constexpr usize DIRTY_RECORD_MERGE_GAP = 2;
 
 bool isSimpleSpikeRoot(GameObject* object) {
     // Only the root quad is GPU-owned. Separate glow/detail nodes keep their
@@ -104,49 +104,28 @@ inline bool rectChanged(const cocos2d::CCRect& a, const cocos2d::CCRect& b) {
            changedFloat(a.size.height, b.size.height);
 }
 
-void uploadDirtyRecordSpans(
-    DataTexture* texture,
-    const std::vector<glm::vec4>& texels,
-    const std::vector<usize>& dirtyRecords,
-    usize texelsPerRecord,
+bool uploadDirtyRecordSpans(
+    DataTexture* texture, const std::vector<glm::vec4>& texels,
+    std::vector<usize>& dirtyRecords, usize texelsPerRecord,
     ResolvedStateLayer::Stats& stats
 ) {
-    if (!texture || dirtyRecords.empty() || texelsPerRecord == 0)
-        return;
-
-    auto uploadSpan = [&](usize recordStart, usize recordEnd) {
-        const usize startTexel = recordStart * texelsPerRecord;
-        const usize endTexel = (recordEnd + 1) * texelsPerRecord;
-        const usize texelCount = endTexel - startTexel;
-        if (startTexel >= texels.size() || endTexel > texels.size())
-            return;
-
-        if (texture->uploadRange(
-            texels.data() + startTexel,
-            startTexel,
-            texelCount
-        )) {
-            stats.bytesUploaded += texelCount * sizeof(glm::vec4);
-            ++stats.uploadCalls;
-        }
-    };
-
-    usize spanStart = dirtyRecords.front();
-    usize spanEnd = spanStart;
-
-    for (usize i = 1; i < dirtyRecords.size(); ++i) {
-        const usize next = dirtyRecords[i];
-        if (next <= spanEnd + 1 + DIRTY_RECORD_MERGE_GAP) {
-            spanEnd = next;
-            continue;
-        }
-
-        uploadSpan(spanStart, spanEnd);
-        spanStart = spanEnd = next;
+    if (dirtyRecords.empty())
+        return true;
+    if (!texture || !texelsPerRecord)
+        return false;
+    std::vector<DataTexture::Range> ranges;
+    buildDirtyRanges(dirtyRecords, texelsPerRecord,
+        static_cast<usize>(texture->getSize().x), ranges);
+    if (!texture->uploadRanges(texels.data(), texels.size(), ranges))
+        return false; // Retain the records: a failed upload must retry next frame.
+    for (const auto& range : ranges) {
+        stats.bytesUploaded += range.texelCount * sizeof(glm::vec4);
+        ++stats.uploadCalls;
     }
-
-    uploadSpan(spanStart, spanEnd);
+    dirtyRecords.clear();
+    return true;
 }
+
 } // namespace
 
 void ResolvedStateLayer::destroyTextures() {
@@ -156,6 +135,7 @@ void ResolvedStateLayer::destroyTextures() {
         DataTexture::destroy(spriteStateTexture);
     objectStateTexture = nullptr;
     spriteStateTexture = nullptr;
+    uploadsCurrent = false;
 }
 
 ResolvedStateLayer::SafetyClass ResolvedStateLayer::classifyObject(
@@ -606,10 +586,12 @@ void ResolvedStateLayer::resync() {
         packSpriteState(i, record.state, record.objectIndex);
     }
 
-    if (!objectTexels.empty())
-        objectStateTexture->upload(objectTexels.data(), objectTexels.size());
-    if (!spriteTexels.empty())
-        spriteStateTexture->upload(spriteTexels.data(), spriteTexels.size());
+    const bool objectsUploaded = objectStateTexture->upload(objectTexels.data(), objectTexels.size());
+    const bool spritesUploaded = spriteStateTexture->upload(spriteTexels.data(), spriteTexels.size());
+    uploadsCurrent = objectsUploaded && spritesUploaded;
+    fullUploadPending = !uploadsCurrent;
+    dirtyObjectRecords.clear();
+    dirtySpriteRecords.clear();
 }
 
 bool ResolvedStateLayer::canDrawSprite(cocos2d::CCSprite* sprite) {
@@ -646,11 +628,9 @@ bool ResolvedStateLayer::canDrawSprite(cocos2d::CCSprite* sprite) {
             !(((object->m_glowSprite || object->m_colorSprite ||
                 object->m_objectType == GameObjectType::Hazard) && !isSimpleSpikeRoot(object))) &&
             (!object->getChildren() || object->getChildren()->count() == 0)) {
-            const auto current = captureSpriteState(sprite);
-            const auto& baked = record.geometry;
-            result = !spriteUVChanged(baked, current) &&
-                baked.offset.x == current.offset.x && baked.offset.y == current.offset.y &&
-                baked.textureWidth == current.textureWidth && baked.textureHeight == current.textureHeight;
+            // LiveGeometry now uploads changed crop/offset/UV geometry. It is
+            // no longer a reason to demote an owned root to the stock renderer.
+            result = sprite && sprite->getTexture();
         }
     }
 
@@ -747,8 +727,7 @@ void ResolvedStateLayer::update(bool detailedProbe) {
     if (!detailedProbe || !objectStateTexture || !spriteStateTexture || activeSpriteIndices.empty())
         return;
 
-    dirtyObjectRecords.clear();
-    dirtySpriteRecords.clear();
+    // Failed spans remain queued even if the CPU state stops changing.
     staticTouched.resize(objects.size(), false);
     for (usize i : activeObjectIndices) {
         if (i < staticTouched.size())
@@ -825,20 +804,26 @@ void ResolvedStateLayer::update(bool detailedProbe) {
         ? stats.activeStaticObjects - touchedStaticCount
         : 0;
 
-    uploadDirtyRecordSpans(
+    bool objectsUploaded = uploadDirtyRecordSpans(
         objectStateTexture,
         objectTexels,
         dirtyObjectRecords,
         OBJECT_TEXELS_PER_STATE,
         stats
     );
-    uploadDirtyRecordSpans(
+    bool spritesUploaded = uploadDirtyRecordSpans(
         spriteStateTexture,
         spriteTexels,
         dirtySpriteRecords,
         SPRITE_TEXELS_PER_STATE,
         stats
     );
+    if (fullUploadPending) {
+        objectsUploaded = objectStateTexture->upload(objectTexels.data(), objectTexels.size());
+        spritesUploaded = spriteStateTexture->upload(spriteTexels.data(), spriteTexels.size());
+        fullUploadPending = !(objectsUploaded && spritesUploaded);
+    }
+    uploadsCurrent = objectsUploaded && spritesUploaded;
 }
 
 #endif

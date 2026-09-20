@@ -3,37 +3,44 @@
 Run from the repository root with Python 3 and a C++23-capable GCC:
 
 ```sh
-python tests/run_ios_atlas_tests.py
-python tests/run_ios_state_tests.py
-python tests/run_ios_lifecycle_tests.py
-python tests/run_ios_ground_tests.py
-glslang -l resources/shaders/assist_ios.vert resources/shaders/assist_ios.frag
+python3 tests/run_ios_atlas_tests.py
+python3 tests/run_ios_state_tests.py
+python3 tests/run_ios_lifecycle_tests.py
+python3 tests/run_ios_upload_tests.py
+python3 tests/run_ios_geometry_tests.py
+python3 tests/run_ios_shader_tests.py
 ```
 
-The atlas test compiles the production registry and the production CCSprite / CCSpriteBatchNode hook bodies against a small fake Cocos/GL API. The state test compiles the production state structures and capture, packing, comparison, geometry eligibility, and current-state lifetime functions. Both use AddressSanitizer and UndefinedBehaviorSanitizer. In containers where LeakSanitizer cannot inspect `/proc`, use `ASAN_OPTIONS=detect_leaks=0`; address and undefined-behavior checks remain enabled.
+The C++ tests compile production functions against small fake Cocos/GL APIs with
+AddressSanitizer and UndefinedBehaviorSanitizer. In containers that cannot run
+LeakSanitizer, use `ASAN_OPTIONS=detect_leaks=0`. The shader test uses a real
+headless Mesa GLES context through libEGL; it is not an Apple driver test.
 
-Coverage includes:
+Coverage:
 
-- Ordered mixed stock/GPU output while complex stock sprites remain in the same atlas without disabling neighboring GPU runs.
-- 10,000 shuffled sprites, repeated reorderings, no redundant index upload for an unchanged order, and u16 index boundaries.
-- Strict owned-batch failure behavior for failed index uploads, failed atlas synchronization, and unavailable GPU state instead of a silent full-stock redraw.
-- Preservation of texture/program bindings, each VAO's original element buffer, color/depth write masks, and separate front/back stencil masks.
-- Exact stock affine coefficients, including skew/separate-axis rotation, small transform changes and vertex Z.
-- Rejection of stale texture/crop/flip/offset geometry and newly attached child/glow parts.
-- Detached object visibility clearing so GPU geometry cannot linger after stock removes an object from its render parent.
-- All 65,536 color-byte/opacity combinations against Cocos' premultiplied-color expression.
-- Clearing the active resolved-state pointer on destruction.
-- Overlapping PlayLayer setup/exit, returning to a suspended layer, and preserving an explicit disable.
-- Eight simulation updates per rendered frame with exactly one resolved-state capture, including frames with no GPU draw.
-- Safe geometry disappearing and returning in the same atlas, unchanged draw-plan reuse, and recovery after a failed replacement index upload.
-- Spatial grouping of 33,000 safe objects across three u16 GPU buffers without changing live atlas draw order.
-- Menu restart of a suspended renderer without an enter-transition callback, including explicit-disable preservation.
-- Simple spike roots with separate stock glow/detail sprites; animated, nested, and changed-geometry cases remain excluded.
-- Cocos' cached VAO/texture bindings versus actual GL state across 120 clean frames with stock/GPU/stock interleaving. The old batch-wide snapshot fails this regression after an unrelated floor/atlas draw; boundary-local snapshots pass.
-- Both ground tile descendant trees, the line and shadows, empty/dont-draw containers, exact corner colors and UVs, scrolling updates, failed initialization/submission, and restoration of the caller's separate blend functions and GL bindings.
+- 10,000 shuffled sprites, repeated reorderings, unchanged index-buffer reuse,
+  spatial buffers exceeding 32,000 sprites, u16 limits, and exact mixed draw order.
+- Direct dirty-atlas VBO upload with no masked full-atlas rendering pass; failed
+  uploads remain failures. GL state and Cocos' VAO cache survive mixed draws.
+- Failed owned atlas draws do not switch to a full stock redraw.
+- Exact affine transforms, detached visibility, stock premultiplied color for
+  all 65,536 byte/opacity pairs, and one validation epoch per displayed frame.
+- Overlapping PlayLayer setup/exit, pause/resume, explicit disable, and one state
+  capture per displayed frame despite multiple simulation updates.
+- Data-texture row boundaries, overflow rejection, one binding scope per texture,
+  coalescing 4,000 scattered dirty records into 16 transfers in the fixture, and
+  retaining/retrying failed dirty records even when CPU state stops changing.
+- Live crop/UV/offset and child affine changes, unchanged geometry reuse, root
+  motion without a geometry reupload, and retry after a vertex-upload failure.
+- Actual GLES shader compilation/linking and colored/black background pixel output.
 
-These are host regression tests, not an iOS build or a Geometry Dash performance benchmark. They do not measure Future Funk FPS, Apple driver behavior, or runtime Geode hook ABI compatibility. The workflow remains manual-only and was not run for this change.
+The PR workflows run the host regressions and build the iOS mod. Passing these
+checks does not establish Geometry Dash FPS, Apple driver behavior, or all Geode
+hook interactions on a device.
 
-For device validation, build the new master and compare the same Future Funk sections with Bismuth enabled and disabled. Check overlapping decoration and fades, reset/practice restart, exiting/re-entering the level, and both screen edges where objects enter or leave the active render set. Use the GPU debug display to verify nonzero GPU draws and skipped atlas transforms, then turn it off for the frame-rate comparison.
-
-Also revisit the reported 5.71% section: block fills must remain correct after the first frames, and no extra black strip should follow the camera. Floor proof now comes from successful draws of the actual child tiles; G2 can remain NO on ground styles without a drawn second layer. Confirm floor coverage while scrolling and after a ground-style or camera change. Host tests exercise production C++ control flow with fake GL; they do not establish that these device symptoms are resolved.
+For device validation, compare the same WHAT segment, same refresh/FPS cap and
+settings, at a similar device temperature, with GPU debug disabled. Compare
+Bismuth enabled/disabled over repeated runs and inspect frame-time spikes, not
+just the capped FPS number. Separately turn diagnostics on to check background
+submissions and errors. Check color/background changes, resets, practice restart,
+fades, moving decorations, glow overlap, and exits/re-entry.

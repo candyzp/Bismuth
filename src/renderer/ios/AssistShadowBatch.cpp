@@ -139,6 +139,7 @@ void AssistShadowBatch::destroyGL() {
 
     drawRanges.clear();
     ownedSprites.clear();
+    liveGeometry.clear();
     stats.ready = false;
     stats.visibleOwnership = false;
 }
@@ -149,6 +150,7 @@ bool AssistShadowBatch::buildGeometry() {
     std::vector<CandidateWithTexture> candidates;
     candidates.reserve(std::min<usize>(sourceCandidates.size(), MAX_BATCH_SPRITES));
     ownedSprites.clear();
+    liveGeometry.clear();
 
     usize ordinal = 0;
     for (const auto& candidate : sourceCandidates) {
@@ -284,6 +286,7 @@ bool AssistShadowBatch::buildGeometry() {
         indices.push_back(baseVertex + 3);
         indices.push_back(baseVertex + 1);
         activeRange->indexCount += 6;
+        liveGeometry.add(entry.candidate, vertices.data() + baseVertex);
         ownedSprites.push_back(sprite);
         ++stats.batchedSprites;
     }

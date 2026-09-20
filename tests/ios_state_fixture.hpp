@@ -23,7 +23,16 @@ struct CCTexture2D {
     u32 id=4; float width=1024,height=1024;
     u32 getName(){return id;} float getPixelsWide(){return width;} float getPixelsHigh(){return height;}
 };
-struct CCSprite {
+struct CCNode {
+    virtual ~CCNode()=default;
+    CCNode* parent=nullptr;
+    CCArray children;
+    CCNode* getParent(){return parent;}
+    CCArray* getChildren(){return &children;}
+    int getZOrder(){return 0;}
+};
+struct CCSprite : CCNode {
+    bool getDontDraw(){return false;}
     ccColor3B color; u8 opacity=255;
     bool visible=true, rotated=false, flipX=false, flipY=false, premultiplied=false;
     CCRect rect{{0,0},{30,30}}; CCPoint offset;
@@ -35,7 +44,7 @@ struct CCSprite {
     CCTexture2D* getTexture(){return &tex;}
 };
 }
-enum class GameObjectType { Solid, Hazard, AnimatedHazard };
+enum class GameObjectType { Solid, Hazard, AnimatedHazard, Decoration };
 enum class GameObjectClassType { Normal, Animated };
 struct GameObject : cocos2d::CCSprite {
     virtual ~GameObject()=default;
@@ -48,14 +57,12 @@ struct GameObject : cocos2d::CCSprite {
     bool getDontDraw(){return dontDraw;}
     bool isTrigger(){return trigger;}
     bool getHasRotateAction(){return rotate;}
-    cocos2d::CCArray children;
     cocos2d::CCSprite *m_glowSprite=nullptr,*m_colorSprite=nullptr;
     bool m_isInvisible=false;
+    bool m_colorZLayerRelated=false;
     cocos2d::CCAffineTransform transform;
     float vertexZ=0;
-    GameObject* parent=nullptr;
     cocos2d::CCArray* getChildren(){return &children;}
-    GameObject* getParent(){return parent;}
     cocos2d::CCAffineTransform nodeToParentTransform(){return transform;}
     float getVertexZ(){return vertexZ;}
 };
@@ -72,5 +79,10 @@ template<class F> bool unpackObjectIntoSprites(GameObject* o,F callback,SpriteUn
 }
 }
 namespace geode { namespace prelude {
-template<class T> T typeinfo_cast(GameObject* o){return dynamic_cast<T>(o);}
+template<class T, class U> T typeinfo_cast(U* o){return dynamic_cast<T>(o);}
+template<class T> struct CCArrayExt {
+    explicit CCArrayExt(cocos2d::CCArray*) {}
+    std::vector<T> values;
+    auto begin(){return values.begin();} auto end(){return values.end();}
+};
 } }

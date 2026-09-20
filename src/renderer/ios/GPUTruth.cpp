@@ -18,6 +18,9 @@ struct TruthState {
     Renderer* renderer = nullptr;
     bool enabled = false;
 
+    usize backgroundSubmits = 0;
+    usize backgroundFailures = 0;
+    bool failureReported = false;
     usize objectSubmits = 0;
     usize objectSprites = 0;
     usize objectFailures = 0;
@@ -66,6 +69,8 @@ void clearLabels(TruthState& state) {
 }
 
 void resetFrameCounters(TruthState& state) {
+    state.backgroundSubmits = 0;
+    state.backgroundFailures = 0;
     state.objectSubmits = 0;
     state.objectFailures = 0;
 
@@ -149,6 +154,7 @@ void beginFrame(Renderer* renderer) {
     if (state.renderer != renderer) {
         clearLabels(state);
         state.renderer = renderer;
+        state.failureReported = false;
         state.deepScanFrame = 0;
         state.objectSprites = 0;
         state.clearSuspects = 0;
@@ -202,8 +208,16 @@ void recordObjectBatch(Renderer* renderer, cocos2d::CCSpriteBatchNode* batch) {
 
 void recordObjectFailure(Renderer* renderer) {
     auto& state = truth();
-    if (state.enabled && renderer && renderer == state.renderer)
+    if (renderer && renderer == state.renderer)
         ++state.objectFailures;
+}
+
+void recordBackground(Renderer* renderer, bool submitted) {
+    auto& state = truth();
+    if (!renderer || renderer != state.renderer)
+        return;
+    if (submitted) ++state.backgroundSubmits;
+    else ++state.backgroundFailures;
 }
 
 void recordGroundSuccess(
@@ -240,7 +254,15 @@ void finishFrame(Renderer* renderer) {
     if (!renderer || renderer != state.renderer)
         return;
 
-    if (!state.enabled) {
+    const bool failed = state.objectFailures || state.backgroundFailures;
+    if (failed && !state.failureReported) {
+        log::error("Bismuth strict GPU draw failed: objects {}, background {}; stock redraw suppressed",
+            state.objectFailures, state.backgroundFailures);
+        state.failureReported = true;
+    } else if (!failed) {
+        state.failureReported = false;
+    }
+    if (!state.enabled && !failed) {
         setChartVisible(state, false);
         return;
     }
@@ -250,17 +272,19 @@ void finishFrame(Renderer* renderer) {
     setChartVisible(state, true);
 
     const bool objectsYES = state.objectSubmits > 0;
-    const bool gpuYES = objectsYES;
+    const bool gpuYES = objectsYES || state.backgroundSubmits > 0;
 
     const std::string chart = fmt::format(
         "GPU TRUTH: {} | submits {} | sprites {}\n"
         "Clear suspects: {} | spikes {}\n"
-        "Failures: objects {}",
+        "Background: {} draws | failures {}\n"
+        "Failures: objects {} | strict, no redraw",
         gpuYES ? "YES" : "NO",
         state.objectSubmits,
         state.objectSprites,
         state.clearSuspects,
         state.spikeClearSuspects,
+        state.backgroundSubmits, state.backgroundFailures,
         state.objectFailures
     );
 

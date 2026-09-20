@@ -6,6 +6,13 @@
 using namespace geode::prelude;
 
 class $modify(RendererStandaloneOwnedCCSprite, cocos2d::CCSprite) {
+    void draw() {
+        auto renderer = Renderer::get();
+        if (renderer && renderer->drawGPUBackground(this))
+            return;
+        cocos2d::CCSprite::draw();
+    }
+
     void visit() {
         auto renderer = Renderer::get();
         if (renderer && renderer->isGPUOwnedStandaloneSprite(this)) {

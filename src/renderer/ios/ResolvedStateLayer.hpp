@@ -161,13 +161,15 @@ public:
     bool isForcedDecorationSprite(cocos2d::CCSprite* sprite) const;
 
     inline bool isGPUStateReady() const {
-        return objectStateTexture != nullptr && spriteStateTexture != nullptr;
+        return objectStateTexture != nullptr && spriteStateTexture != nullptr && uploadsCurrent;
     }
 
     inline DataTexture* getObjectStateTexture() const { return objectStateTexture; }
     inline DataTexture* getSpriteStateTexture() const { return spriteStateTexture; }
 
 private:
+    bool uploadsCurrent = false;
+    bool fullUploadPending = false;
     struct ObjectState {
         cocos2d::CCAffineTransform transform = cocos2d::CCAffineTransformMakeIdentity();
         float vertexZ = 0.f;

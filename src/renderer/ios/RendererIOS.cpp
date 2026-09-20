@@ -6,6 +6,8 @@
 #include "AssistShadowBatch.hpp"
 #include "StandaloneAssistBatch.hpp"
 #include "AtlasInterleave.hpp"
+#include "BackgroundGPU.hpp"
+#include "GPUTruth.hpp"
 
 #include "Geode/cocos/CCDirector.h"
 #include "Geode/cocos/sprite_nodes/CCSpriteBatchNode.h"
@@ -35,6 +37,7 @@ struct StandaloneChunkDesc {
 };
 
 struct IOSRendererState {
+    BackgroundGPU background;
     std::unique_ptr<ColorChannelBuffer> colorChannels = std::make_unique<ColorChannelBuffer>();
     std::unique_ptr<ResolvedStateLayer> resolvedState;
     Shader* assistShader = nullptr;
@@ -699,7 +702,7 @@ void Renderer::updateDebugText() {
             state->resolvedState->isGPUStateReady();
         const char* status = !enabled ? "OFF" : !ready ? "UNAVAILABLE" : calls ? "ACTIVE" : "IDLE";
         text = fmt::format(
-            "Bismuth GPU [{}]\nGPU Draw: {} sprites/frame\nCalls: {} | CPU Saved: {}",
+            "Bismuth GPU [{}]\nGPU Draw: {} sprites/frame\nCalls: {} | Transforms skipped: {}",
             status, indices / 6, calls,
             state->batchTransformSkipsLastFrame + state->standaloneRootVisitsLastFrame
         );
@@ -717,6 +720,17 @@ void Renderer::finishDraw() {}
 
 void Renderer::update(float dt) {
     gameTimer += dt;
+}
+
+bool Renderer::drawGPUBackground(cocos2d::CCSprite* sprite) {
+    if (!enabled || !layer || !layer->m_background || !sprite ||
+        !isDescendantOf(sprite, layer->m_background))
+        return false;
+    auto state = iosState(this);
+    const bool submitted = state && state->background.draw(sprite);
+    GPUTruth::recordBackground(this, submitted);
+    // Ownership, not success: a failed background draw never calls stock draw.
+    return true;
 }
 
 void Renderer::beginGPUFrame() {
@@ -907,8 +921,10 @@ bool Renderer::isGPUOwnedStandaloneSprite(cocos2d::CCSprite* sprite) const {
     if (!buffer)
         return false;
     const_cast<Renderer*>(this)->prepareGPUFrame();
-    if (!buffer->drawRoot(object))
-        return false;
+    if (!buffer->drawRoot(object)) {
+        GPUTruth::recordObjectFailure(const_cast<Renderer*>(this));
+        return true; // Suppress stock redraw for this owned root, even on failure.
+    }
 
     ++state->standaloneRootVisitsCurrentFrame;
     return true;

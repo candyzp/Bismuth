@@ -331,13 +331,9 @@ class $modify(RendererInterleavedSpriteBatchNode, cocos2d::CCSpriteBatchNode) {
         } else {
             GPUTruth::recordObjectFailure(renderer.data());
 
-            if (renderer->hasForcedDecorationInBatch(this)) {
-                log::error("Bismuth iOS FORCED decoration GPU batch failed; stock fallback suppressed");
-                return;
-            }
-
-            log::warn("Bismuth iOS object/spike GPU batch became unsafe; drawing this batch with stock Cocos");
-            cocos2d::CCSpriteBatchNode::draw();
+            // An owned draw failure is visible; never redraw the complete batch
+            // with stock Cocos (which may also double-draw a submitted prefix).
+            return;
         }
     }
 };

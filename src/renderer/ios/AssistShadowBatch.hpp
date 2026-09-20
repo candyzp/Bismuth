@@ -3,6 +3,7 @@
 #ifdef GEODE_IS_IOS
 
 #include "ResolvedStateLayer.hpp"
+#include "LiveGeometry.hpp"
 #include "../Buffer.hpp"
 #include "../Shader.hpp"
 #include <Geode/Geode.hpp>
@@ -42,12 +43,8 @@ public:
 private:
     friend class AtlasInterleaveRegistry;
 
-    struct Vertex {
-        glm::vec2 localPosition;
-        glm::vec2 texCoord;
-        float objectStateIndex = 0.f;
-        float spriteStateIndex = 0.f;
-    };
+    using Vertex = AssistVertex;
+    LiveGeometry liveGeometry;
 
     struct DrawRange {
         u32 textureId = 0;

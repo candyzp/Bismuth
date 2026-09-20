@@ -3,6 +3,7 @@
 #ifdef GEODE_IS_IOS
 
 #include <common.hpp>
+#include <vector>
 
 class DataTexture {
 public:
@@ -18,6 +19,9 @@ public:
 
     bool upload(const void* data, usize texelCount);
     bool uploadRange(const void* data, usize startTexel, usize texelCount);
+    struct Range { usize startTexel; usize texelCount; };
+    // All ranges share one binding scope and one error check.
+    bool uploadRanges(const void* data, usize texelCount, const std::vector<Range>& ranges);
     void bind(i32 unit) const;
 
     inline u32 getId() const { return id; }
@@ -25,6 +29,7 @@ public:
     inline usize getCapacity() const { return capacity; }
 
 private:
+    void uploadBoundRange(const void* data, usize startTexel, usize texelCount);
     bool init(const char* name, usize texelCount, Type type);
 
     u32 id = 0;
