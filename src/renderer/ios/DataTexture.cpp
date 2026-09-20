@@ -104,11 +104,21 @@ bool DataTexture::uploadRange(const void* data, usize startTexel, usize texelCou
         return true;
     GLint previousTexture = 0;
     glGetIntegerv(GL_TEXTURE_BINDING_2D, &previousTexture);
+
+    // State uploads are retried when they genuinely fail. Clear unrelated
+    // pre-existing errors first so a stale stock/mod error cannot freeze the
+    // resolved state and subsequently kill an owned GPU batch.
+    while (glGetError() != GL_NO_ERROR) {}
+
     glBindTexture(GL_TEXTURE_2D, id);
     uploadBoundRange(data, startTexel, texelCount);
-    const auto error = glGetError();
+
+    bool uploadOK = true;
+    while (glGetError() != GL_NO_ERROR)
+        uploadOK = false;
+
     glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(previousTexture));
-    return error == GL_NO_ERROR;
+    return uploadOK;
 }
 
 bool DataTexture::uploadRanges(
@@ -124,15 +134,21 @@ bool DataTexture::uploadRanges(
         return true;
     GLint previousTexture = 0;
     glGetIntegerv(GL_TEXTURE_BINDING_2D, &previousTexture);
+    while (glGetError() != GL_NO_ERROR) {}
+
     glBindTexture(GL_TEXTURE_2D, id);
     for (const auto& range : ranges) {
         if (range.texelCount)
             uploadBoundRange(static_cast<const u8*>(data) + range.startTexel * bytesPerTexel,
                 range.startTexel, range.texelCount);
     }
-    const auto error = glGetError();
+
+    bool uploadOK = true;
+    while (glGetError() != GL_NO_ERROR)
+        uploadOK = false;
+
     glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(previousTexture));
-    return error == GL_NO_ERROR;
+    return uploadOK;
 }
 
 void DataTexture::uploadBoundRange(const void* data, usize startTexel, usize texelCount) {
