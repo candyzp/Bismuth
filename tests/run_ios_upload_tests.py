@@ -49,6 +49,7 @@ int main() {
     texture.capacity=gpu.size(); texture.bytesPerTexel=sizeof(glm::vec4); texture.pixelType=GL_FLOAT;
     std::vector<glm::vec4> cpu(gpu.size());
     for(usize i=0;i<cpu.size();++i) cpu[i]={float(i),2,3,4};
+    error=0x502; // unrelated stale driver error must not poison this upload
     assert(texture.uploadRange(cpu.data()+1021,1021,2054));
     assert(transfers==3 && queries==1 && bound==99);
     for(usize i=1021;i<3075;++i) assert(gpu[i].x==float(i));
@@ -64,7 +65,7 @@ int main() {
     assert(uploadDirtyRecordSpans(&texture,cpu,records,2,stats));
     assert(records.empty() && queries==1 && transfers<=32 && bound==99);
     for(usize i=0;i<4000;++i) assert(gpu[i*8].x==float(i*8));
-    std::cout<<"PASS: 4,000 sparse dirty records: "<<transfers<<" transfers, one binding query; failed uploads retry; row boundaries and overflow checked\n";
+    std::cout<<"PASS: 4,000 sparse dirty records: "<<transfers<<" transfers, one binding query; stale GL errors ignored; failed uploads retry; row boundaries and overflow checked\n";
 }
 '''
 with tempfile.TemporaryDirectory(prefix='bismuth-upload-') as d:

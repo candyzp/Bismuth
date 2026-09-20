@@ -31,8 +31,9 @@ CCAffineTransform worldToNodeTransform(){auto t=nodeToWorldTransform();float d=t
 };
 struct UV{float u=0,v=0;}; struct Vertex{UV texCoords;}; struct Quad{Vertex bl{{0,0}},br{{1,0}},tl{{0,1}},tr{{1,1}};};
 struct Texture{};
-struct CCSprite:CCNode {CCRect rect;CCPoint offset;Quad quad;Texture texture;
-Texture* getTexture(){return &texture;} CCRect getTextureRect(){return rect;} CCPoint getOffsetPosition(){return offset;} Quad getQuad(){return quad;}};
+struct CCSprite:CCNode {CCRect rect;CCPoint offset;Quad quad;Texture texture;CCNode* batchNode=nullptr;
+Texture* getTexture(){return &texture;} CCNode* getBatchNode(){return batchNode;}
+CCRect getTextureRect(){return rect;} CCPoint getOffsetPosition(){return offset;} Quad getQuad(){return quad;}};
 }
 struct GameObject:cocos2d::CCSprite{};
 struct ResolvedStateLayer{struct ShadowCandidate{GameObject* object; cocos2d::CCSprite* sprite;usize objectStateIndex,spriteStateIndex;};};
@@ -53,13 +54,18 @@ fail=true;assert(geometry.refresh(0)&&!geometry.flush(7));assert(bound==99);
 fail=false;assert(geometry.refresh(0)&&geometry.flush(7));
 assert(get(0).texCoord.x==0.5f&&get(0).texCoord.y==0.75f);
 assert(get(3).localPosition.x==63&&get(3).localPosition.y==34);
+root.offset.x=4;error=0x501;assert(geometry.refresh(0)&&geometry.flush(7));
+assert(get(3).localPosition.x==64&&get(3).localPosition.y==34);
 const int before=calls;root.transform.tx=10000;assert(geometry.refresh(0)&&geometry.flush(7));assert(calls==before);
-cocos2d::CCSprite child;child.parent=&root;child.transform={0,1,-1,0,7,8};
-LiveGeometry children;children.add({&root,&child,0,1},quad);assert(children.refresh(0)&&children.flush(7));
+cocos2d::CCNode batch;root.parent=&batch;root.batchNode=&batch;
+cocos2d::CCSprite child;child.parent=&root;child.batchNode=&batch;child.transform={0,1,-1,0,7,8};
+LiveGeometry children;children.add({&root,&child,0,1},quad);
+assert(children.canUseBatch(0,&batch));
+assert(children.refresh(0)&&children.flush(7));
 assert(get(0).localPosition.x==7&&get(0).localPosition.y==8);
 assert(get(3).localPosition.x==-23&&get(3).localPosition.y==38);
 child.transform.tx=9;assert(children.refresh(0)&&children.flush(7));assert(get(0).localPosition.x==9);
-std::cout<<"PASS: live crop, UV, offset, child affine, unchanged geometry reuse, root motion without reupload, failed vertex upload retry\n";
+std::cout<<"PASS: live crop, UV, offset, nested batch ownership, child affine, unchanged geometry reuse, stale GL isolation, failed vertex upload retry\n";
 }
 '''
 with tempfile.TemporaryDirectory(prefix='bismuth-geometry-') as d:
