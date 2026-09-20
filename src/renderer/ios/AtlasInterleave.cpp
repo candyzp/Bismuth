@@ -674,8 +674,11 @@ bool AtlasInterleaveRegistry::drawBatch(
                 break;
 
             const bool smallRun = run.count < HYBRID_MIN_GPU_RUN;
+            // Do not abort the atlas just because an early tiny island exhausted
+            // the small-run grace. Larger profitable runs may still exist later
+            // in atlas order, especially with distributed long-level ownership.
             if (smallRun && !smallRunGraceLeft)
-                break;
+                continue;
 
             const usize keep = std::min(run.count, remainingSprites);
             if (!keep)
