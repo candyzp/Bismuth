@@ -17,6 +17,12 @@ namespace {
 constexpr usize OBJECT_TEXELS_PER_STATE = 2;
 constexpr usize SPRITE_TEXELS_PER_STATE = 2;
 
+// This is persistent whole-level state, not visible-frame work. Giant effect
+// levels can contain enough decorations to make retaining/uploading every safe
+// sprite more expensive than stock GD, or exhaust memory during load.
+constexpr usize MAX_RESOLVED_OBJECT_RECORDS = 12288;
+constexpr usize MAX_RESOLVED_SPRITE_RECORDS = 16384;
+
 bool isSimpleSpikeRoot(GameObject* object) {
     // Only the root quad is GPU-owned. Separate glow/detail nodes keep their
     // stock draws and lifecycle; nested or animated visuals remain stock.
@@ -429,13 +435,28 @@ bool ResolvedStateLayer::init(PlayLayer* playLayer) {
 
     std::vector<Ref<GameObject>> initObjectRetains;
     std::vector<Ref<cocos2d::CCSprite>> initSpriteRetains;
-    initObjectRetains.reserve(layer->m_objects->count());
+    usize budgetRejectedObjects = 0;
+    usize budgetRejectedSprites = 0;
+    initObjectRetains.reserve(std::min<usize>(
+        static_cast<usize>(layer->m_objects->count()),
+        MAX_RESOLVED_OBJECT_RECORDS
+    ));
+    initSpriteRetains.reserve(MAX_RESOLVED_SPRITE_RECORDS);
 
     for (auto object : CCArrayExt<GameObject*>(layer->m_objects)) {
         if (!object || object == layer->m_anticheatSpike || object->isTrigger() || object->m_isHide)
             continue;
 
         ++stats.renderableObjects;
+
+        // Once the persistent state budget is saturated, leave additional
+        // objects entirely to Cocos instead of even constructing GPU records.
+        if (objects.size() >= MAX_RESOLVED_OBJECT_RECORDS ||
+            sprites.size() >= MAX_RESOLVED_SPRITE_RECORDS) {
+            ++stats.stockObjects;
+            ++budgetRejectedObjects;
+            continue;
+        }
 
         std::vector<cocos2d::CCSprite*> objectSprites;
         CollectionDiagnostics diagnostics;
@@ -449,6 +470,14 @@ bool ResolvedStateLayer::init(PlayLayer* playLayer) {
 
         if (safety == SafetyClass::StockOnly) {
             ++stats.stockObjects;
+            continue;
+        }
+
+        if (objects.size() + 1 > MAX_RESOLVED_OBJECT_RECORDS ||
+            objectSprites.size() > MAX_RESOLVED_SPRITE_RECORDS - sprites.size()) {
+            ++stats.stockObjects;
+            ++budgetRejectedObjects;
+            budgetRejectedSprites += objectSprites.size();
             continue;
         }
 
@@ -555,7 +584,7 @@ bool ResolvedStateLayer::init(PlayLayer* playLayer) {
     resync();
 
     log::info(
-        "Bismuth iOS state layer: {} safe objects ({} static, {} dynamic), {} stock, {} sprite records; collection rejected {} object(s) / {} non-sprite child node(s) / {} duplicate sprite(s) / {} invalid sprite record(s); init retained {} object(s) / {} sprite(s), {} revalidation failure(s)",
+        "Bismuth iOS state layer: {} safe objects ({} static, {} dynamic), {} stock, {} sprite records; collection rejected {} object(s) / {} non-sprite child node(s) / {} duplicate sprite(s) / {} invalid sprite record(s); init retained {} object(s) / {} sprite(s), {} revalidation failure(s); budget kept <= {} objects / {} sprites, rejected {} object(s) / ~{} sprite(s)",
         stats.safeObjects,
         stats.staticObjects,
         stats.dynamicObjects,
@@ -567,7 +596,11 @@ bool ResolvedStateLayer::init(PlayLayer* playLayer) {
         stats.invalidSpriteRecords,
         stats.retainedInitObjects,
         stats.retainedInitSprites,
-        stats.initRevalidationFailures
+        stats.initRevalidationFailures,
+        MAX_RESOLVED_OBJECT_RECORDS,
+        MAX_RESOLVED_SPRITE_RECORDS,
+        budgetRejectedObjects,
+        budgetRejectedSprites
     );
     return true;
 }
