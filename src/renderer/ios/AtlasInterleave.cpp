@@ -27,7 +27,6 @@ constexpr usize MAX_REASONABLE_ATLAS_QUADS = 262144;
 // dense levels, and only move useful contiguous work to the GPU. The remaining
 // sprites stay on stock Cocos in the same atlas draw, so CPU + GPU cooperate.
 constexpr usize HYBRID_GPU_SPRITE_BUDGET = 3584;
-constexpr usize HYBRID_MIN_GPU_RUN = 6;
 
 struct SpriteOwner {
     Renderer* renderer = nullptr;
@@ -610,10 +609,9 @@ bool AtlasInterleaveRegistry::drawBatch(
         hasGPU = true;
     }
 
-    // Keep GPU work below the dense-scene saturation point and avoid tiny GPU
-    // islands that cost more state switching than they save. Large contiguous
-    // owner runs stay on GPU; the overflow/small fragments are deliberately CPU
-    // work in the same frame.
+    // Keep GPU work below the dense-scene saturation point. Normal/small
+    // atlases keep their existing ownership exactly; only work beyond the frame
+    // budget is deliberately left on the CPU in the same frame.
     if (hasGPU) {
         const usize budgetLeft = state.gpuSpritesUsedThisFrame < HYBRID_GPU_SPRITE_BUDGET
             ? HYBRID_GPU_SPRITE_BUDGET - state.gpuSpritesUsedThisFrame
@@ -633,14 +631,7 @@ bool AtlasInterleaveRegistry::drawBatch(
                 ++end;
 
             const usize count = end - start;
-            usize keep = count;
-            if (count < HYBRID_MIN_GPU_RUN || remaining < HYBRID_MIN_GPU_RUN)
-                keep = 0;
-            else if (keep > remaining)
-                keep = remaining;
-
-            if (keep > 0 && keep < HYBRID_MIN_GPU_RUN)
-                keep = 0;
+            const usize keep = std::min(count, remaining);
 
             for (usize slot = start + keep; slot < end; ++slot)
                 state.atlasOwners[slot] = {};
