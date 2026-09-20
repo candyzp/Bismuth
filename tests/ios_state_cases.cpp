@@ -2,7 +2,9 @@ int main() {
     GameObject object;
     object.parent=&object;
     ResolvedStateLayer state;
-    state.objects.push_back({}); state.objects[0].object=&object;
+    state.objects.push_back({});
+    state.objects[0].object=&object;
+    state.objects[0].safety=ResolvedStateLayer::SafetyClass::StaticSafe;
     state.sprites.push_back({}); state.sprites[0].sprite=&object;
     state.sprites[0].geometry=state.captureSpriteState(&object);
     state.spriteIndexByPointer.emplace(&object,0);
@@ -22,14 +24,20 @@ int main() {
         assert(classify()==ResolvedStateLayer::SafetyClass::DynamicSafe);
         object.m_groupCount=0;
         object.m_classType=GameObjectClassType::Animated;
-        assert(classify()==ResolvedStateLayer::SafetyClass::StockOnly && !state.canDrawSprite(&object));
+        assert(classify()==ResolvedStateLayer::SafetyClass::StockOnly && state.canDrawSprite(&object));
         object.m_classType=GameObjectClassType::Normal;
         object.synced=true; assert(classify()==ResolvedStateLayer::SafetyClass::StockOnly);
         object.synced=false;
         object.children.size=1;
-        assert(classify()==ResolvedStateLayer::SafetyClass::StockOnly && !state.canDrawSprite(&object));
+        assert(classify()==ResolvedStateLayer::SafetyClass::StockOnly && state.canDrawSprite(&object));
         object.children.size=0;
-        object.dontDraw=true; assert(!state.canDrawSprite(&object)); object.dontDraw=false;
+        object.dontDraw=true;
+        assert(state.canDrawSprite(&object));
+        assert(!state.captureFrameObjectState(
+            &object, ResolvedStateLayer::SafetyClass::DynamicSafe,
+            state.captureObjectState(&object)
+        ).visible);
+        object.dontDraw=false;
         object.flipX=true; assert(state.canDrawSprite(&object)); object.flipX=false;
         object.m_glowSprite=nullptr; object.m_colorSprite=nullptr;
         object.m_objectType=GameObjectType::Solid;
@@ -81,8 +89,8 @@ int main() {
     state.packObjectState(0,next,ResolvedStateLayer::SafetyClass::DynamicSafe);
     assert(state.objectTexels[1].w==0);
     object.m_isInvisible=false;
-    object.children.size=1; assert(!state.canDrawSprite(&object)); object.children.size=0;
-    object.m_glowSprite=&object; assert(!state.canDrawSprite(&object)); object.m_glowSprite=nullptr;
+    object.children.size=1; assert(state.canDrawSprite(&object)); object.children.size=0;
+    object.m_glowSprite=&object; assert(state.canDrawSprite(&object)); object.m_glowSprite=nullptr;
     object.rect.size.width=60; assert(state.canDrawSprite(&object)); object.rect.size.width=30;
     object.flipX=true; assert(state.canDrawSprite(&object)); object.flipX=false;
     object.offset.x=1; assert(state.canDrawSprite(&object)); object.offset.x=0;
