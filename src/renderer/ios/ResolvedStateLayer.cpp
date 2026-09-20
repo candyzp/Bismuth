@@ -248,7 +248,8 @@ ResolvedStateLayer::ObjectState ResolvedStateLayer::captureObjectState(GameObjec
     state.transform = object->nodeToParentTransform();
     state.vertexZ = object->getVertexZ();
     state.opacity = (float)object->getDisplayedOpacity() / 255.f;
-    state.visible = object->getParent() && object->isVisible() && !object->m_isInvisible;
+    state.visible = object->getParent() && object->isVisible() &&
+        !object->getDontDraw() && !object->m_isHide && !object->m_isInvisible;
     return state;
 }
 
@@ -274,7 +275,8 @@ ResolvedStateLayer::ObjectState ResolvedStateLayer::captureFrameObjectState(
     // StaticSafe means this root has no group-driven transform, rotate action or
     // audio scale. Its exact affine matrix/vertex Z remain resident; both classes
     // still mirror stock lifecycle visibility every rendered frame.
-    state.visible = object->getParent() && object->isVisible() && !object->m_isInvisible;
+    state.visible = object->getParent() && object->isVisible() &&
+        !object->getDontDraw() && !object->m_isHide && !object->m_isInvisible;
     return state;
 }
 
@@ -288,7 +290,7 @@ ResolvedStateLayer::SpriteState ResolvedStateLayer::captureSpriteState(cocos2d::
     state.textureRect = sprite->getTextureRect();
     state.offset = sprite->getOffsetPosition();
     state.opacityModifyRGB = sprite->isOpacityModifyRGB();
-    state.visible = sprite->isVisible();
+    state.visible = sprite->isVisible() && !sprite->getDontDraw();
     state.rotated = sprite->isTextureRectRotated();
     state.flipX = sprite->isFlipX();
     state.flipY = sprite->isFlipY();
@@ -322,7 +324,7 @@ ResolvedStateLayer::SpriteState ResolvedStateLayer::captureFrameSpriteState(
     state.color = sprite->getDisplayedColor();
     state.opacity = sprite->getDisplayedOpacity();
     state.opacityModifyRGB = sprite->isOpacityModifyRGB();
-    state.visible = sprite->isVisible();
+    state.visible = sprite->isVisible() && !sprite->getDontDraw();
     return state;
 }
 
