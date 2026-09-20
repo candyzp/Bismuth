@@ -26,6 +26,13 @@ public:
     static bool drawBatch(Renderer* renderer, cocos2d::CCSpriteBatchNode* batch);
 
     static bool shouldSkipTransform(Renderer* renderer, cocos2d::CCSprite* sprite);
+
+    // Exact reason for the most recent strict atlas draw rejection in this frame.
+    // Used only by the debug overlay so one-frame flashes remain diagnosable.
+    static const char* lastFailureReason();
+    static int lastFailureSlot();
+    static unsigned int lastFailureAtlasSize();
+
     static void beginFrame();
 };
 
