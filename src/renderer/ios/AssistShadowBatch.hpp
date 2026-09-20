@@ -31,7 +31,8 @@ public:
     static geode::Ref<AssistShadowBatch> create(
         ResolvedStateLayer* resolvedState,
         Shader* shader,
-        cocos2d::CCSpriteBatchNode* stockBatch
+        cocos2d::CCSpriteBatchNode* stockBatch,
+        usize ownershipLimit = 16383
     );
 
     void draw() override;
@@ -55,9 +56,10 @@ private:
     bool initWithState(
         ResolvedStateLayer* resolvedState,
         Shader* shader,
-        cocos2d::CCSpriteBatchNode* stockBatch
+        cocos2d::CCSpriteBatchNode* stockBatch,
+        usize ownershipLimit
     );
-    bool buildGeometry();
+    bool buildGeometry(usize ownershipLimit);
     void destroyGL();
 
 private:
