@@ -41,7 +41,7 @@ struct CCNode { template<class T> void addChild(T, int) {} };
 struct CCDirector { inline static std::function<void()> frame; virtual void drawScene(){frame();} };
 }
 struct GameObject : cocos2d::CCSprite { float x=0; float getPositionX(){return x;} };
-struct PlayLayer {
+struct PlayLayer { bool m_isPaused=false;
     inline static PlayLayer* current=nullptr;
     static PlayLayer* get(){return current;}
     cocos2d::CCNode objectLayer;
@@ -71,7 +71,9 @@ struct Mod {
 };
 struct ColorChannelBuffer {};
 struct Shader { static void destroy(Shader*){} };
+struct BackgroundGPU {};
 struct ResolvedStateLayer {
+    void beginFrameValidation() {}
     struct ShadowCandidate { GameObject* object=nullptr; cocos2d::CCSprite* sprite=nullptr; usize objectStateIndex=0, spriteStateIndex=0; };
     inline static ResolvedStateLayer* current=nullptr;
     int updates=0, finishes=0, seeds=0, syncs=0;

@@ -125,6 +125,7 @@ void StandaloneAssistBatch::destroyGL() {
     drawRanges.clear();
     rootDrawSpans.clear();
     ownedSprites.clear();
+    liveGeometry.clear();
     stats.ready = false;
 }
 
@@ -139,6 +140,7 @@ bool StandaloneAssistBatch::buildGeometry(
     vertices.reserve(candidates.size() * 4);
     indices.reserve(candidates.size() * 6);
     ownedSprites.clear();
+    liveGeometry.clear();
     drawRanges.clear();
     rootDrawSpans.clear();
 
@@ -248,6 +250,7 @@ bool StandaloneAssistBatch::buildGeometry(
         indices.push_back(baseVertex + 1);
         activeRange->indexCount += 6;
 
+        liveGeometry.add(candidate, vertices.data() + baseVertex);
         ownedSprites.push_back(sprite);
     }
 
@@ -343,6 +346,29 @@ bool StandaloneAssistBatch::drawRangeSpan(usize firstRange, usize rangeCount) {
         firstRange + rangeCount
     );
     if (endRange <= firstRange)
+        return false;
+
+    // Validate only the requested root's live sprites, not the whole level.
+    for (usize rangeIndex = firstRange; rangeIndex < endRange; ++rangeIndex) {
+        auto& range = drawRanges[rangeIndex];
+        const usize firstSprite = range.startIndex / 6;
+        const usize spriteEnd = firstSprite + range.indexCount / 6;
+        for (usize i = firstSprite; i < spriteEnd; ++i) {
+            if (i >= ownedSprites.size() || !liveGeometry.refresh(i))
+                return false;
+            const auto texture = ownedSprites[i]->getTexture();
+            const auto blend = ownedSprites[i]->getBlendFunc();
+            // A root's previously merged range must still share texture/blend.
+            if (i == firstSprite) {
+                range.textureId = texture->getName();
+                range.blendSrc = blend.src; range.blendDst = blend.dst;
+            } else if (range.textureId != texture->getName() ||
+                range.blendSrc != blend.src || range.blendDst != blend.dst) {
+                return false;
+            }
+        }
+    }
+    if (!vertexBuffer || !liveGeometry.flush(vertexBuffer->getId()))
         return false;
 
     auto objectStateTexture = resolvedState->getObjectStateTexture();
@@ -451,7 +477,7 @@ bool StandaloneAssistBatch::drawRangeSpan(usize firstRange, usize rangeCount) {
         glBindTexture(GL_TEXTURE_2D, (u32)previousTextures[unit]);
     }
     glActiveTexture((GLenum)previousActiveTexture);
-    return true;
+    return glGetError() == GL_NO_ERROR;
 }
 
 #endif

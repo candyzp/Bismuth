@@ -151,7 +151,7 @@ int main() {
         s.draw();
         assert((fixture::pixels==std::vector<int>{0,1,2}) && fixture::gpuDraws==2);
         s.claim({0}); s.draw();
-        assert((fixture::pixels==std::vector<int>{0,1,2}) && fixture::gpuDraws==0);
+        assert(fixture::pixels.empty() && fixture::gpuDraws==0);
         AtlasInterleaveRegistry::unregisterImmediate(&immediate);
     }
     {
@@ -174,7 +174,7 @@ int main() {
         s.draw(); assert(fixture::gpuDraws==1);
         // All GPU-eligible geometry disappears, then returns without rejoining.
         s.renderer.owned.clear(); s.draw();
-        assert((fixture::pixels==std::vector<int>{0,1,2}) && fixture::gpuDraws==0);
+        assert(fixture::pixels.empty() && fixture::gpuDraws==0);
         s.renderer.owned.insert(&s.sprites[0]); s.draw();
         assert((fixture::pixels==std::vector<int>{0,1,2}) && fixture::gpuDraws==1);
         AtlasInterleaveRegistry::unregisterImmediate(&immediate);
@@ -195,6 +195,21 @@ int main() {
             checkStateRestored();
         }
         std::cout << "PASS: 120 clean frames after unrelated floor/atlas draws; Cocos cache stays synchronized\n";
+    }
+    {
+        Scene s(3); s.claim({0,1});
+        s.sprites[1].parent=&s.sprites[0]; s.sprites[2].parent=&s.sprites[0];
+        s.sprites[0].children.nodes={&s.sprites[1],&s.sprites[2]};
+        s.batch.children.nodes={&s.sprites[0]};
+        s.sprites[0].transform.tx=17;
+        s.draw();
+        assert((fixture::pixels==std::vector<int>{0,1,2}));
+        assert(fixture::stockTransforms==1 && fixture::gpuDraws==1);
+        assert(s.sprites[0].m_transformToBatch.tx==17);
+        // One unready owned sprite cannot become a hidden stock fallback in an
+        // otherwise valid batch with another ready owner.
+        s.renderer.owned.erase(&s.sprites[1]); s.draw();
+        assert(fixture::pixels.empty() && fixture::stockTransforms==0);
     }
     assert(registry().spriteOwners.empty() && registry().indexCaches.empty());
     std::cout << "PASS: mixed stock/GPU order, strict owned-batch failures, batch migration, masks, VAO/EBO state, teardown, u16 limits\n";

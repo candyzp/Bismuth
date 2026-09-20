@@ -56,6 +56,7 @@ public:
     void beginGPUFrame();
     void prepareGPUFrame();
     void finishGPUFrame();
+    bool drawGPUBackground(cocos2d::CCSprite* sprite);
 #endif
 
     bool isColorChannelBlending(i32 channel);

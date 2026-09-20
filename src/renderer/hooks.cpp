@@ -293,6 +293,20 @@ class $modify(RendererOwnedCCSprite, cocos2d::CCSprite) {
             return;
         }
 
+        if (auto children = this->getChildren(); children && children->count()) {
+            // Stock children still need their parent's affine/visibility state,
+            // even though this owned quad is expanded by the GPU. Visit children
+            // so each keeps its own stock/GPU ownership and update order.
+            this->m_transformToBatch = this->nodeToParentTransform();
+            this->m_bShouldBeHidden = !this->isVisible();
+            if (auto parent = typeinfo_cast<cocos2d::CCSprite*>(this->getParent());
+                parent && this->getParent() != this->getBatchNode()) {
+                this->m_transformToBatch = cocos2d::CCAffineTransformConcat(
+                    this->m_transformToBatch, parent->m_transformToBatch);
+                this->m_bShouldBeHidden |= parent->m_bShouldBeHidden;
+            }
+            cocos2d::CCNode::updateTransform();
+        }
         this->setDirty(true);
     }
 };
@@ -331,13 +345,9 @@ class $modify(RendererInterleavedSpriteBatchNode, cocos2d::CCSpriteBatchNode) {
         } else {
             GPUTruth::recordObjectFailure(renderer.data());
 
-            if (renderer->hasForcedDecorationInBatch(this)) {
-                log::error("Bismuth iOS FORCED decoration GPU batch failed; stock fallback suppressed");
-                return;
-            }
-
-            log::warn("Bismuth iOS object/spike GPU batch became unsafe; drawing this batch with stock Cocos");
-            cocos2d::CCSpriteBatchNode::draw();
+            // An owned draw failure is visible; never redraw the complete batch
+            // with stock Cocos (which may also double-draw a submitted prefix).
+            return;
         }
     }
 };

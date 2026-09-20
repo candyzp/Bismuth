@@ -45,6 +45,8 @@ inline std::vector<int> pixels;
 inline std::unordered_map<GLuint, GLuint> elements;
 inline std::unordered_map<GLuint, std::vector<u16>> buffers;
 inline std::unordered_map<GLuint, std::vector<int>> vaoSpriteIDs;
+inline std::unordered_map<GLuint, GLuint> atlasBuffers;
+inline int atlasUploads=0;
 inline bool writes() { return colorMask[0]||colorMask[1]||colorMask[2]||colorMask[3]; }
 inline void clearFrame() { pixels.clear(); stockDraws=gpuDraws=stockTransforms=0; }
 }
@@ -94,6 +96,13 @@ inline void glDeleteBuffers(int n,const GLuint* values) { while(n--) fixture::bu
 inline GLenum glGetError() { auto e=fixture::error; fixture::error=0; return e; }
 inline void glBufferData(GLenum target,usize bytes,const void* data,GLenum) {
     assert(target==GL_ARRAY_BUFFER);
+    if (fixture::atlasBuffers.contains(fixture::arrayBuffer)) {
+        ++fixture::atlasUploads;
+        if (fixture::failAtlasSync) { fixture::error=1; return; }
+        const auto first=static_cast<const int*>(data);
+        fixture::vaoSpriteIDs[fixture::atlasBuffers.at(fixture::arrayBuffer)].assign(first, first+bytes/sizeof(int));
+        return;
+    }
     ++fixture::uploads;
     if(fixture::failUpload) { fixture::error=1; return; }
     auto first=static_cast<const u16*>(data);
@@ -128,6 +137,10 @@ struct CCArray {
     u32 indexOfObject(CCNode* n) { auto it=std::find(nodes.begin(),nodes.end(),n); return it==nodes.end()?UINT_MAX:it-nodes.begin(); }
 };
 struct CCAffineTransform { float a=1,b=0,c=0,d=1,tx=0,ty=0; };
+inline CCAffineTransform CCAffineTransformConcat(CCAffineTransform a,CCAffineTransform b) {
+    return {a.a*b.a+a.b*b.c,a.a*b.b+a.b*b.d,a.c*b.a+a.d*b.c,a.c*b.b+a.d*b.d,
+        a.tx*b.a+a.ty*b.c+b.tx,a.tx*b.b+a.ty*b.d+b.ty};
+}
 struct CCNode {
     virtual ~CCNode()=default;
     CCArray children;
@@ -139,6 +152,7 @@ struct CCNode {
     bool isVisible() const { return visible; }
     CCAffineTransform nodeToParentTransform() { return transform; }
     virtual void draw() {}
+    virtual void updateTransform() { for (auto child : children.nodes) child->updateTransform(); }
 };
 struct CCTexture2D { u32 name=5; u32 getName() { return name; } };
 struct CCTextureAtlas {
@@ -146,6 +160,12 @@ struct CCTextureAtlas {
     bool dirty=true;
     GLuint vao=fixture::nextBuffer++;
     GLuint texture=5;
+    GLuint m_pBuffersVBO[2]{fixture::nextBuffer++, 0};
+    CCTextureAtlas() { fixture::atlasBuffers[m_pBuffersVBO[0]]=vao; }
+    ~CCTextureAtlas() { fixture::atlasBuffers.erase(m_pBuffersVBO[0]); }
+    usize getCapacity() { return quads.size(); }
+    int* getQuads() { return quads.data(); }
+    void setDirty(bool value) { dirty=value; }
     bool isDirty() { return dirty; }
     u32 getTotalQuads() { return quads.size(); }
     void drawNumberOfQuads(u32 n,u32 first) {
@@ -169,7 +189,8 @@ struct CCTextureAtlas {
 struct CCSpriteBatchNode;
 struct CCSprite : CCNode {
     int id=0;
-    bool dirty=true;
+    bool dirty=true, m_bShouldBeHidden=false;
+    CCAffineTransform m_transformToBatch;
     u32 slot=0;
     CCSpriteBatchNode* batch=nullptr;
     CCTexture2D* texture=nullptr;
@@ -261,6 +282,7 @@ namespace GPUTruth {
 inline void recordObjectBatch(Renderer*,cocos2d::CCSpriteBatchNode*) {}
 inline void recordObjectFailure(Renderer*) {}
 }
+struct LiveGeometry { bool canUseBatch(usize,cocos2d::CCNode*) { return true; } bool refresh(usize) { return true; } bool flush(u32) { return true; } };
 struct BatchStats { bool ready=true; usize drawCallsLastFrame=0,indicesLastFrame=0; };
 struct AssistShadowBatch : cocos2d::CCNode {
     BatchStats stats;
@@ -270,6 +292,7 @@ struct AssistShadowBatch : cocos2d::CCNode {
     Shader* shader=nullptr;
     u32 vao=0;
     Buffer* indexBuffer=nullptr;
+    Buffer storage; Buffer* vertexBuffer=&storage; LiveGeometry liveGeometry;
 };
 struct StandaloneAssistBatch : cocos2d::CCNode {
     BatchStats stats;
@@ -279,6 +302,7 @@ struct StandaloneAssistBatch : cocos2d::CCNode {
     Shader* shader=nullptr;
     u32 vao=0;
     Buffer* indexBuffer=nullptr;
+    Buffer storage; Buffer* vertexBuffer=&storage; LiveGeometry liveGeometry;
 };
 #define CC_NODE_DRAW_SETUP() do {} while(0)
 #define $modify(Name, Base) Name : public Base

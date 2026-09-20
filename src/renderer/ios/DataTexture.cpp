@@ -97,18 +97,45 @@ bool DataTexture::upload(const void* data, usize texelCount) {
 }
 
 bool DataTexture::uploadRange(const void* data, usize startTexel, usize texelCount) {
-    if (!id || startTexel + texelCount > capacity || (texelCount > 0 && !data))
+    if (!id || startTexel > capacity || texelCount > capacity - startTexel ||
+        (texelCount > 0 && !data))
         return false;
     if (texelCount == 0)
         return true;
-
-    GLint previousActiveTexture = GL_TEXTURE0;
     GLint previousTexture = 0;
-    glGetIntegerv(GL_ACTIVE_TEXTURE, &previousActiveTexture);
     glGetIntegerv(GL_TEXTURE_BINDING_2D, &previousTexture);
-
     glBindTexture(GL_TEXTURE_2D, id);
+    uploadBoundRange(data, startTexel, texelCount);
+    const auto error = glGetError();
+    glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(previousTexture));
+    return error == GL_NO_ERROR;
+}
 
+bool DataTexture::uploadRanges(
+    const void* data, usize texelCount, const std::vector<Range>& ranges
+) {
+    if (!id || texelCount > capacity || (texelCount && !data))
+        return false;
+    for (const auto& range : ranges) {
+        if (range.startTexel > texelCount || range.texelCount > texelCount - range.startTexel)
+            return false;
+    }
+    if (ranges.empty())
+        return true;
+    GLint previousTexture = 0;
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &previousTexture);
+    glBindTexture(GL_TEXTURE_2D, id);
+    for (const auto& range : ranges) {
+        if (range.texelCount)
+            uploadBoundRange(static_cast<const u8*>(data) + range.startTexel * bytesPerTexel,
+                range.startTexel, range.texelCount);
+    }
+    const auto error = glGetError();
+    glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(previousTexture));
+    return error == GL_NO_ERROR;
+}
+
+void DataTexture::uploadBoundRange(const void* data, usize startTexel, usize texelCount) {
     const usize rowWidth = (usize)width;
     const auto* bytes = static_cast<const u8*>(data);
     usize cursor = startTexel;
@@ -169,10 +196,7 @@ bool DataTexture::uploadRange(const void* data, usize startTexel, usize texelCou
         );
     }
 
-    const GLenum error = glGetError();
-    glBindTexture(GL_TEXTURE_2D, (GLuint)previousTexture);
-    glActiveTexture((GLenum)previousActiveTexture);
-    return error == GL_NO_ERROR;
+
 }
 
 void DataTexture::bind(i32 unit) const {

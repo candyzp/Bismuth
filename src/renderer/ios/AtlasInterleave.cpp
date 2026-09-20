@@ -44,6 +44,8 @@ struct OwnerDrawData {
     Shader* shader = nullptr;
     u32 vao = 0;
     u32 ownerIndexBuffer = 0;
+    LiveGeometry* geometry = nullptr;
+    u32 vertexBuffer = 0;
     usize* drawCalls = nullptr;
     usize* indexCount = nullptr;
 };
@@ -188,7 +190,7 @@ static void releaseScratchIfUnused() {
     state.invalidRenderers.clear();
 }
 
-static bool synchronizeDirtyAtlasWithStockDraw(cocos2d::CCTextureAtlas* atlas) {
+static bool uploadDirtyAtlas(cocos2d::CCTextureAtlas* atlas) {
     if (!atlas)
         return false;
     if (!atlas->isDirty())
@@ -198,42 +200,25 @@ static bool synchronizeDirtyAtlasWithStockDraw(cocos2d::CCTextureAtlas* atlas) {
     if (totalQuads == 0 || totalQuads > MAX_REASONABLE_ATLAS_QUADS)
         return totalQuads == 0;
 
-    GLboolean previousColorMask[4] = { GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE };
-    GLboolean previousDepthMask = GL_TRUE;
-    GLint previousStencilMask = 0;
-    GLint previousBackStencilMask = 0;
-
-    glGetBooleanv(GL_COLOR_WRITEMASK, previousColorMask);
-    glGetBooleanv(GL_DEPTH_WRITEMASK, &previousDepthMask);
-    glGetIntegerv(GL_STENCIL_WRITEMASK, &previousStencilMask);
-    glGetIntegerv(GL_STENCIL_BACK_WRITEMASK, &previousBackStencilMask);
-
-    // IMPORTANT: do not use a partial dirty-atlas draw here. On iOS Cocos the
-    // dirty upload path can derive an invalid copy span when drawNumberOfQuads()
-    // starts inside the atlas. The crash report proves that path reaches
-    // _platform_memmove with a gigantic underflowed byte count.
-    //
-    // Start at slot 0 and use the exact full-atlas upload path that stock Cocos
-    // uses safely. Color/depth/stencil writes are disabled, so this is only a
-    // synchronization pass. The expensive per-boundary GL queries and debug
-    // rescans are still eliminated elsewhere in this build.
-    glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
-    glDepthMask(GL_FALSE);
-    glStencilMask(0);
-
-    atlas->drawNumberOfQuads(static_cast<unsigned int>(totalQuads), 0);
-
-    glColorMask(
-        previousColorMask[0],
-        previousColorMask[1],
-        previousColorMask[2],
-        previousColorMask[3]
-    );
-    glDepthMask(previousDepthMask);
-    glStencilMaskSeparate(GL_FRONT, static_cast<u32>(previousStencilMask));
-    glStencilMaskSeparate(GL_BACK, static_cast<u32>(previousBackStencilMask));
-
-    return !atlas->isDirty();
+    // Synchronize the existing VBO without submitting every quad invisibly.
+    // Starting at zero also avoids Cocos' partial dirty-draw (n-start) underflow
+    // and mapped-buffer memcpy. This is an upload, not a second render pass.
+    if (totalQuads > atlas->getCapacity() || !atlas->m_pBuffersVBO[0])
+        return false;
+    const auto quads = atlas->getQuads();
+    if (!quads)
+        return false;
+    GLint previousBuffer = 0;
+    glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &previousBuffer);
+    glBindBuffer(GL_ARRAY_BUFFER, atlas->m_pBuffersVBO[0]);
+    (void)glGetError();
+    glBufferData(GL_ARRAY_BUFFER, totalQuads * sizeof(*quads), quads, GL_DYNAMIC_DRAW);
+    const auto error = glGetError();
+    glBindBuffer(GL_ARRAY_BUFFER, static_cast<GLuint>(previousBuffer));
+    if (error != GL_NO_ERROR)
+        return false;
+    atlas->setDirty(false);
+    return true;
 }
 
 static bool updateIndexCache(BatchIndexCache& cache, const std::vector<u16>& indices) {
@@ -461,46 +446,29 @@ void AtlasInterleaveRegistry::unregisterDeferred(StandaloneAssistBatch* owner) {
     releaseScratchIfUnused();
 }
 
-bool AtlasInterleaveRegistry::ownsBatch(
-    Renderer* renderer,
-    cocos2d::CCSpriteBatchNode* batch
-) {
-    if (!isExactGameplayBatch(renderer, batch))
+bool AtlasInterleaveRegistry::ownsBatch(Renderer* renderer, cocos2d::CCSpriteBatchNode* batch) {
+    if (!renderer || !renderer->isEnabled() || !batch)
         return false;
-
+    auto layer = renderer->getPlayLayer();
+    if (!layer || !layer->m_batchNodes || layer->m_batchNodes->indexOfObject(batch) == UINT_MAX)
+        return false;
     auto& state = registry();
-    if (state.invalidRenderers.contains(renderer))
-        return false;
-
     if (auto cached = state.ownedBatches.find(batch);
         cached != state.ownedBatches.end() && cached->second == renderer)
         return true;
-
     auto descendants = batch->getDescendants();
     if (!descendants)
         return false;
-
     for (u32 i = 0; i < descendants->count(); ++i) {
         auto sprite = typeinfo_cast<cocos2d::CCSprite*>(descendants->objectAtIndex(i));
         if (!sprite || sprite->getBatchNode() != batch)
             continue;
-
-        auto ownerIt = state.spriteOwners.find(sprite);
-        if (ownerIt == state.spriteOwners.end())
-            continue;
-        const auto& record = ownerIt->second;
-        // Registered storage can outlive its visible sprites. A stock-only
-        // live batch must not enter the strict GPU-submit path and retry forever.
-        if (record.renderer == renderer &&
-            (record.deferred || (record.immediate && record.immediate->stockBatch == batch)) &&
-            sprite->getParent() == batch && renderer->isGPUOwnedSprite(sprite) &&
-            sprite->getTexture() && batch->getTexture() &&
-            sprite->getTexture()->getName() == batch->getTexture()->getName()) {
+        const auto owner = state.spriteOwners.find(sprite);
+        if (owner != state.spriteOwners.end() && owner->second.renderer == renderer) {
             state.ownedBatches[batch] = renderer;
             return true;
         }
     }
-
     return false;
 }
 
@@ -525,7 +493,6 @@ bool AtlasInterleaveRegistry::drawBatch(
     const usize descendantCount = static_cast<usize>(descendants->count());
     if (totalQuads == 0 || descendantCount != totalQuads ||
         totalQuads > MAX_REASONABLE_ATLAS_QUADS) {
-        state.ownedBatches.erase(batch);
         return false;
     }
 
@@ -548,7 +515,7 @@ bool AtlasInterleaveRegistry::drawBatch(
                 owner->resolvedState && owner->resolvedState->isGPUStateReady() &&
                 owner->resolvedState->getObjectStateTexture() &&
                 owner->resolvedState->getSpriteStateTexture() &&
-                owner->shader && owner->vao && owner->indexBuffer;
+                owner->shader && owner->vao && owner->indexBuffer && owner->vertexBuffer;
         }
 
         auto owner = record.deferred;
@@ -559,7 +526,7 @@ bool AtlasInterleaveRegistry::drawBatch(
             owner->resolvedState && owner->resolvedState->isGPUStateReady() &&
             owner->resolvedState->getObjectStateTexture() &&
             owner->resolvedState->getSpriteStateTexture() &&
-            owner->shader && owner->vao && owner->indexBuffer;
+            owner->shader && owner->vao && owner->indexBuffer && owner->vertexBuffer;
     };
 
     for (u32 i = 0; i < descendants->count(); ++i) {
@@ -574,23 +541,27 @@ bool AtlasInterleaveRegistry::drawBatch(
             return false;
         state.atlasSprites[atlasIndex] = sprite;
 
-        if (!renderer->isGPUOwnedSprite(sprite) || sprite->getParent() != batch)
+        auto recordIt = state.spriteOwners.find(sprite);
+        if (recordIt == state.spriteOwners.end() || recordIt->second.renderer != renderer)
             continue;
-
+        // A registered sprite cannot silently become a stock run when one
+        // readiness/geometry check fails inside an otherwise successful batch.
+        if (!renderer->isGPUOwnedSprite(sprite) || !ownerReady(recordIt->second))
+            return false;
         auto spriteTexture = sprite->getTexture();
         if (!spriteTexture || spriteTexture->getName() != texture->getName())
-            continue;
+            return false;
 
-        auto recordIt = state.spriteOwners.find(sprite);
-        if (recordIt == state.spriteOwners.end() || !ownerReady(recordIt->second))
-            continue;
-
-        state.atlasOwners[atlasIndex] = recordIt->second;
+        const auto& record = recordIt->second;
+        auto& geometry = record.immediate ? record.immediate->liveGeometry : record.deferred->liveGeometry;
+        if (!geometry.canUseBatch(record.baseVertex / 4, batch) ||
+            !geometry.refresh(record.baseVertex / 4))
+            return false;
+        state.atlasOwners[atlasIndex] = record;
         hasGPU = true;
     }
 
     if (!hasGPU) {
-        state.ownedBatches.erase(batch);
         return false;
     }
     state.ownedBatches[batch] = renderer;
@@ -652,7 +623,7 @@ bool AtlasInterleaveRegistry::drawBatch(
         if (state.atlasOwners[run.firstSlot].empty())
             hasStock = true;
     }
-    if (hasStock && !synchronizeDirtyAtlasWithStockDraw(atlas))
+    if (hasStock && !uploadDirtyAtlas(atlas))
         return false;
 
     auto drawDataFor = [&](const SpriteOwner& record) -> OwnerDrawData {
@@ -663,6 +634,7 @@ bool AtlasInterleaveRegistry::drawBatch(
                 owner->shader,
                 owner->vao,
                 owner->indexBuffer->getId(),
+                &owner->liveGeometry, owner->vertexBuffer->getId(),
                 &owner->stats.drawCallsLastFrame,
                 &owner->stats.indicesLastFrame
             };
@@ -674,6 +646,7 @@ bool AtlasInterleaveRegistry::drawBatch(
             owner->shader,
             owner->vao,
             owner->indexBuffer->getId(),
+            &owner->liveGeometry, owner->vertexBuffer->getId(),
             &owner->stats.drawCallsLastFrame,
             &owner->stats.indicesLastFrame
         };
@@ -759,6 +732,11 @@ bool AtlasInterleaveRegistry::drawBatch(
                 restoreStockState();
             return false;
         }
+        if (!owner.geometry || !owner.geometry->flush(owner.vertexBuffer)) {
+            if (gpuStateActive)
+                restoreStockState();
+            return false;
+        }
         auto objectStateTexture = owner.resolvedState->getObjectStateTexture();
         auto spriteStateTexture = owner.resolvedState->getSpriteStateTexture();
         if (!objectStateTexture || !spriteStateTexture) {
@@ -819,7 +797,7 @@ bool AtlasInterleaveRegistry::drawBatch(
 
     if (gpuStateActive)
         restoreStockState();
-    return true;
+    return glGetError() == GL_NO_ERROR;
 }
 
 bool AtlasInterleaveRegistry::shouldSkipTransform(
