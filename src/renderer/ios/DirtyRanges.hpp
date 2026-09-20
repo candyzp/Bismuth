@@ -20,7 +20,7 @@ void buildDirtyRanges(std::vector<Index>& records, Index stride,
         if (!ranges.empty()) {
             auto& last = ranges.back();
             const auto lastEnd = last.startTexel + last.texelCount;
-            if (start <= lastEnd || start / rowWidth == (lastEnd - 1) / rowWidth) {
+            if (start <= lastEnd + stride * 2 || start / rowWidth == (lastEnd - 1) / rowWidth) {
                 last.texelCount = std::max(lastEnd, end) - last.startTexel;
                 continue;
             }

@@ -195,6 +195,7 @@ bool Renderer::init(PlayLayer* playLayer) {
 
     g_iosStates[this] = std::make_unique<IOSRendererState>();
     auto state = iosState(this);
+    state->background.prepare(); // Compile during level setup, not the first draw.
     colorChannelBuffer = state->colorChannels.get();
     std::memset(colorChannelBuffer, 0, sizeof(ColorChannelBuffer));
 
@@ -905,8 +906,7 @@ bool Renderer::isGPUOwnedStandaloneSprite(cocos2d::CCSprite* sprite) const {
         return false;
 
     auto state = iosState(const_cast<Renderer*>(this));
-    if (!state || !state->resolvedState || !state->resolvedState->canDrawSprite(sprite) ||
-        sprite->getBatchNode())
+    if (!state || !state->resolvedState || sprite->getBatchNode())
         return false;
 
     auto object = typeinfo_cast<GameObject*>(sprite);
@@ -918,8 +918,10 @@ bool Renderer::isGPUOwnedStandaloneSprite(cocos2d::CCSprite* sprite) const {
         return false;
 
     auto& buffer = state->standaloneBatches[it->second];
-    if (!buffer)
-        return false;
+    if (!buffer || !state->resolvedState->canDrawSprite(sprite)) {
+        GPUTruth::recordObjectFailure(const_cast<Renderer*>(this));
+        return true;
+    }
     const_cast<Renderer*>(this)->prepareGPUFrame();
     if (!buffer->drawRoot(object)) {
         GPUTruth::recordObjectFailure(const_cast<Renderer*>(this));

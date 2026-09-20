@@ -28,7 +28,7 @@ Coverage:
 - Overlapping PlayLayer setup/exit, pause/resume, explicit disable, and one state
   capture per displayed frame despite multiple simulation updates.
 - Data-texture row boundaries, overflow rejection, one binding scope per texture,
-  coalescing 4,000 scattered dirty records into 16 transfers in the fixture, and
+  coalescing 4,000 scattered dirty records into 32 transfers in the fixture, and
   retaining/retrying failed dirty records even when CPU state stops changing.
 - Live crop/UV/offset and child affine changes, unchanged geometry reuse, root
   motion without a geometry reupload, and retry after a vertex-upload failure.

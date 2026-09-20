@@ -773,7 +773,15 @@ void ResolvedStateLayer::update(bool detailedProbe) {
             continue;
 
         auto& record = sprites[i];
-        const SpriteState next = captureFrameSpriteState(record.sprite, record.state);
+        SpriteState next = captureFrameSpriteState(record.sprite, record.state);
+        if (record.objectIndex < objects.size() && record.sprite != objects[record.objectIndex].object) {
+            // Root visibility is in object state; nested sprite ancestors must
+            // also hide their descendants without leaving stale GPU decoration.
+            for (auto parent = record.sprite->getParent(); parent && parent != objects[record.objectIndex].object;
+                parent = parent->getParent()) {
+                if (!parent->isVisible()) { next.visible = false; break; }
+            }
+        }
 
         const bool appearanceDirty = spriteAppearanceChanged(record.state, next);
         const bool visibilityDirty = record.state.visible != next.visible;

@@ -137,6 +137,10 @@ struct CCArray {
     u32 indexOfObject(CCNode* n) { auto it=std::find(nodes.begin(),nodes.end(),n); return it==nodes.end()?UINT_MAX:it-nodes.begin(); }
 };
 struct CCAffineTransform { float a=1,b=0,c=0,d=1,tx=0,ty=0; };
+inline CCAffineTransform CCAffineTransformConcat(CCAffineTransform a,CCAffineTransform b) {
+    return {a.a*b.a+a.b*b.c,a.a*b.b+a.b*b.d,a.c*b.a+a.d*b.c,a.c*b.b+a.d*b.d,
+        a.tx*b.a+a.ty*b.c+b.tx,a.tx*b.b+a.ty*b.d+b.ty};
+}
 struct CCNode {
     virtual ~CCNode()=default;
     CCArray children;
@@ -148,6 +152,7 @@ struct CCNode {
     bool isVisible() const { return visible; }
     CCAffineTransform nodeToParentTransform() { return transform; }
     virtual void draw() {}
+    virtual void updateTransform() { for (auto child : children.nodes) child->updateTransform(); }
 };
 struct CCTexture2D { u32 name=5; u32 getName() { return name; } };
 struct CCTextureAtlas {
@@ -184,7 +189,8 @@ struct CCTextureAtlas {
 struct CCSpriteBatchNode;
 struct CCSprite : CCNode {
     int id=0;
-    bool dirty=true;
+    bool dirty=true, m_bShouldBeHidden=false;
+    CCAffineTransform m_transformToBatch;
     u32 slot=0;
     CCSpriteBatchNode* batch=nullptr;
     CCTexture2D* texture=nullptr;
@@ -276,7 +282,7 @@ namespace GPUTruth {
 inline void recordObjectBatch(Renderer*,cocos2d::CCSpriteBatchNode*) {}
 inline void recordObjectFailure(Renderer*) {}
 }
-struct LiveGeometry { bool refresh(usize) { return true; } bool flush(u32) { return true; } };
+struct LiveGeometry { bool canUseBatch(usize,cocos2d::CCNode*) { return true; } bool refresh(usize) { return true; } bool flush(u32) { return true; } };
 struct BatchStats { bool ready=true; usize drawCallsLastFrame=0,indicesLastFrame=0; };
 struct AssistShadowBatch : cocos2d::CCNode {
     BatchStats stats;

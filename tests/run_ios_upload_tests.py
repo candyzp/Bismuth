@@ -25,14 +25,14 @@ constexpr int GL_FLOAT=4, GL_UNSIGNED_BYTE=5, GL_TEXTURE0=6;
 namespace glm { struct vec2 {float x,y;}; struct vec4 {float x=0,y=0,z=0,w=0;}; }
 namespace geode { namespace prelude {} }
 int bound=99, queries=0, transfers=0, error=0; bool fail=false;
-std::vector<glm::vec4> gpu(16384);
+std::vector<glm::vec4> gpu(32768);
 void glGetIntegerv(GLenum, GLint* value) {++queries; *value=bound;}
 void glBindTexture(GLenum, GLuint value) {bound=value;}
 void glActiveTexture(GLenum) {}
 int glGetError() {int result=error;error=0;return result;}
 void glDeleteTextures(int,const GLuint*) {}
 void glTexSubImage2D(GLenum,int,GLint x,GLint y,GLsizei w,GLsizei h,GLenum,GLenum,const void* data) {
-    assert(bound==7); assert(x>=0 && x+w<=1024 && y>=0 && y+h<=16);
+    assert(bound==7); assert(x>=0 && x+w<=1024 && y>=0 && y+h<=32);
     ++transfers;
     if(fail) {error=1; return;}
     for(int row=0;row<h;++row)
@@ -45,7 +45,7 @@ code += cpp[cpp.index('bool DataTexture::upload('):cpp.rindex('#endif')]
 code += state[state.index('bool uploadDirtyRecordSpans('):state.index('} // namespace')]
 code += r'''
 int main() {
-    DataTexture texture; texture.id=7; texture.width=1024; texture.height=16;
+    DataTexture texture; texture.id=7; texture.width=1024; texture.height=32;
     texture.capacity=gpu.size(); texture.bytesPerTexel=sizeof(glm::vec4); texture.pixelType=GL_FLOAT;
     std::vector<glm::vec4> cpu(gpu.size());
     for(usize i=0;i<cpu.size();++i) cpu[i]={float(i),2,3,4};
@@ -53,17 +53,17 @@ int main() {
     assert(transfers==3 && queries==1 && bound==99);
     for(usize i=1021;i<3075;++i) assert(gpu[i].x==float(i));
     assert(!texture.uploadRange(cpu.data(),std::numeric_limits<usize>::max(),2));
-    assert(!texture.uploadRanges(cpu.data(),cpu.size(),{{16380,8}}));
+    assert(!texture.uploadRanges(cpu.data(),cpu.size(),{{32764,8}}));
     std::vector<usize> records;
-    for(usize i=0;i<4000;++i) records.push_back(i*2); // 4,000 separated dirty records.
+    for(usize i=0;i<4000;++i) records.push_back(i*4); // 4,000 separated dirty records.
     ResolvedStateLayer::Stats stats;
     transfers=queries=0; fail=true;
     assert(!uploadDirtyRecordSpans(&texture,cpu,records,2,stats));
     assert(records.size()==4000 && stats.bytesUploaded==0 && bound==99);
     fail=false; transfers=queries=0;
     assert(uploadDirtyRecordSpans(&texture,cpu,records,2,stats));
-    assert(records.empty() && queries==1 && transfers<=16 && bound==99);
-    for(usize i=0;i<4000;++i) assert(gpu[i*4].x==float(i*4));
+    assert(records.empty() && queries==1 && transfers<=32 && bound==99);
+    for(usize i=0;i<4000;++i) assert(gpu[i*8].x==float(i*8));
     std::cout<<"PASS: 4,000 sparse dirty records: "<<transfers<<" transfers, one binding query; failed uploads retry; row boundaries and overflow checked\n";
 }
 '''

@@ -541,20 +541,21 @@ bool AtlasInterleaveRegistry::drawBatch(
             return false;
         state.atlasSprites[atlasIndex] = sprite;
 
-        if (!renderer->isGPUOwnedSprite(sprite) || sprite->getParent() != batch)
+        auto recordIt = state.spriteOwners.find(sprite);
+        if (recordIt == state.spriteOwners.end() || recordIt->second.renderer != renderer)
             continue;
-
+        // A registered sprite cannot silently become a stock run when one
+        // readiness/geometry check fails inside an otherwise successful batch.
+        if (!renderer->isGPUOwnedSprite(sprite) || !ownerReady(recordIt->second))
+            return false;
         auto spriteTexture = sprite->getTexture();
         if (!spriteTexture || spriteTexture->getName() != texture->getName())
-            continue;
-
-        auto recordIt = state.spriteOwners.find(sprite);
-        if (recordIt == state.spriteOwners.end() || !ownerReady(recordIt->second))
-            continue;
+            return false;
 
         const auto& record = recordIt->second;
         auto& geometry = record.immediate ? record.immediate->liveGeometry : record.deferred->liveGeometry;
-        if (!geometry.refresh(record.baseVertex / 4))
+        if (!geometry.canUseBatch(record.baseVertex / 4, batch) ||
+            !geometry.refresh(record.baseVertex / 4))
             return false;
         state.atlasOwners[atlasIndex] = record;
         hasGPU = true;
@@ -796,7 +797,7 @@ bool AtlasInterleaveRegistry::drawBatch(
 
     if (gpuStateActive)
         restoreStockState();
-    return true;
+    return glGetError() == GL_NO_ERROR;
 }
 
 bool AtlasInterleaveRegistry::shouldSkipTransform(

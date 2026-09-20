@@ -477,7 +477,7 @@ bool StandaloneAssistBatch::drawRangeSpan(usize firstRange, usize rangeCount) {
         glBindTexture(GL_TEXTURE_2D, (u32)previousTextures[unit]);
     }
     glActiveTexture((GLenum)previousActiveTexture);
-    return true;
+    return glGetError() == GL_NO_ERROR;
 }
 
 #endif

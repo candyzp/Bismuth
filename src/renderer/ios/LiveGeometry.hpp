@@ -29,6 +29,12 @@ class LiveGeometry {
     std::vector<usize> dirty;
 
 public:
+    bool canUseBatch(usize index, cocos2d::CCNode* batch) const {
+        if (index >= records.size()) return false;
+        const auto& candidate = records[index].candidate;
+        return candidate.object && candidate.sprite &&
+            (candidate.object->getParent() == batch || candidate.sprite->getParent() == batch);
+    }
     void clear() { records.clear(); vertices.clear(); dirty.clear(); }
     void add(const ResolvedStateLayer::ShadowCandidate& candidate, const AssistVertex* quad) {
         Record record{};
