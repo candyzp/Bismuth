@@ -219,9 +219,14 @@ bool AssistShadowBatch::buildGeometry(usize ownershipLimit) {
         candidates.size()
     });
     if (candidates.size() > limit) {
+        // Spread ownership much more finely across giant atlases. The previous
+        // 32-window cap could leave long mid-level stretches with zero owned
+        // sprites even though plenty of profitable GPU geometry existed later.
+        // Keep each window roughly >=64 sprites so the interleave scheduler can
+        // still submit useful runs without exploding draw-call count.
         const usize windowCount = std::max<usize>(
             1,
-            std::min<usize>(32, std::max<usize>(1, limit / 64))
+            std::min<usize>(128, std::max<usize>(1, limit / 64))
         );
         std::vector<CandidateWithTexture> distributed;
         distributed.reserve(limit);

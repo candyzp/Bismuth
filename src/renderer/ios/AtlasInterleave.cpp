@@ -23,10 +23,11 @@ namespace {
 constexpr usize MAX_REASONABLE_ATLAS_QUADS = 262144;
 
 // iPhone-class tile GPUs are happiest when Bismuth does not try to own every
-// decoration in a pathological scene. Keep headroom below the ~4k wall seen in
-// dense levels, and only move useful contiguous work to the GPU. The remaining
-// sprites stay on stock Cocos in the same atlas draw, so CPU + GPU cooperate.
-constexpr usize HYBRID_GPU_SPRITE_BUDGET = 3072;
+// decoration in a pathological scene. Keep a wide margin below the ~4k wall
+// seen in dense levels and deliberately leave substantial work on stock Cocos.
+// 2304 keeps the GPU useful without letting it dominate the frame, so CPU + GPU
+// cooperate instead of alternating between GPU spikes and CPU-only stretches.
+constexpr usize HYBRID_GPU_SPRITE_BUDGET = 2304;
 constexpr usize HYBRID_MIN_GPU_RUN = 48;
 constexpr usize HYBRID_SMALL_RUN_GRACE = 8;
 constexpr usize HYBRID_MAX_GPU_RUNS_PER_BATCH = 8;
@@ -674,8 +675,11 @@ bool AtlasInterleaveRegistry::drawBatch(
                 break;
 
             const bool smallRun = run.count < HYBRID_MIN_GPU_RUN;
+            // Do not abort the atlas just because an early tiny island exhausted
+            // the small-run grace. Larger profitable runs may still exist later
+            // in atlas order, especially with distributed long-level ownership.
             if (smallRun && !smallRunGraceLeft)
-                break;
+                continue;
 
             const usize keep = std::min(run.count, remainingSprites);
             if (!keep)
