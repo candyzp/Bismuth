@@ -416,6 +416,10 @@ bool StandaloneAssistBatch::drawRangeSpan(usize firstRange, usize rangeCount) {
         glGetIntegerv(GL_TEXTURE_BINDING_2D, &previousTextures[unit]);
     }
 
+    // The strict path must only fail on errors caused by this draw. Stock GD or
+    // another mod can leave an unrelated GL error pending before our root visit.
+    while (glGetError() != GL_NO_ERROR) {}
+
     shader->use();
     shader->setMatrix4("u_mvp", matrixMVP.mat);
 
@@ -477,7 +481,11 @@ bool StandaloneAssistBatch::drawRangeSpan(usize firstRange, usize rangeCount) {
         glBindTexture(GL_TEXTURE_2D, (u32)previousTextures[unit]);
     }
     glActiveTexture((GLenum)previousActiveTexture);
-    return glGetError() == GL_NO_ERROR;
+
+    bool drawOK = true;
+    while (glGetError() != GL_NO_ERROR)
+        drawOK = false;
+    return drawOK;
 }
 
 #endif
