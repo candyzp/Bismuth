@@ -85,7 +85,9 @@ int main() {
         assert(fixture::gpuDraws==0 && fixture::stockTransforms==3);
         s.batch.atlas.dirty=true; fixture::failAtlasSync=true; s.draw(); fixture::failAtlasSync=false;
         assert((fixture::pixels==std::vector<int>{0,1,2}));
-        assert(fixture::gpuDraws==0 && fixture::stockTransforms==3);
+        // The hybrid attempt updates the one stock-owned sprite before atlas
+        // synchronization fails, then the safe CPU recovery updates all three.
+        assert(fixture::gpuDraws==0 && fixture::stockTransforms==4);
         checkStateRestored();
         s.draw(); assert(fixture::gpuDraws==2);
         s.resolved.ready=false; s.draw();
