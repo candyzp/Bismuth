@@ -25,7 +25,8 @@ using namespace geode::prelude;
 
 namespace {
 constexpr usize MAX_STANDALONE_BUFFER_SPRITES = 16383;
-constexpr usize MAX_PERSISTENT_GPU_SPRITES = 8192;
+constexpr usize MAX_PERSISTENT_GPU_SPRITES = 12288;
+constexpr usize MAX_IMMEDIATE_GPU_SPRITES = 9216;
 
 struct StandaloneObjectDesc {
     GameObject* root = nullptr;
@@ -442,20 +443,36 @@ bool Renderer::init(PlayLayer* playLayer) {
                     return a < b;
                 });
 
-            for (auto batch : rankedCandidateBatches) {
+            for (usize batchIndex = 0; batchIndex < rankedCandidateBatches.size(); ++batchIndex) {
+                auto batch = rankedCandidateBatches[batchIndex];
                 if (!batch)
                     continue;
 
                 const usize estimatedSprites = candidateBatchCounts[batch];
                 const usize ownedNow = state->ownedSprites.size();
-                const usize remaining =
-                    ownedNow < MAX_PERSISTENT_GPU_SPRITES
-                        ? MAX_PERSISTENT_GPU_SPRITES - ownedNow
+                const usize immediateRemaining =
+                    ownedNow < MAX_IMMEDIATE_GPU_SPRITES
+                        ? MAX_IMMEDIATE_GPU_SPRITES - ownedNow
                         : 0;
-                if (!estimatedSprites || estimatedSprites > remaining) {
+                if (!estimatedSprites || !immediateRemaining) {
                     state->persistentBudgetRejectedSprites += estimatedSprites;
                     continue;
                 }
+
+                // Do not let the biggest Z-layer monopolize persistent GPU
+                // geometry. Give each remaining stock atlas a fair share so GPU
+                // ownership survives across different visual layers and later
+                // sections of the level.
+                const usize batchesLeft = rankedCandidateBatches.size() - batchIndex;
+                const usize fairShare = std::max<usize>(
+                    64,
+                    (immediateRemaining + batchesLeft - 1) / batchesLeft
+                );
+                const usize ownershipLimit = std::min<usize>({
+                    estimatedSprites,
+                    immediateRemaining,
+                    fairShare
+                });
 
                 auto parent = batch->getParent();
                 if (!parent) {
@@ -466,7 +483,8 @@ bool Renderer::init(PlayLayer* playLayer) {
                 auto gpuBatch = AssistShadowBatch::create(
                     state->resolvedState.get(),
                     state->assistShader,
-                    batch
+                    batch,
+                    ownershipLimit
                 );
                 if (!gpuBatch || !gpuBatch->getStats().ready || gpuBatch->getStats().batchedSprites == 0)
                     continue;
@@ -477,6 +495,9 @@ bool Renderer::init(PlayLayer* playLayer) {
                 parent->insertAfter(gpuBatch, batch);
                 gpuInsertionTails[batch] = gpuBatch;
                 state->gpuBatches.push_back(gpuBatch);
+                if (estimatedSprites > gpuBatch->getOwnedSprites().size())
+                    state->persistentBudgetRejectedSprites +=
+                        estimatedSprites - gpuBatch->getOwnedSprites().size();
                 for (auto sprite : gpuBatch->getOwnedSprites()) {
                     if (!sprite)
                         continue;
@@ -780,8 +801,9 @@ void Renderer::finishGPUFrame() {
     auto state = iosState(this);
     if (!state)
         return;
-    // Also retire deactivations on frames with no eligible GPU draw.
-    prepareGPUFrame();
+    // Do not force a full resolved-state update on a frame where no object GPU
+    // draw happened. Pending deactivations can safely remain queued until the
+    // next real GPU submission; reactivation cancels that pending removal.
     state->standaloneRootVisitsLastFrame = state->standaloneRootVisitsCurrentFrame;
     state->batchTransformSkipsLastFrame = state->batchTransformSkipsCurrentFrame;
     const bool show = Mod::get()->getSettingValue<bool>("ios_gpu_debug");
