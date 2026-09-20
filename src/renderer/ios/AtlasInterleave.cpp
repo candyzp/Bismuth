@@ -100,6 +100,17 @@ static RegistryState& registry() {
     return state;
 }
 
+static void drainGLErrors() {
+    while (glGetError() != GL_NO_ERROR) {}
+}
+
+static bool consumeGLErrors() {
+    bool clean = true;
+    while (glGetError() != GL_NO_ERROR)
+        clean = false;
+    return clean;
+}
+
 static bool isIdentityBatchTransform(cocos2d::CCSpriteBatchNode* batch) {
     if (!batch)
         return false;
@@ -211,11 +222,11 @@ static bool uploadDirtyAtlas(cocos2d::CCTextureAtlas* atlas) {
     GLint previousBuffer = 0;
     glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &previousBuffer);
     glBindBuffer(GL_ARRAY_BUFFER, atlas->m_pBuffersVBO[0]);
-    (void)glGetError();
+    drainGLErrors();
     glBufferData(GL_ARRAY_BUFFER, totalQuads * sizeof(*quads), quads, GL_DYNAMIC_DRAW);
-    const auto error = glGetError();
+    const bool uploadOK = consumeGLErrors();
     glBindBuffer(GL_ARRAY_BUFFER, static_cast<GLuint>(previousBuffer));
-    if (error != GL_NO_ERROR)
+    if (!uploadOK)
         return false;
     atlas->setDirty(false);
     return true;
@@ -232,11 +243,11 @@ static bool updateIndexCache(BatchIndexCache& cache, const std::vector<u16>& ind
     GLint previousBuffer = 0;
     glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &previousBuffer);
     glBindBuffer(GL_ARRAY_BUFFER, cache.buffer);
-    (void)glGetError();
+    drainGLErrors();
     glBufferData(GL_ARRAY_BUFFER, indices.size() * sizeof(u16), indices.data(), GL_DYNAMIC_DRAW);
-    const auto error = glGetError();
+    const bool uploadOK = consumeGLErrors();
     glBindBuffer(GL_ARRAY_BUFFER, static_cast<u32>(previousBuffer));
-    if (error != GL_NO_ERROR) {
+    if (!uploadOK) {
         cache.indices.clear();
         return false;
     }
@@ -447,28 +458,40 @@ void AtlasInterleaveRegistry::unregisterDeferred(StandaloneAssistBatch* owner) {
 }
 
 bool AtlasInterleaveRegistry::ownsBatch(Renderer* renderer, cocos2d::CCSpriteBatchNode* batch) {
-    if (!renderer || !renderer->isEnabled() || !batch)
+    if (!isExactGameplayBatch(renderer, batch))
         return false;
-    auto layer = renderer->getPlayLayer();
-    if (!layer || !layer->m_batchNodes || layer->m_batchNodes->indexOfObject(batch) == UINT_MAX)
-        return false;
+
     auto& state = registry();
-    if (auto cached = state.ownedBatches.find(batch);
-        cached != state.ownedBatches.end() && cached->second == renderer)
-        return true;
     auto descendants = batch->getDescendants();
-    if (!descendants)
+    auto texture = batch->getTexture();
+    if (!descendants || !texture || !texture->getName()) {
+        state.ownedBatches.erase(batch);
         return false;
+    }
+
+    // Registration storage can outlive a sprite's actual render home. Prove a
+    // live, draw-ready owner every frame instead of letting a stale positive
+    // cache force a stock-only batch into the strict GPU path.
     for (u32 i = 0; i < descendants->count(); ++i) {
         auto sprite = typeinfo_cast<cocos2d::CCSprite*>(descendants->objectAtIndex(i));
         if (!sprite || sprite->getBatchNode() != batch)
             continue;
+
         const auto owner = state.spriteOwners.find(sprite);
-        if (owner != state.spriteOwners.end() && owner->second.renderer == renderer) {
-            state.ownedBatches[batch] = renderer;
-            return true;
-        }
+        if (owner == state.spriteOwners.end() || owner->second.renderer != renderer)
+            continue;
+
+        auto spriteTexture = sprite->getTexture();
+        if (!spriteTexture || spriteTexture->getName() != texture->getName())
+            continue;
+        if (!renderer->isGPUOwnedSprite(sprite))
+            continue;
+
+        state.ownedBatches[batch] = renderer;
+        return true;
     }
+
+    state.ownedBatches.erase(batch);
     return false;
 }
 
@@ -493,6 +516,7 @@ bool AtlasInterleaveRegistry::drawBatch(
     const usize descendantCount = static_cast<usize>(descendants->count());
     if (totalQuads == 0 || descendantCount != totalQuads ||
         totalQuads > MAX_REASONABLE_ATLAS_QUADS) {
+        state.ownedBatches.erase(batch);
         return false;
     }
 
@@ -562,6 +586,7 @@ bool AtlasInterleaveRegistry::drawBatch(
     }
 
     if (!hasGPU) {
+        state.ownedBatches.erase(batch);
         return false;
     }
     state.ownedBatches[batch] = renderer;
@@ -661,6 +686,9 @@ bool AtlasInterleaveRegistry::drawBatch(
     // Bismuth bindings do not update Cocos' cache, so restoring that learned
     // state keeps real GL and Cocos' cached state synchronized for every later
     // boundary without querying the driver again.
+    // Ignore errors left behind by stock rendering or another mod. From here
+    // onward the final error check represents this Bismuth draw only.
+    drainGLErrors();
     const SavedGLState entryState = captureGLState();
     SavedGLState stockState = entryState;
     bool learnedStockState = false;
@@ -797,7 +825,7 @@ bool AtlasInterleaveRegistry::drawBatch(
 
     if (gpuStateActive)
         restoreStockState();
-    return glGetError() == GL_NO_ERROR;
+    return consumeGLErrors();
 }
 
 bool AtlasInterleaveRegistry::shouldSkipTransform(
