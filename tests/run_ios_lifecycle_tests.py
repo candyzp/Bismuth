@@ -179,7 +179,8 @@ int main(){
     assert(state->batchTransformSkipsLastFrame==42 && next->debugCalls<15);
     const int before=state->resolvedState->updates;
     cocos2d::CCDirector::frame=[]{}; static_cast<cocos2d::CCDirector&>(director).drawScene();
-    assert(state->resolvedState->updates==before+1 && state->batchTransformSkipsLastFrame==0);
+    // An empty/CPU-only render should not wake the resolved GPU hot path.
+    assert(state->resolvedState->updates==before && state->batchTransformSkipsLastFrame==0);
 
     // More than two u16 buffers, supplied in reverse spatial order.
     std::vector<GameObject> objects(33000);
@@ -193,7 +194,7 @@ int main(){
     usize index=0;
     for(auto& buffer:buffers) for(auto root:buffer.roots) assert(root==&objects[index++]);
     currentRenderer=nullptr; g_iosStates.clear(); allocated.clear();
-    std::cout<<"PASS: overlapping level setup/exit, resume/disable, 960 simulation updates in 120 renders with 120 captures, empty render, spatial u16 chunking\n";
+    std::cout<<"PASS: overlapping level setup/exit, resume/disable, 960 simulation updates in 120 renders with 120 captures, idle render skips GPU state work, spatial u16 chunking\n";
 }
 '''
 code='\n'.join(['#define GEODE_IS_IOS', fixture, state, methods, implementation, setup, chunks,
