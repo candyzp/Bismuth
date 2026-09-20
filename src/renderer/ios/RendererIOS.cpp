@@ -25,6 +25,7 @@ using namespace geode::prelude;
 
 namespace {
 constexpr usize MAX_STANDALONE_BUFFER_SPRITES = 16383;
+constexpr usize MAX_PERSISTENT_GPU_SPRITES = 8192;
 
 struct StandaloneObjectDesc {
     GameObject* root = nullptr;
@@ -77,6 +78,8 @@ struct IOSRendererState {
     usize standaloneBufferCount = 0;
     usize standaloneRootVisitsCurrentFrame = 0;
     usize standaloneRootVisitsLastFrame = 0;
+    usize standaloneCPUObjects = 0;
+    usize persistentBudgetRejectedSprites = 0;
 
     usize deferredAtlasObjects = 0;
     usize deferredAtlasUnmapped = 0;
@@ -213,11 +216,16 @@ bool Renderer::init(PlayLayer* playLayer) {
             state->gpuCandidateSprites = candidates.size();
 
             std::unordered_set<cocos2d::CCSpriteBatchNode*> candidateBatches;
+            std::unordered_map<cocos2d::CCSpriteBatchNode*, usize> candidateBatchCounts;
             std::unordered_map<GameObject*, std::vector<ResolvedStateLayer::ShadowCandidate>> candidatesByObject;
             std::unordered_map<cocos2d::CCSprite*, GameObject*> firstSpriteOwner;
             std::unordered_set<GameObject*> sharedVisualObjects;
             candidateBatches.reserve(64);
-            candidatesByObject.reserve(state->resolvedState->getStats().safeObjects);
+            candidateBatchCounts.reserve(64);
+            candidatesByObject.reserve(std::min<usize>(
+                state->resolvedState->getStats().safeObjects,
+                MAX_PERSISTENT_GPU_SPRITES
+            ));
             firstSpriteOwner.reserve(candidates.size());
 
             for (const auto& candidate : candidates) {
@@ -237,6 +245,7 @@ bool Renderer::init(PlayLayer* playLayer) {
                 if (auto batch = sprite->getBatchNode()) {
                     ++state->candidatesWithBatch;
                     candidateBatches.insert(batch);
+                    ++candidateBatchCounts[batch];
                 } else {
                     ++state->candidatesWithoutBatch;
                 }
@@ -412,15 +421,41 @@ bool Renderer::init(PlayLayer* playLayer) {
                     continue;
                 }
 
-                // A genuinely parented non-batch root can still use the root-visit
-                // path. This is separate from the parentless/deferred-atlas case.
-                ++state->standaloneObjectEligible;
-                standaloneObjects.push_back({ object, standaloneCandidates });
+                // A genuinely parented non-batch root used to take the root-visit
+                // GPU path. That path snapshots/restores a large amount of GL
+                // state per object and can turn decoration-heavy scenes into
+                // hundreds of tiny submissions. Keep these roots on stock Cocos;
+                // deferred roots that later join an atlas still use the GPU.
+                ++state->standaloneCPUObjects;
+                continue;
             }
 
-            for (auto batch : candidateBatches) {
+            std::vector<cocos2d::CCSpriteBatchNode*> rankedCandidateBatches(
+                candidateBatches.begin(), candidateBatches.end()
+            );
+            std::sort(rankedCandidateBatches.begin(), rankedCandidateBatches.end(),
+                [&](auto* a, auto* b) {
+                    const usize ac = a ? candidateBatchCounts[a] : 0;
+                    const usize bc = b ? candidateBatchCounts[b] : 0;
+                    if (ac != bc)
+                        return ac > bc;
+                    return a < b;
+                });
+
+            for (auto batch : rankedCandidateBatches) {
                 if (!batch)
                     continue;
+
+                const usize estimatedSprites = candidateBatchCounts[batch];
+                const usize ownedNow = state->ownedSprites.size();
+                const usize remaining =
+                    ownedNow < MAX_PERSISTENT_GPU_SPRITES
+                        ? MAX_PERSISTENT_GPU_SPRITES - ownedNow
+                        : 0;
+                if (!estimatedSprites || estimatedSprites > remaining) {
+                    state->persistentBudgetRejectedSprites += estimatedSprites;
+                    continue;
+                }
 
                 auto parent = batch->getParent();
                 if (!parent) {
@@ -474,6 +509,16 @@ bool Renderer::init(PlayLayer* playLayer) {
                     if (chunk.candidates.empty())
                         continue;
 
+                    const usize ownedNow = state->ownedSprites.size();
+                    const usize remaining =
+                        ownedNow < MAX_PERSISTENT_GPU_SPRITES
+                            ? MAX_PERSISTENT_GPU_SPRITES - ownedNow
+                            : 0;
+                    if (chunk.candidates.size() > remaining) {
+                        state->persistentBudgetRejectedSprites += chunk.candidates.size();
+                        continue;
+                    }
+
                     auto gpuBuffer = StandaloneAssistBatch::create(
                         state->resolvedState.get(),
                         state->assistShader,
@@ -502,47 +547,15 @@ bool Renderer::init(PlayLayer* playLayer) {
                 gpuInsertionTails[targetBatch] = insertionAnchor;
             }
 
-            // Preserve the true standalone root path only for objects that were
-            // actually parented outside a batch at init.
-            const auto standaloneChunks = buildStandaloneChunks(standaloneObjects);
-            for (const auto& chunk : standaloneChunks) {
-                if (chunk.roots.empty() || chunk.candidates.empty())
-                    continue;
-
-                auto gpuBuffer = StandaloneAssistBatch::create(
-                    state->resolvedState.get(),
-                    state->assistShader,
-                    chunk.candidates
-                );
-                if (!gpuBuffer || !gpuBuffer->getStats().ready)
-                    continue;
-
-                if (gpuBuffer->getOwnedSprites().size() != chunk.candidates.size())
-                    continue;
-
-                const usize batchIndex = state->standaloneBatches.size();
-                state->standaloneBatches.push_back(gpuBuffer);
-
-                for (auto root : chunk.roots) {
-                    if (!root || !gpuBuffer->ownsRoot(root))
-                        continue;
-                    state->standaloneOwnedRoots.insert(root);
-                    state->standaloneRootBatchIndices[root] = batchIndex;
-                }
-
-                for (auto sprite : gpuBuffer->getOwnedSprites()) {
-                    if (!sprite)
-                        continue;
-                    state->standaloneOwnedSprites.insert(sprite);
-                    state->ownedSprites.insert(sprite);
-                }
-            }
-
+            // True standalone roots deliberately remain stock. The old
+            // root-addressable GPU path performed expensive GL state capture and
+            // restore work once per visible root, which was the opposite of an
+            // optimization on dense iOS scenes.
             state->standaloneBufferCount = state->standaloneBatches.size();
             state->resolvedState->setGPUOwnedSprites(state->ownedSprites);
 
             log::info(
-                "Bismuth iOS ownership: {} candidates ({} atlas-now / {} parentless-or-standalone); standalone {} candidates / {} ownership-eligible; rejects mixed {} / duplicate {} / shared {} / external {} (glow {} / color {} / other {}) / invalid {} / root-batched {}; parentless-at-init {} -> deferred atlas {} object(s), {} target batch(es), {} buffer(s), {} unmapped; {} immediate atlas node(s), {} true standalone root(s), {} total GPU sprite(s)",
+                "Bismuth iOS ownership: {} candidates ({} atlas-now / {} parentless-or-standalone); standalone {} candidates / {} ownership-eligible; rejects mixed {} / duplicate {} / shared {} / external {} (glow {} / color {} / other {}) / invalid {} / root-batched {}; parentless-at-init {} -> deferred atlas {} object(s), {} target batch(es), {} buffer(s), {} unmapped; {} immediate atlas node(s), {} true standalone root(s), {} total GPU sprite(s); CPU standalone {} / persistent-budget rejects {} sprite(s)",
                 state->gpuCandidateSprites,
                 state->candidatesWithBatch,
                 state->candidatesWithoutBatch,
@@ -564,7 +577,9 @@ bool Renderer::init(PlayLayer* playLayer) {
                 state->deferredAtlasUnmapped,
                 state->gpuBatches.size(),
                 state->standaloneOwnedRoots.size(),
-                state->ownedSprites.size()
+                state->ownedSprites.size(),
+                state->standaloneCPUObjects,
+                state->persistentBudgetRejectedSprites
             );
         }
     }
@@ -611,7 +626,7 @@ bool Renderer::init(PlayLayer* playLayer) {
     setVisible(false);
     rendererStartTime = getTime();
 
-    log::info("Bismuth iOS initialized: GPU geometry/math for safe solids + FORCED complex decorations + simple spikes; stock Cocos owns ground and interactive portal/pad/ring visuals");
+    log::info("Bismuth iOS initialized: profitable atlas GPU assist with stock CPU ownership for fragmented/standalone/over-budget visuals");
     return true;
 }
 
