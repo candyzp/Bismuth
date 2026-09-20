@@ -462,36 +462,29 @@ bool AtlasInterleaveRegistry::ownsBatch(Renderer* renderer, cocos2d::CCSpriteBat
         return false;
 
     auto& state = registry();
-    auto descendants = batch->getDescendants();
-    auto texture = batch->getTexture();
-    if (!descendants || !texture || !texture->getName()) {
-        state.ownedBatches.erase(batch);
-        return false;
-    }
+    if (auto cached = state.ownedBatches.find(batch);
+        cached != state.ownedBatches.end() && cached->second == renderer)
+        return true;
 
-    // Registration storage can outlive a sprite's actual render home. Prove a
-    // live, draw-ready owner every frame instead of letting a stale positive
-    // cache force a stock-only batch into the strict GPU path.
+    auto descendants = batch->getDescendants();
+    if (!descendants)
+        return false;
+
+    // Strict ownership is registration-based. Once Bismuth has claimed a live
+    // sprite in this atlas, a transient readiness problem must not silently send
+    // the batch back through stock Cocos. The resolved-state/live-geometry fixes
+    // below are responsible for keeping those claims drawable.
     for (u32 i = 0; i < descendants->count(); ++i) {
         auto sprite = typeinfo_cast<cocos2d::CCSprite*>(descendants->objectAtIndex(i));
         if (!sprite || sprite->getBatchNode() != batch)
             continue;
 
         const auto owner = state.spriteOwners.find(sprite);
-        if (owner == state.spriteOwners.end() || owner->second.renderer != renderer)
-            continue;
-
-        auto spriteTexture = sprite->getTexture();
-        if (!spriteTexture || spriteTexture->getName() != texture->getName())
-            continue;
-        if (!renderer->isGPUOwnedSprite(sprite))
-            continue;
-
-        state.ownedBatches[batch] = renderer;
-        return true;
+        if (owner != state.spriteOwners.end() && owner->second.renderer == renderer) {
+            state.ownedBatches[batch] = renderer;
+            return true;
+        }
     }
-
-    state.ownedBatches.erase(batch);
     return false;
 }
 
