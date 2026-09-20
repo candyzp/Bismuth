@@ -76,10 +76,11 @@ AssistShadowBatch::~AssistShadowBatch() {
 geode::Ref<AssistShadowBatch> AssistShadowBatch::create(
     ResolvedStateLayer* state,
     Shader* assistShader,
-    cocos2d::CCSpriteBatchNode* sourceBatch
+    cocos2d::CCSpriteBatchNode* sourceBatch,
+    usize ownershipLimit
 ) {
     auto node = new AssistShadowBatch();
-    if (node->initWithState(state, assistShader, sourceBatch)) {
+    if (node->initWithState(state, assistShader, sourceBatch, ownershipLimit)) {
         node->autorelease();
         return node;
     }
@@ -90,7 +91,8 @@ geode::Ref<AssistShadowBatch> AssistShadowBatch::create(
 bool AssistShadowBatch::initWithState(
     ResolvedStateLayer* state,
     Shader* assistShader,
-    cocos2d::CCSpriteBatchNode* sourceBatch
+    cocos2d::CCSpriteBatchNode* sourceBatch,
+    usize ownershipLimit
 ) {
     if (!CCNode::init() || !state || !assistShader || !sourceBatch || !state->isGPUStateReady())
         return false;
@@ -113,7 +115,7 @@ bool AssistShadowBatch::initWithState(
     blendSrc = (u32)blend.src;
     blendDst = (u32)blend.dst;
 
-    if (!buildGeometry())
+    if (!buildGeometry(ownershipLimit))
         return false;
 
     setVisible(true);
@@ -144,7 +146,7 @@ void AssistShadowBatch::destroyGL() {
     stats.visibleOwnership = false;
 }
 
-bool AssistShadowBatch::buildGeometry() {
+bool AssistShadowBatch::buildGeometry(usize ownershipLimit) {
     const auto sourceCandidates = resolvedState->getGPUCandidates();
 
     std::vector<CandidateWithTexture> candidates;
@@ -195,7 +197,7 @@ bool AssistShadowBatch::buildGeometry() {
         });
     }
 
-    if (candidates.empty())
+    if (candidates.empty() || ownershipLimit == 0)
         return false;
 
     // Preserve Cocos atlas order among the GPU-owned subset. Animated/complex
@@ -205,6 +207,47 @@ bool AssistShadowBatch::buildGeometry() {
             return a.atlasIndex < b.atlasIndex;
         return a.originalOrder < b.originalOrder;
     });
+
+    // A giant atlas must not consume the complete persistent budget and then
+    // leave the rest of the level GPU-idle. When a batch is larger than its
+    // ownership quota, keep atlas-contiguous windows spread across the whole
+    // batch. Each window remains cheap to draw, while later level sections still
+    // retain GPU-owned geometry.
+    const usize limit = std::min<usize>({
+        ownershipLimit,
+        MAX_BATCH_SPRITES,
+        candidates.size()
+    });
+    if (candidates.size() > limit) {
+        const usize windowCount = std::max<usize>(
+            1,
+            std::min<usize>(32, std::max<usize>(1, limit / 64))
+        );
+        std::vector<CandidateWithTexture> distributed;
+        distributed.reserve(limit);
+
+        for (usize window = 0; window < windowCount && distributed.size() < limit; ++window) {
+            const usize segmentBegin = window * candidates.size() / windowCount;
+            const usize segmentEnd = (window + 1) * candidates.size() / windowCount;
+            if (segmentEnd <= segmentBegin)
+                continue;
+
+            const usize remaining = limit - distributed.size();
+            const usize windowsLeft = windowCount - window;
+            const usize target = (remaining + windowsLeft - 1) / windowsLeft;
+            const usize segmentSize = segmentEnd - segmentBegin;
+            const usize take = std::min(target, segmentSize);
+            const usize begin = segmentBegin + (segmentSize - take) / 2;
+            distributed.insert(
+                distributed.end(),
+                candidates.begin() + begin,
+                candidates.begin() + begin + take
+            );
+        }
+
+        stats.rejectedSprites += candidates.size() - distributed.size();
+        candidates = std::move(distributed);
+    }
 
     std::vector<Vertex> vertices;
     std::vector<u16> indices;
