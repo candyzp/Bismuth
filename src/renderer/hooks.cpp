@@ -6,6 +6,7 @@
 #ifdef GEODE_IS_IOS
 #include "ios/ResolvedStateLayer.hpp"
 #include "ios/GPUTruth.hpp"
+#include "ios/AtlasInterleave.hpp"
 #endif
 
 using namespace geode::prelude;
@@ -342,13 +343,21 @@ class $modify(RendererInterleavedSpriteBatchNode, cocos2d::CCSpriteBatchNode) {
             // This is the truth signal: the live-atlas path actually completed a
             // GPU submission for this batch. Merely owning a sprite is not enough.
             GPUTruth::recordObjectBatch(renderer.data(), this);
-        } else {
-            GPUTruth::recordObjectFailure(renderer.data());
-
-            // An owned draw failure is visible; never redraw the complete batch
-            // with stock Cocos (which may also double-draw a submitted prefix).
             return;
         }
+
+        if (AtlasInterleaveRegistry::lastFailureCanUseStock()) {
+            // Hybrid CPU lane. drawGPUInterleavedBatch only allows this when it
+            // rejected the custom pass before submitting any stock/GPU prefix,
+            // so one normal Cocos draw cannot double-render anything.
+            cocos2d::CCSpriteBatchNode::draw();
+            return;
+        }
+
+        // Only late submission errors remain unrecoverable in-frame. Do not
+        // redraw the whole atlas after a partial custom pass.
+        GPUTruth::recordObjectFailure(renderer.data());
+        return;
     }
 };
 #endif

@@ -64,30 +64,35 @@ int main() {
         std::vector<int> order(10000); std::iota(order.begin(),order.end(),0);
         auto shuffled=order; std::mt19937 random(13); std::shuffle(shuffled.begin(),shuffled.end(),random);
         s.claim(shuffled); s.draw();
-        assert(fixture::pixels==order && fixture::gpuDraws==1 && fixture::stockTransforms==0);
+        assert(fixture::pixels==order && fixture::gpuDraws==1);
+        assert(fixture::stockTransforms==10000-HYBRID_GPU_SPRITE_BUDGET);
         auto uploads=fixture::uploads;
         const auto* cachedRuns=registry().indexCaches.at(&s.batch).runs.data();
         s.draw(); assert(fixture::uploads==uploads && fixture::pixels==order);
         assert(registry().indexCaches.at(&s.batch).runs.data()==cachedRuns);
         for(int i=0;i<20;++i) {
             std::shuffle(order.begin(),order.end(),random); s.reorder(order); s.draw();
-            assert(fixture::pixels==order && fixture::gpuDraws==1 && fixture::stockTransforms==0);
+            assert(fixture::pixels==order && fixture::gpuDraws==1);
+            assert(fixture::stockTransforms==10000-HYBRID_GPU_SPRITE_BUDGET);
             checkStateRestored();
         }
-        std::cout << "10,000 reordered GPU sprites: 1 ordered draw; unchanged order: 0 index uploads\n";
+        std::cout << "10,000 reordered sprites: GPU budget + CPU overflow preserve order; unchanged order: 0 index uploads\n";
     }
     {
         Scene s(3); s.claim({0,2});
         fixture::failUpload=true; s.draw(); fixture::failUpload=false;
-        assert(fixture::pixels.empty());
-        assert(fixture::gpuDraws==0 && fixture::stockTransforms==0);
+        assert((fixture::pixels==std::vector<int>{0,1,2}));
+        assert(fixture::gpuDraws==0 && fixture::stockTransforms==3);
         s.batch.atlas.dirty=true; fixture::failAtlasSync=true; s.draw(); fixture::failAtlasSync=false;
-        assert(fixture::pixels.empty());
-        assert(fixture::gpuDraws==0);
+        assert((fixture::pixels==std::vector<int>{0,1,2}));
+        // The hybrid attempt updates the one stock-owned sprite before atlas
+        // synchronization fails, then the safe CPU recovery updates all three.
+        assert(fixture::gpuDraws==0 && fixture::stockTransforms==4);
         checkStateRestored();
         s.draw(); assert(fixture::gpuDraws==2);
         s.resolved.ready=false; s.draw();
-        assert(fixture::gpuDraws==0 && fixture::pixels.empty());
+        assert(fixture::gpuDraws==0 && (fixture::pixels==std::vector<int>{0,1,2}));
+        assert(fixture::stockTransforms==3);
     }
     {
         Scene s(2); s.claim({0,1});
@@ -151,13 +156,15 @@ int main() {
         s.draw();
         assert((fixture::pixels==std::vector<int>{0,1,2}) && fixture::gpuDraws==2);
         s.claim({0}); s.draw();
-        assert(fixture::pixels.empty() && fixture::gpuDraws==0);
+        assert((fixture::pixels==std::vector<int>{0,1,2}) && fixture::gpuDraws==0);
+        assert(fixture::stockTransforms==3);
         AtlasInterleaveRegistry::unregisterImmediate(&immediate);
     }
     {
         Scene s(3); s.claim({0,1,2}); s.draw();
         s.reorder({2,1,0}); fixture::failUpload=true;
-        s.draw(); assert(fixture::pixels.empty());
+        s.draw(); assert((fixture::pixels==std::vector<int>{2,1,0}));
+        assert(fixture::gpuDraws==0 && fixture::stockTransforms==3);
         fixture::failUpload=false; s.reorder({0,1,2});
         const auto uploads=fixture::uploads;
         s.draw(); assert((fixture::pixels==std::vector<int>{0,1,2}));
@@ -172,9 +179,11 @@ int main() {
         fixture::vaoSpriteIDs[40]={0}; s.renderer.owned.insert(&s.sprites[0]);
         AtlasInterleaveRegistry::registerImmediate(&immediate);
         s.draw(); assert(fixture::gpuDraws==1);
-        // All GPU-eligible geometry disappears, then returns without rejoining.
+        // Temporarily unready GPU geometry stays visible through the CPU lane,
+        // then returns to GPU ownership without rejoining.
         s.renderer.owned.clear(); s.draw();
-        assert(fixture::pixels.empty() && fixture::gpuDraws==0);
+        assert((fixture::pixels==std::vector<int>{0,1,2}) && fixture::gpuDraws==0);
+        assert(fixture::stockTransforms==3);
         s.renderer.owned.insert(&s.sprites[0]); s.draw();
         assert((fixture::pixels==std::vector<int>{0,1,2}) && fixture::gpuDraws==1);
         AtlasInterleaveRegistry::unregisterImmediate(&immediate);
@@ -206,11 +215,12 @@ int main() {
         assert((fixture::pixels==std::vector<int>{0,1,2}));
         assert(fixture::stockTransforms==1 && fixture::gpuDraws==1);
         assert(s.sprites[0].m_transformToBatch.tx==17);
-        // One unready owned sprite cannot become a hidden stock fallback in an
-        // otherwise valid batch with another ready owner.
+        // One unready owned sprite becomes stock work for this frame while the
+        // ready owner stays GPU drawn. No atlas flash or full-batch rejection.
         s.renderer.owned.erase(&s.sprites[1]); s.draw();
-        assert(fixture::pixels.empty() && fixture::stockTransforms==0);
+        assert((fixture::pixels==std::vector<int>{0,1,2}));
+        assert(fixture::gpuDraws==1 && fixture::stockTransforms==2);
     }
     assert(registry().spriteOwners.empty() && registry().indexCaches.empty());
-    std::cout << "PASS: mixed stock/GPU order, strict owned-batch failures, batch migration, masks, VAO/EBO state, teardown, u16 limits\n";
+    std::cout << "PASS: mixed stock/GPU order, hybrid recovery, GPU budgeting, batch migration, masks, VAO/EBO state, teardown, u16 limits\n";
 }

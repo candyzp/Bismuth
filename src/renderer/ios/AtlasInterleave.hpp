@@ -33,6 +33,10 @@ public:
     static int lastFailureSlot();
     static unsigned int lastFailureAtlasSize();
 
+    // True only when the custom pass rejected the batch before drawing any
+    // prefix. The batch hook can then do one clean stock draw with no overdraw.
+    static bool lastFailureCanUseStock();
+
     static void beginFrame();
 };
 
