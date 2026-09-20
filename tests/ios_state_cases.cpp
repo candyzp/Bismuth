@@ -136,5 +136,19 @@ int main() {
     state.beginFrameValidation();
     assert(state.canDrawSprite(&object));
 
+    {
+        // A deactivated sprite can leave the active set before a failed hide
+        // upload retries. Empty active vectors must not strand that dirty state.
+        ResolvedStateLayer pending;
+        DataTexture objects, sprites;
+        pending.objectStateTexture=&objects; pending.spriteStateTexture=&sprites;
+        pending.objectTexels.resize(2); pending.spriteTexels.resize(2);
+        pending.dirtyObjectRecords={0}; pending.uploadsCurrent=true;
+        objects.fail=true; pending.update(true);
+        assert(!pending.isGPUStateReady() && pending.dirtyObjectRecords.size()==1);
+        objects.fail=false; pending.update(true);
+        assert(pending.isGPUStateReady() && pending.dirtyObjectRecords.empty());
+        assert(objects.uploads==2);
+    }
     std::cout << "PASS: exact affine state, static transform reuse, detached visibility, small transform changes, live geometry eligibility, per-frame validation cache, 65,536 stock opacity/color pairs, current-state teardown\n";
 }

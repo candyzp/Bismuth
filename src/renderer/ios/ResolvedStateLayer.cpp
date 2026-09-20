@@ -724,7 +724,10 @@ void ResolvedStateLayer::update(bool detailedProbe) {
     stats.bytesUploaded = 0;
     stats.uploadCalls = 0;
 
-    if (!detailedProbe || !objectStateTexture || !spriteStateTexture || activeSpriteIndices.empty())
+    if (!detailedProbe || !objectStateTexture || !spriteStateTexture)
+        return;
+    if (activeSpriteIndices.empty() && dirtyObjectRecords.empty() &&
+        dirtySpriteRecords.empty() && !fullUploadPending)
         return;
 
     // Failed spans remain queued even if the CPU state stops changing.

@@ -25,6 +25,7 @@ struct CCTexture2D {
 };
 struct CCNode {
     virtual ~CCNode()=default;
+    bool isVisible(){return true;}
     CCNode* parent=nullptr;
     CCArray children;
     CCNode* getParent(){return parent;}
@@ -67,7 +68,13 @@ struct GameObject : cocos2d::CCSprite {
     float getVertexZ(){return vertexZ;}
 };
 struct PlayLayer {};
-struct DataTexture {};
+struct DataTexture {
+    struct Range { usize startTexel, texelCount; };
+    bool fail=false; int uploads=0;
+    glm::vec2 getSize(){return {1024,16};}
+    bool upload(const void*,usize){++uploads;return !fail;}
+    bool uploadRanges(const void*,usize,const std::vector<Range>&){++uploads;return !fail;}
+};
 struct CheckpointGameObject : GameObject {};
 struct SpriteUnpackStats { usize nonSpriteChildren=0, duplicateSprites=0; };
 struct UnpackedSprite { cocos2d::CCSprite* sprite; };
