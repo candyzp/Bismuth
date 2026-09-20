@@ -25,7 +25,7 @@ using namespace geode::prelude;
 
 namespace {
 constexpr usize MAX_STANDALONE_BUFFER_SPRITES = 16383;
-constexpr usize MAX_PERSISTENT_GPU_SPRITES = 8192;
+constexpr usize MAX_PERSISTENT_GPU_SPRITES = 12288;
 
 struct StandaloneObjectDesc {
     GameObject* root = nullptr;
@@ -452,7 +452,7 @@ bool Renderer::init(PlayLayer* playLayer) {
                     ownedNow < MAX_PERSISTENT_GPU_SPRITES
                         ? MAX_PERSISTENT_GPU_SPRITES - ownedNow
                         : 0;
-                if (!estimatedSprites || estimatedSprites > remaining) {
+                if (!estimatedSprites || !remaining) {
                     state->persistentBudgetRejectedSprites += estimatedSprites;
                     continue;
                 }
@@ -466,7 +466,8 @@ bool Renderer::init(PlayLayer* playLayer) {
                 auto gpuBatch = AssistShadowBatch::create(
                     state->resolvedState.get(),
                     state->assistShader,
-                    batch
+                    batch,
+                    remaining
                 );
                 if (!gpuBatch || !gpuBatch->getStats().ready || gpuBatch->getStats().batchedSprites == 0)
                     continue;
@@ -477,6 +478,9 @@ bool Renderer::init(PlayLayer* playLayer) {
                 parent->insertAfter(gpuBatch, batch);
                 gpuInsertionTails[batch] = gpuBatch;
                 state->gpuBatches.push_back(gpuBatch);
+                if (estimatedSprites > gpuBatch->getOwnedSprites().size())
+                    state->persistentBudgetRejectedSprites +=
+                        estimatedSprites - gpuBatch->getOwnedSprites().size();
                 for (auto sprite : gpuBatch->getOwnedSprites()) {
                     if (!sprite)
                         continue;
@@ -780,8 +784,9 @@ void Renderer::finishGPUFrame() {
     auto state = iosState(this);
     if (!state)
         return;
-    // Also retire deactivations on frames with no eligible GPU draw.
-    prepareGPUFrame();
+    // Do not force a full resolved-state update on a frame where no object GPU
+    // draw happened. Pending deactivations can safely remain queued until the
+    // next real GPU submission; reactivation cancels that pending removal.
     state->standaloneRootVisitsLastFrame = state->standaloneRootVisitsCurrentFrame;
     state->batchTransformSkipsLastFrame = state->batchTransformSkipsCurrentFrame;
     const bool show = Mod::get()->getSettingValue<bool>("ios_gpu_debug");
