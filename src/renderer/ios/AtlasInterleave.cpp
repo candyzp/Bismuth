@@ -607,13 +607,18 @@ bool AtlasInterleaveRegistry::drawBatch(
 
         const auto& record = recordIt->second;
         auto& geometry = record.immediate ? record.immediate->liveGeometry : record.deferred->liveGeometry;
-        if (!geometry.canUseBatch(record.baseVertex / 4, batch) ||
-            !geometry.refresh(record.baseVertex / 4))
+        // Eligibility is cheap. Do not rebuild live geometry yet: the hybrid
+        // scheduler may put this sprite on the CPU anyway. Refreshing thousands
+        // of candidates before selection caused the assist-time frame spikes.
+        if (!geometry.canUseBatch(record.baseVertex / 4, batch))
             continue;
 
         state.atlasOwners[atlasIndex] = record;
         hasGPU = true;
     }
+
+    const usize frameSpritesBeforeBatch = state.gpuSpritesUsedThisFrame;
+    const usize frameRunsBeforeBatch = state.gpuDrawRunsUsedThisFrame;
 
     // A GPU sprite only helps when enough neighbors can be submitted with it.
     // The previous sprite-only budget still allowed pathological levels to make
@@ -642,12 +647,9 @@ bool AtlasInterleaveRegistry::drawBatch(
             start = end;
         }
 
-        std::sort(candidateRuns.begin(), candidateRuns.end(), [](const auto& a, const auto& b) {
-            if (a.count != b.count)
-                return a.count > b.count;
-            return a.start < b.start;
-        });
-
+        // Keep atlas order stable. Re-sorting by run size made the chosen GPU
+        // islands jump around as objects entered/left visibility, forcing index
+        // cache uploads and producing periodic assist spikes.
         const usize spriteBudgetLeft =
             state.gpuSpritesUsedThisFrame < HYBRID_GPU_SPRITE_BUDGET
                 ? HYBRID_GPU_SPRITE_BUDGET - state.gpuSpritesUsedThisFrame
@@ -702,6 +704,38 @@ bool AtlasInterleaveRegistry::drawBatch(
         hasGPU = keptSprites != 0;
     }
 
+    // Only now touch live geometry for sprites that survived hybrid selection.
+    // This turns the expensive refresh from "all eligible sprites" into "actual
+    // GPU work" and keeps CPU-only frames genuinely cheap.
+    if (hasGPU) {
+        for (usize slot = 0; slot < totalQuads; ++slot) {
+            const auto record = state.atlasOwners[slot];
+            if (record.empty())
+                continue;
+            auto& geometry = record.immediate
+                ? record.immediate->liveGeometry
+                : record.deferred->liveGeometry;
+            if (!geometry.refresh(record.baseVertex / 4))
+                state.atlasOwners[slot] = {};
+        }
+
+        usize actualSprites = 0;
+        usize actualRuns = 0;
+        for (usize slot = 0; slot < totalQuads; ++slot) {
+            const auto& owner = state.atlasOwners[slot];
+            if (owner.empty())
+                continue;
+            ++actualSprites;
+            if (slot == 0 || state.atlasOwners[slot - 1].empty() ||
+                !owner.sameOwner(state.atlasOwners[slot - 1])) {
+                ++actualRuns;
+            }
+        }
+        state.gpuSpritesUsedThisFrame = frameSpritesBeforeBatch + actualSprites;
+        state.gpuDrawRunsUsedThisFrame = frameRunsBeforeBatch + actualRuns;
+        hasGPU = actualSprites != 0;
+    }
+
     // Returning false here is intentional: the batch-node hook will execute the
     // normal stock draw because no custom submission has happened yet. This is
     // the CPU half of the hybrid scheduler, not an emergency double-render.
@@ -710,6 +744,11 @@ bool AtlasInterleaveRegistry::drawBatch(
         return fail("hybrid-cpu-only", -1, static_cast<u32>(totalQuads));
     }
     state.ownedBatches[batch] = renderer;
+
+    // Resolved-state capture/upload is also delayed until we have proved this
+    // frame will submit object GPU geometry. Idle/CPU-only frames no longer pay
+    // the state-texture update cost.
+    renderer->prepareGPUFrame();
 
     for (usize i = 0; i < totalQuads; ++i) {
         if (!state.atlasSprites[i])
