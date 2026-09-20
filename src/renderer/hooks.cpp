@@ -327,8 +327,9 @@ class $modify(RendererInterleavedSpriteBatchNode, cocos2d::CCSpriteBatchNode) {
             return;
         }
 
-        renderer->prepareGPUFrame();
-
+        // Delay resolved-state work until the atlas scheduler proves that this
+        // batch will actually submit GPU geometry. CPU-only hybrid frames should
+        // not pay the GPU preparation tax.
         CC_NODE_DRAW_SETUP();
         const auto blend = this->getBlendFunc();
         ccGLBlendFunc(blend.src, blend.dst);
