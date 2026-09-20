@@ -28,6 +28,7 @@ constexpr usize MAX_REASONABLE_ATLAS_QUADS = 262144;
 // sprites stay on stock Cocos in the same atlas draw, so CPU + GPU cooperate.
 constexpr usize HYBRID_GPU_SPRITE_BUDGET = 3072;
 constexpr usize HYBRID_MIN_GPU_RUN = 48;
+constexpr usize HYBRID_SMALL_RUN_GRACE = 8;
 constexpr usize HYBRID_MAX_GPU_RUNS_PER_BATCH = 8;
 constexpr usize HYBRID_MAX_GPU_RUNS_PER_FRAME = 24;
 
@@ -658,18 +659,28 @@ bool AtlasInterleaveRegistry::drawBatch(
 
         usize remainingSprites = spriteBudgetLeft;
         usize remainingRuns = std::min(HYBRID_MAX_GPU_RUNS_PER_BATCH, frameRunBudgetLeft);
+        usize smallRunGraceLeft =
+            state.gpuDrawRunsUsedThisFrame < HYBRID_SMALL_RUN_GRACE
+                ? HYBRID_SMALL_RUN_GRACE - state.gpuDrawRunsUsedThisFrame
+                : 0;
         usize keptSprites = 0;
         usize keptRuns = 0;
         std::vector<bool> selected(totalQuads, false);
 
         for (const auto& run : candidateRuns) {
-            if (!remainingRuns || remainingSprites < HYBRID_MIN_GPU_RUN)
+            if (!remainingRuns || !remainingSprites)
                 break;
-            if (run.count < HYBRID_MIN_GPU_RUN)
+
+            const bool smallRun = run.count < HYBRID_MIN_GPU_RUN;
+            if (smallRun && !smallRunGraceLeft)
                 break;
 
             const usize keep = std::min(run.count, remainingSprites);
-            if (keep < HYBRID_MIN_GPU_RUN)
+            if (!keep)
+                continue;
+            if (smallRun)
+                --smallRunGraceLeft;
+            else if (keep < HYBRID_MIN_GPU_RUN)
                 continue;
 
             for (usize slot = run.start; slot < run.start + keep; ++slot)
