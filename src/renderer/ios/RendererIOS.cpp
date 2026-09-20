@@ -26,6 +26,7 @@ using namespace geode::prelude;
 namespace {
 constexpr usize MAX_STANDALONE_BUFFER_SPRITES = 16383;
 constexpr usize MAX_PERSISTENT_GPU_SPRITES = 12288;
+constexpr usize MAX_IMMEDIATE_GPU_SPRITES = 9216;
 
 struct StandaloneObjectDesc {
     GameObject* root = nullptr;
@@ -442,20 +443,36 @@ bool Renderer::init(PlayLayer* playLayer) {
                     return a < b;
                 });
 
-            for (auto batch : rankedCandidateBatches) {
+            for (usize batchIndex = 0; batchIndex < rankedCandidateBatches.size(); ++batchIndex) {
+                auto batch = rankedCandidateBatches[batchIndex];
                 if (!batch)
                     continue;
 
                 const usize estimatedSprites = candidateBatchCounts[batch];
                 const usize ownedNow = state->ownedSprites.size();
-                const usize remaining =
-                    ownedNow < MAX_PERSISTENT_GPU_SPRITES
-                        ? MAX_PERSISTENT_GPU_SPRITES - ownedNow
+                const usize immediateRemaining =
+                    ownedNow < MAX_IMMEDIATE_GPU_SPRITES
+                        ? MAX_IMMEDIATE_GPU_SPRITES - ownedNow
                         : 0;
-                if (!estimatedSprites || !remaining) {
+                if (!estimatedSprites || !immediateRemaining) {
                     state->persistentBudgetRejectedSprites += estimatedSprites;
                     continue;
                 }
+
+                // Do not let the biggest Z-layer monopolize persistent GPU
+                // geometry. Give each remaining stock atlas a fair share so GPU
+                // ownership survives across different visual layers and later
+                // sections of the level.
+                const usize batchesLeft = rankedCandidateBatches.size() - batchIndex;
+                const usize fairShare = std::max<usize>(
+                    64,
+                    (immediateRemaining + batchesLeft - 1) / batchesLeft
+                );
+                const usize ownershipLimit = std::min<usize>({
+                    estimatedSprites,
+                    immediateRemaining,
+                    fairShare
+                });
 
                 auto parent = batch->getParent();
                 if (!parent) {
@@ -467,7 +484,7 @@ bool Renderer::init(PlayLayer* playLayer) {
                     state->resolvedState.get(),
                     state->assistShader,
                     batch,
-                    remaining
+                    ownershipLimit
                 );
                 if (!gpuBatch || !gpuBatch->getStats().ready || gpuBatch->getStats().batchedSprites == 0)
                     continue;
