@@ -85,9 +85,11 @@ int main() {
         assert(fixture::gpuDraws==0 && fixture::stockTransforms==3);
         s.batch.atlas.dirty=true; fixture::failAtlasSync=true; s.draw(); fixture::failAtlasSync=false;
         assert((fixture::pixels==std::vector<int>{0,1,2}));
-        // The hybrid attempt updates the one stock-owned sprite before atlas
-        // synchronization fails, then the safe CPU recovery updates all three.
-        assert(fixture::gpuDraws==0 && fixture::stockTransforms==4);
+        // The hybrid attempt updates the one stock-owned sprite, explicitly
+        // restores the two suppressed GPU-owned quads, then this fixture's stock
+        // draw simulates a full child-transform visit. The dedicated raw-draw
+        // case below verifies recovery when that final visit does not exist.
+        assert(fixture::gpuDraws==0 && fixture::stockTransforms==6);
         checkStateRestored();
         s.draw(); assert(fixture::gpuDraws==2);
         s.resolved.ready=false; s.draw();
