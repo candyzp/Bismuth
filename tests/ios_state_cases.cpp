@@ -139,20 +139,23 @@ int main() {
     object.tex.id=5; assert(state.canDrawSprite(&object)); object.tex.id=4;
     object.tex.width=2048; assert(state.canDrawSprite(&object)); object.tex.width=1024;
     assert(state.canDrawSprite(&object));
+    // The GPU consumes the exact color already written into Cocos' stock
+    // quad. Do not apply opacityModifyRGB a second time.
     auto sprite=state.captureSpriteState(&object);
     sprite.opacityModifyRGB=true;
     for(int color=0;color<256;++color) for(int opacity=0;opacity<256;++opacity) {
         sprite.color={static_cast<u8>(color),static_cast<u8>(color),static_cast<u8>(color)};
         sprite.opacity=opacity;
         state.packSpriteState(0,sprite,0);
-        u8 stockByte=color;
-        stockByte*=opacity/255.0f;
-        assert(state.spriteTexels[0].x==stockByte/255.f);
+        assert(state.spriteTexels[0].x==color/255.f);
         assert(state.spriteTexels[0].w==opacity/255.f);
     }
-    sprite.opacityModifyRGB=false; sprite.color={100,150,200}; sprite.opacity=3;
-    state.packSpriteState(0,sprite,0);
-    assert(state.spriteTexels[0].x==100/255.f && state.spriteTexels[0].w==3/255.f);
+    object.quad.bl.colors={12,34,56,78};
+    auto exact=state.captureFrameSpriteState(&object,sprite);
+    assert(exact.color.r==12 && exact.color.g==34 && exact.color.b==56 && exact.opacity==78);
+    assert(!exact.opacityModifyRGB);
+    state.packSpriteState(0,exact,0);
+    assert(state.spriteTexels[0].x==12/255.f && state.spriteTexels[0].w==78/255.f);
     {
         ResolvedStateLayer temporary;
         assert(ResolvedStateLayer::getCurrent()==&temporary);
@@ -200,5 +203,5 @@ int main() {
         assert(pending.isGPUStateReady() && pending.dirtyObjectRecords.empty());
         assert(objects.uploads==2);
     }
-    std::cout << "PASS: exact affine state, static transform reuse, detached visibility, small transform changes, live geometry eligibility, per-frame validation cache, 65,536 stock opacity/color pairs, current-state teardown\n";
+    std::cout << "PASS: exact affine state, static transform reuse, detached visibility, small transform changes, live geometry eligibility, per-frame validation cache, 65,536 exact stock color/alpha pairs, current-state teardown\n";
 }
