@@ -245,9 +245,24 @@ void ResolvedStateLayer::onObjectDeactivated(GameObject* object) {
     if (objectIndex >= pendingDeactivateMask.size() || pendingDeactivateMask[objectIndex])
         return;
 
-    // Keep the record in the hot path through Renderer::update(). Because stock
-    // deactivateObject() already ran, that update captures visible=false and
-    // uploads the final hide state before we stop polling it.
+    // Stock deactivateObject() already ran. Capture its final hidden root
+    // state immediately into the CPU-side state texture record before retiring
+    // this object from the hot set. A later GPU frame uploads this dirty record
+    // before submission, so an inactive persistent bridge can never reuse stale
+    // visible state from the object's last active frame.
+    auto& record = objects[objectIndex];
+    const ObjectState hidden = captureFrameObjectState(
+        record.object,
+        record.safety,
+        record.state
+    );
+    if (record.state.visible != hidden.visible ||
+        transformChanged(record.state, hidden)) {
+        record.state = hidden;
+        packObjectState(objectIndex, record.state, record.safety);
+        dirtyObjectRecords.push_back(objectIndex);
+    }
+
     pendingDeactivateMask[objectIndex] = true;
     pendingDeactivateIndices.push_back(objectIndex);
 }
