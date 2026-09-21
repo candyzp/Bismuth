@@ -32,6 +32,10 @@ constexpr usize HYBRID_MIN_GPU_RUN = 48;
 constexpr usize HYBRID_SMALL_RUN_GRACE = 8;
 constexpr usize HYBRID_MAX_GPU_RUNS_PER_BATCH = 8;
 constexpr usize HYBRID_MAX_GPU_RUNS_PER_FRAME = 24;
+// Hidden sprites that are already persistently GPU-owned may connect nearby
+// active sprites without emitting pixels. Bound the gap so a useful run never
+// spends the 2,304-slot budget crossing a huge empty stretch.
+constexpr usize HYBRID_MAX_INACTIVE_BRIDGE = 64;
 
 struct SpriteOwner {
     Renderer* renderer = nullptr;
@@ -87,7 +91,8 @@ struct BatchIndexCache {
 
 struct CandidateRun {
     usize start = 0;
-    usize count = 0;
+    usize count = 0;       // submitted slots, including hidden bridge slots
+    usize activeCount = 0; // useful GD-active sprites inside this run
 };
 
 struct RegistryState {
@@ -111,6 +116,7 @@ struct RegistryState {
     // dense level does not malloc/free run and selection arrays at 60 Hz.
     std::vector<CandidateRun> candidateRuns;
     std::vector<bool> selectedSlots;
+    std::vector<u8> activeSlots;
     Renderer* activeRenderer = nullptr;
     cocos2d::CCSpriteBatchNode* activeBatch = nullptr;
 
@@ -224,6 +230,7 @@ static void releaseScratchIfUnused() {
     state.indices.clear();
     state.candidateRuns.clear();
     state.selectedSlots.clear();
+    state.activeSlots.clear();
     state.activeRenderer = nullptr;
     state.activeBatch = nullptr;
     state.atlasSprites.clear();
@@ -599,6 +606,7 @@ bool AtlasInterleaveRegistry::drawBatch(
 
     state.atlasSprites.assign(totalQuads, nullptr);
     state.atlasOwners.assign(totalQuads, {});
+    state.activeSlots.assign(totalQuads, 0);
 
     bool hasGPU = false;
 
@@ -645,12 +653,14 @@ bool AtlasInterleaveRegistry::drawBatch(
         auto recordIt = state.spriteOwners.find(sprite);
         if (recordIt == state.spriteOwners.end() || recordIt->second.renderer != renderer)
             continue;
-        // Hybrid ownership is per frame, not a permanent all-or-nothing claim.
-        // If a registered sprite is temporarily not ready, has changed texture,
-        // or cannot refresh its live geometry, leave just that sprite on stock
-        // Cocos for this frame. Its neighbors can still be GPU drawn.
-        if (!renderer->isGPUOwnedSprite(sprite) || !ownerReady(recordIt->second))
+        // Build the live atlas from persistent-safe ownership first. Stock-active
+        // state is tracked separately below: an inactive persistent sprite may
+        // bridge two nearby active sprites, but it never makes a run useful by
+        // itself and its object-state visibility keeps it pixel-silent.
+        if (!renderer->isGPUPersistentlyOwnedSprite(sprite) || !ownerReady(recordIt->second))
             continue;
+
+        const bool activeNow = renderer->isGPUOwnedSprite(sprite);
 
         auto spriteTexture = sprite->getTexture();
         if (!spriteTexture || spriteTexture->getName() != texture->getName())
@@ -674,7 +684,8 @@ bool AtlasInterleaveRegistry::drawBatch(
             continue;
 
         state.atlasOwners[atlasIndex] = record;
-        hasGPU = true;
+        state.activeSlots[atlasIndex] = activeNow ? 1 : 0;
+        hasGPU |= activeNow;
     }
 
     const usize frameSpritesBeforeBatch = state.gpuSpritesUsedThisFrame;
@@ -688,19 +699,61 @@ bool AtlasInterleaveRegistry::drawBatch(
     if (hasGPU) {
         auto& candidateRuns = state.candidateRuns;
         candidateRuns.clear();
-        for (usize start = 0; start < totalQuads;) {
-            if (state.atlasOwners[start].empty()) {
-                ++start;
+
+        // First find each contiguous persistent-owner segment. Inside it, merge
+        // active islands separated by at most HYBRID_MAX_INACTIVE_BRIDGE hidden
+        // owned slots. Leading/trailing hidden slots are never submitted.
+        for (usize segmentStart = 0; segmentStart < totalQuads;) {
+            if (state.atlasOwners[segmentStart].empty()) {
+                ++segmentStart;
                 continue;
             }
 
-            const auto owner = state.atlasOwners[start];
-            usize end = start + 1;
-            while (end < totalQuads && state.atlasOwners[end].sameOwner(owner))
-                ++end;
+            const auto owner = state.atlasOwners[segmentStart];
+            usize segmentEnd = segmentStart + 1;
+            while (segmentEnd < totalQuads &&
+                state.atlasOwners[segmentEnd].sameOwner(owner)) {
+                ++segmentEnd;
+            }
 
-            candidateRuns.push_back({ start, end - start });
-            start = end;
+            usize clusterStart = totalQuads;
+            usize lastActive = totalQuads;
+            usize activeCount = 0;
+
+            for (usize slot = segmentStart; slot < segmentEnd; ++slot) {
+                if (!state.activeSlots[slot])
+                    continue;
+
+                if (clusterStart == totalQuads) {
+                    clusterStart = lastActive = slot;
+                    activeCount = 1;
+                    continue;
+                }
+
+                const usize hiddenGap = slot - lastActive - 1;
+                if (hiddenGap > HYBRID_MAX_INACTIVE_BRIDGE) {
+                    candidateRuns.push_back({
+                        clusterStart,
+                        lastActive - clusterStart + 1,
+                        activeCount
+                    });
+                    clusterStart = slot;
+                    activeCount = 1;
+                } else {
+                    ++activeCount;
+                }
+                lastActive = slot;
+            }
+
+            if (clusterStart != totalQuads) {
+                candidateRuns.push_back({
+                    clusterStart,
+                    lastActive - clusterStart + 1,
+                    activeCount
+                });
+            }
+
+            segmentStart = segmentEnd;
         }
 
         // Keep atlas order stable. Re-sorting by run size made the chosen GPU
@@ -727,21 +780,30 @@ bool AtlasInterleaveRegistry::drawBatch(
         selected.assign(totalQuads, false);
 
         auto selectRun = [&](const CandidateRun& run, bool smallPass) {
-            if (!remainingRuns || !remainingSprites)
+            if (!remainingRuns || !remainingSprites || !run.activeCount)
                 return;
 
-            const bool smallRun = run.count < HYBRID_MIN_GPU_RUN;
+            // Profitability is about useful active work, not hidden bridge slots.
+            const bool smallRun = run.activeCount < HYBRID_MIN_GPU_RUN;
             if (smallRun != smallPass)
                 return;
             if (smallRun && !smallRunGraceLeft)
                 return;
 
-            const usize keep = std::min(run.count, remainingSprites);
-            if (!keep)
+            const usize keepLimit = std::min(run.count, remainingSprites);
+            usize keep = 0;
+            usize keptActive = 0;
+            // Trim a budget-limited run at its last active sprite so the GPU
+            // never spends budget on a trailing invisible bridge.
+            for (usize offset = 0; offset < keepLimit; ++offset) {
+                if (state.activeSlots[run.start + offset]) {
+                    keep = offset + 1;
+                    ++keptActive;
+                }
+            }
+            if (!keep || !keptActive)
                 return;
-            // Never spend a draw call on a truncated "large" run that has
-            // become smaller than the profitability floor.
-            if (!smallRun && keep < HYBRID_MIN_GPU_RUN)
+            if (!smallRun && keptActive < HYBRID_MIN_GPU_RUN)
                 return;
 
             for (usize slot = run.start; slot < run.start + keep; ++slot)
@@ -763,7 +825,7 @@ bool AtlasInterleaveRegistry::drawBatch(
         for (const auto& run : candidateRuns) {
             if (!remainingRuns || !remainingSprites)
                 break;
-            if (run.count >= HYBRID_MIN_GPU_RUN)
+            if (run.activeCount >= HYBRID_MIN_GPU_RUN)
                 selectRun(run, false);
         }
 
@@ -773,7 +835,7 @@ bool AtlasInterleaveRegistry::drawBatch(
         for (const auto& run : candidateRuns) {
             if (!remainingRuns || !remainingSprites || !smallRunGraceLeft)
                 break;
-            if (run.count < HYBRID_MIN_GPU_RUN)
+            if (run.activeCount < HYBRID_MIN_GPU_RUN)
                 selectRun(run, true);
         }
 
@@ -794,6 +856,8 @@ bool AtlasInterleaveRegistry::drawBatch(
         for (usize slot = 0; slot < totalQuads; ++slot) {
             const auto record = state.atlasOwners[slot];
             if (record.empty())
+                continue;
+            if (!state.activeSlots[slot])
                 continue;
             auto& geometry = record.immediate
                 ? record.immediate->liveGeometry
