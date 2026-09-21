@@ -574,6 +574,11 @@ bool Renderer::init(PlayLayer* playLayer) {
             // optimization on dense iOS scenes.
             state->standaloneBufferCount = state->standaloneBatches.size();
             state->resolvedState->setGPUOwnedSprites(state->ownedSprites);
+            // Compile the event-driven hot set now, not only after a scene
+            // suspend/resume. Otherwise every persistently owned sprite looks
+            // active during the first playthrough and dead level sections can
+            // consume the hybrid GPU run budget.
+            state->resolvedState->reseedActiveFromStock();
 
             log::info(
                 "Bismuth iOS ownership: {} candidates ({} atlas-now / {} parentless-or-standalone); standalone {} candidates / {} ownership-eligible; rejects mixed {} / duplicate {} / shared {} / external {} (glow {} / color {} / other {}) / invalid {} / root-batched {}; parentless-at-init {} -> deferred atlas {} object(s), {} target batch(es), {} buffer(s), {} unmapped; {} immediate atlas node(s), {} true standalone root(s), {} total GPU sprite(s); CPU standalone {} / persistent-budget rejects {} sprite(s)",
@@ -898,7 +903,8 @@ bool Renderer::isGPUOwnedSprite(cocos2d::CCSprite* sprite) const {
 
     auto state = iosState(const_cast<Renderer*>(this));
     if (!state || !state->batchOwnedSprites.contains(sprite) ||
-        !state->resolvedState || !state->resolvedState->canDrawSprite(sprite))
+        !state->resolvedState || !state->resolvedState->isSpriteActive(sprite) ||
+        !state->resolvedState->canDrawSprite(sprite))
         return false;
 
     // A deferred-atlas sprite is only allowed to bypass stock matrix expansion
