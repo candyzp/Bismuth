@@ -656,6 +656,15 @@ bool AtlasInterleaveRegistry::drawBatch(
         if (!spriteTexture || spriteTexture->getName() != texture->getName())
             continue;
 
+        // The stock batch establishes one blend function for this atlas draw.
+        // A sprite whose live blend differs must remain on Cocos; rendering it
+        // through the assist shader under the batch blend can look translucent
+        // or additive even when geometry/color state is otherwise exact.
+        const auto spriteBlend = sprite->getBlendFunc();
+        const auto batchBlend = batch->getBlendFunc();
+        if (spriteBlend.src != batchBlend.src || spriteBlend.dst != batchBlend.dst)
+            continue;
+
         const auto& record = recordIt->second;
         auto& geometry = record.immediate ? record.immediate->liveGeometry : record.deferred->liveGeometry;
         // Eligibility is cheap. Do not rebuild live geometry yet: the hybrid
