@@ -60,6 +60,24 @@ int main() {
         assert(fixture::gpuDraws==0);
     }
     {
+        // Dense runs must win scarce draw-call slots over tiny early islands.
+        // Eight 1-sprite islands used to exhaust the per-batch call budget
+        // before this later 100-sprite run was even considered.
+        Scene s(500);
+        std::vector<int> claimed;
+        for (int i = 0; i < 8; ++i)
+            claimed.push_back(i * 2);
+        for (int i = 200; i < 300; ++i)
+            claimed.push_back(i);
+        s.claim(claimed);
+        s.draw();
+        assert((fixture::pixels == std::vector<int>(
+            [] { std::vector<int> v(500); std::iota(v.begin(), v.end(), 0); return v; }()
+        )));
+        assert(fixture::gpuDraws == 8);
+        assert(fixture::stockTransforms == 500 - (100 + 7));
+    }
+    {
         Scene s(10000);
         std::vector<int> order(10000); std::iota(order.begin(),order.end(),0);
         auto shuffled=order; std::mt19937 random(13); std::shuffle(shuffled.begin(),shuffled.end(),random);
