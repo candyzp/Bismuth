@@ -43,6 +43,25 @@ void ResolvedStateLayer::setCurrent(bool active) {
         g_currentResolvedState = nullptr;
 }
 
+bool ResolvedStateLayer::isSpriteActive(cocos2d::CCSprite* sprite) const {
+    if (!sprite)
+        return false;
+
+    const auto it = spriteIndexByPointer.find(sprite);
+    if (it == spriteIndexByPointer.end() || it->second >= sprites.size())
+        return false;
+
+    // Before the stock lifecycle seed has been compiled, preserve the old safe
+    // behavior instead of suppressing a registered owner during level setup.
+    // RendererIOS seeds immediately after ownership is finalized, so normal
+    // gameplay takes the authoritative activeSpriteMask path below.
+    if (!eventOwnershipReady)
+        return true;
+
+    const usize spriteIndex = it->second;
+    return spriteIndex < activeSpriteMask.size() && activeSpriteMask[spriteIndex];
+}
+
 void ResolvedStateLayer::ensureEventOwnership() {
     if (eventOwnershipReady)
         return;
