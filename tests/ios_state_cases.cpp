@@ -50,6 +50,40 @@ int main() {
         object.m_glowSprite=nullptr; object.m_colorSprite=nullptr;
         object.m_objectType=GameObjectType::Solid;
     }
+    {
+        // Layered non-interactive solids are a major dense-level workload.
+        // They must use the same resolved visual-tree path as decorations rather
+        // than falling back just because glow/color sprites exist.
+        GameObject solid, glow, color;
+        solid.parent=&solid;
+        solid.m_objectType=GameObjectType::Solid;
+        solid.m_glowSprite=&glow;
+        solid.m_colorSprite=&color;
+        glow.parent=nullptr;
+        color.parent=nullptr;
+
+        ResolvedStateLayer complex;
+        std::vector<cocos2d::CCSprite*> accepted;
+        ResolvedStateLayer::CollectionDiagnostics diagnostics;
+        assert(complex.classifyObject(&solid,accepted,diagnostics)==
+            ResolvedStateLayer::SafetyClass::DynamicSafe);
+        assert(accepted.size()==3);
+        assert(accepted[0]==&glow && accepted[1]==&color && accepted[2]==&solid);
+
+        complex.objects.push_back({});
+        complex.objects[0].object=&solid;
+        complex.objects[0].safety=ResolvedStateLayer::SafetyClass::DynamicSafe;
+        for (auto* sprite : accepted) {
+            ResolvedStateLayer::SpriteRecord record;
+            record.sprite=sprite;
+            record.objectIndex=0;
+            complex.spriteIndexByPointer.emplace(sprite,complex.sprites.size());
+            complex.sprites.push_back(record);
+        }
+        for (auto* sprite : accepted)
+            assert(complex.canDrawSprite(sprite));
+    }
+
     object.transform={0.7f,1.3f,-0.2f,-2.f,84000.f,700.f};
     object.vertexZ=9;
 
