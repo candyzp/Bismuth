@@ -185,9 +185,13 @@ int main(){
     assert(frames==120 && state->resolvedState->updates==120 && state->resolvedState->finishes==120);
     assert(state->batchTransformSkipsLastFrame==42 && next->debugCalls<15);
     const int before=state->resolvedState->updates;
+    const int finishesBeforeIdle=state->resolvedState->finishes;
     cocos2d::CCDirector::frame=[]{}; static_cast<cocos2d::CCDirector&>(director).drawScene();
-    // An empty/CPU-only render should not wake the resolved GPU hot path.
+    // An empty/CPU-only render should not wake state capture/upload work, but it
+    // must still flush pending lifecycle removals so stale objects cannot poison
+    // a later hybrid selection.
     assert(state->resolvedState->updates==before && state->batchTransformSkipsLastFrame==0);
+    assert(state->resolvedState->finishes==finishesBeforeIdle+1);
 
     // More than two u16 buffers, supplied in reverse spatial order.
     std::vector<GameObject> objects(33000);
