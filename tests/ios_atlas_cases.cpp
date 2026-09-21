@@ -160,6 +160,21 @@ int main() {
         assert((indices==std::vector<u16>{65532,65534,65535,65532,65535,65533}));
     }
     {
+        // A single sprite mapped to two different vertices in one owner is not a
+        // valid GPU identity. Reject the renderer instead of silently using the
+        // first mapping and drawing arbitrary geometry.
+        Scene s(2);
+        s.owner.ownedSprites={&s.sprites[0],&s.sprites[0]};
+        s.renderer.owned.insert(&s.sprites[0]);
+        fixture::vaoSpriteIDs[s.owner.vao]={0,0};
+        AtlasInterleaveRegistry::registerDeferred(&s.owner);
+        s.draw();
+        assert(fixture::gpuDraws==0 && (fixture::pixels==std::vector<int>{0,1}));
+        assert(fixture::stockTransforms==2);
+        AtlasInterleaveRegistry::unregisterDeferred(&s.owner);
+        s.owner.ownedSprites.clear();
+    }
+    {
         Scene s(3);
         AssistShadowBatch immediate;
         immediate.stockBatch=&s.batch; immediate.resolvedState=&s.resolved;
