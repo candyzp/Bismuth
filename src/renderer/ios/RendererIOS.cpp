@@ -806,9 +806,13 @@ void Renderer::finishGPUFrame() {
     auto state = iosState(this);
     if (!state)
         return;
-    // Do not force a full resolved-state update on a frame where no object GPU
-    // draw happened. Pending deactivations can safely remain queued until the
-    // next real GPU submission; reactivation cancels that pending removal.
+    // A CPU-only frame never needs a final hidden-state upload, but it still
+    // must retire deactivated records from the event-driven hot set. Leaving
+    // them queued until some future GPU submission can make dead level sections
+    // keep participating in hybrid scheduling for arbitrarily long stretches.
+    if (!state->gpuFramePrepared && state->resolvedState)
+        state->resolvedState->finishEventFrame();
+
     state->standaloneRootVisitsLastFrame = state->standaloneRootVisitsCurrentFrame;
     state->batchTransformSkipsLastFrame = state->batchTransformSkipsCurrentFrame;
     const bool show = Mod::get()->getSettingValue<bool>("ios_gpu_debug");
