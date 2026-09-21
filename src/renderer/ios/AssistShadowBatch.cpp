@@ -16,7 +16,7 @@ namespace {
 // Four vertices per sprite with a u16 index buffer. If one stock batch contains
 // more than this many safe sprites we keep the overflow on stock Cocos instead
 // of disabling GPU ownership for the entire batch.
-constexpr usize MAX_BATCH_SPRITES = 16383;
+constexpr usize MAX_BATCH_SPRITES = 16384;
 
 struct CandidateWithTexture {
     ResolvedStateLayer::ShadowCandidate candidate;
