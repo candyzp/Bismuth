@@ -85,6 +85,11 @@ struct BatchIndexCache {
     std::vector<AtlasDrawRun> runs;
 };
 
+struct CandidateRun {
+    usize start = 0;
+    usize count = 0;
+};
+
 struct RegistryState {
     std::unordered_map<cocos2d::CCSprite*, SpriteOwner> spriteOwners;
     std::unordered_map<cocos2d::CCSpriteBatchNode*, AssistShadowBatch*> immediateByBatch;
@@ -102,6 +107,10 @@ struct RegistryState {
     std::vector<SpriteOwner> atlasOwners;
     std::vector<AtlasDrawRun> runs;
     std::vector<u16> indices;
+    // Per-batch scheduling scratch. Keep capacity across rendered frames so a
+    // dense level does not malloc/free run and selection arrays at 60 Hz.
+    std::vector<CandidateRun> candidateRuns;
+    std::vector<bool> selectedSlots;
     Renderer* activeRenderer = nullptr;
     cocos2d::CCSpriteBatchNode* activeBatch = nullptr;
 
@@ -213,6 +222,8 @@ static void releaseScratchIfUnused() {
     state.uniformLocations.clear();
     state.runs.clear();
     state.indices.clear();
+    state.candidateRuns.clear();
+    state.selectedSlots.clear();
     state.activeRenderer = nullptr;
     state.activeBatch = nullptr;
     state.atlasSprites.clear();
@@ -661,12 +672,8 @@ bool AtlasInterleaveRegistry::drawBatch(
     // than Cocos' CPU transform work. Rank contiguous owner runs by size and only
     // keep the profitable ones, with hard per-batch and per-frame call ceilings.
     if (hasGPU) {
-        struct CandidateRun {
-            usize start = 0;
-            usize count = 0;
-        };
-
-        std::vector<CandidateRun> candidateRuns;
+        auto& candidateRuns = state.candidateRuns;
+        candidateRuns.clear();
         for (usize start = 0; start < totalQuads;) {
             if (state.atlasOwners[start].empty()) {
                 ++start;
@@ -702,7 +709,8 @@ bool AtlasInterleaveRegistry::drawBatch(
                 : 0;
         usize keptSprites = 0;
         usize keptRuns = 0;
-        std::vector<bool> selected(totalQuads, false);
+        auto& selected = state.selectedSlots;
+        selected.assign(totalQuads, false);
 
         for (const auto& run : candidateRuns) {
             if (!remainingRuns || !remainingSprites)
