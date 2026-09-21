@@ -68,8 +68,9 @@ Buffer* Buffer::create(const char* name, usize size, GLenum usage, bool keepShad
     glBindBuffer(GL_ARRAY_BUFFER, buffer);
     glBufferData(GL_ARRAY_BUFFER, size, nullptr, usage);
     GLenum allocationError = GL_NO_ERROR;
-    while (const GLenum error = glGetError(); error != GL_NO_ERROR)
-        allocationError = error;
+    GLenum allocationCheck = GL_NO_ERROR;
+    while ((allocationCheck = glGetError()) != GL_NO_ERROR)
+        allocationError = allocationCheck;
     glBindBuffer(GL_ARRAY_BUFFER, previouslyBoundBuffer);
 
     if (allocationError != GL_NO_ERROR) {
