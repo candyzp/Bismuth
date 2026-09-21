@@ -95,6 +95,21 @@ int main() {
         assert(fixture::stockTransforms==3);
     }
     {
+        // A failure after hybrid transform suppression must restore the selected
+        // stock quads before the draw hook falls back to raw CCSpriteBatchNode::draw().
+        // Model the real draw path here without a second child-transform visit.
+        Scene s(3); s.claim({0,2});
+        fixture::stockDrawUpdatesTransforms=false;
+        fixture::failGeometryFlush=true;
+        s.draw();
+        fixture::failGeometryFlush=false;
+        fixture::stockDrawUpdatesTransforms=true;
+        assert((fixture::pixels==std::vector<int>{0,1,2}));
+        assert(fixture::gpuDraws==0 && fixture::stockTransforms==3);
+        checkStateRestored();
+        s.draw(); assert(fixture::gpuDraws==2);
+    }
+    {
         Scene s(2); s.claim({0,1});
         s.sprites[1].slot=0;
         s.draw(); assert(fixture::gpuDraws==0);
