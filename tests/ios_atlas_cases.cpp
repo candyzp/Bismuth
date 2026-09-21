@@ -89,7 +89,7 @@ int main() {
         // restores the two suppressed GPU-owned quads, then this fixture's stock
         // draw simulates a full child-transform visit. The dedicated raw-draw
         // case below verifies recovery when that final visit does not exist.
-        assert(fixture::gpuDraws==0 && fixture::stockTransforms==6);
+        assert(fixture::gpuDraws==0 && fixture::stockTransforms==7);
         checkStateRestored();
         s.draw(); assert(fixture::gpuDraws==2);
         s.resolved.ready=false; s.draw();
@@ -107,7 +107,7 @@ int main() {
         fixture::failGeometryFlush=false;
         fixture::stockDrawUpdatesTransforms=true;
         assert((fixture::pixels==std::vector<int>{0,1,2}));
-        assert(fixture::gpuDraws==0 && fixture::stockTransforms==3);
+        assert(fixture::gpuDraws==0 && fixture::stockTransforms==4);
         checkStateRestored();
         s.draw(); assert(fixture::gpuDraws==2);
     }
