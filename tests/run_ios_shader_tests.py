@@ -37,7 +37,10 @@ repo_root=Path(__file__).resolve().parents[1]
 root=repo_root/'resources/shaders'
 background_cpp=(repo_root/'src/renderer/ios/BackgroundGPU.cpp').read_text()
 assert background_cpp.count('while (glGetError() != GL_NO_ERROR)') >= 2
+assert 'bool BackgroundGPU::canDraw' in background_cpp
 assert 'return drawOK;' in background_cpp
+renderer_cpp=(repo_root/'src/renderer/ios/RendererIOS.cpp').read_text()
+assert 'state->background.canDraw(sprite)' in renderer_cpp
 def program(vertex):
     p=createProgram()
     for path,kind in ((vertex,0x8B31),('assist_ios.frag',0x8B30)):
