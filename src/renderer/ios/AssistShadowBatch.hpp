@@ -32,7 +32,7 @@ public:
         ResolvedStateLayer* resolvedState,
         Shader* shader,
         cocos2d::CCSpriteBatchNode* stockBatch,
-        usize ownershipLimit = 16383
+        usize ownershipLimit = 16384
     );
 
     void draw() override;
