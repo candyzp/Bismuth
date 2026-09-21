@@ -96,7 +96,13 @@ public:
     bool useOptimizations();
 
     // iOS-only render handoff query for stock CCSpriteBatchNode children.
+    // Active ownership means the sprite is useful/visible in GD's current hot set.
     bool isGPUOwnedSprite(cocos2d::CCSprite* sprite) const;
+
+    // Persistent ownership ignores the active-set gate. Atlas scheduling uses it
+    // for hidden bridge slots so inactive safe sprites do not fragment a dense
+    // live section into one-sprite GPU islands.
+    bool isGPUPersistentlyOwnedSprite(cocos2d::CCSprite* sprite) const;
 
     // Skip expansion only while a validated atlas plan owns this exact slot.
     bool prepareGPUOwnedSprite(cocos2d::CCSprite* sprite);
