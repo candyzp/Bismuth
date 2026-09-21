@@ -17,6 +17,7 @@ jobs:
         run: |
           python3 tests/run_ios_atlas_tests.py
           python3 tests/run_ios_state_tests.py
+          python3 tests/run_ios_active_tests.py
           python3 tests/run_ios_lifecycle_tests.py
           python3 tests/run_ios_upload_tests.py
           python3 tests/run_ios_geometry_tests.py
