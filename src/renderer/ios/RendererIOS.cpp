@@ -242,6 +242,13 @@ bool Renderer::init(PlayLayer* playLayer) {
             firstSpriteOwner.reserve(candidates.size());
             sharedVisualSprites.reserve(32);
 
+            std::vector<ResolvedStateLayer::ShadowCandidate> registryCandidates;
+            std::unordered_set<cocos2d::CCSprite*> registryCandidateSprites;
+            std::unordered_set<cocos2d::CCSprite*> deferredRegistrySprites;
+            registryCandidates.reserve(candidates.size());
+            registryCandidateSprites.reserve(candidates.size());
+            deferredRegistrySprites.reserve(candidates.size());
+
             // Detect cross-object visual aliases before assigning any GPU owner.
             // One sprite cannot safely carry two object-state indices or two
             // persistent vertex identities. Shared visuals stay on stock Cocos.
@@ -282,18 +289,9 @@ bool Renderer::init(PlayLayer* playLayer) {
 
             std::vector<StandaloneObjectDesc> standaloneObjects;
             // One registry VBO owns every safe sprite that either already lives
-            // in a stock atlas or has a proven future stock-atlas home. Keeping
-            // immediate and deferred geometry in separate owners fragmented
-            // Orbit-style atlases into one-sprite runs whenever GD interleaved
-            // those two populations.
-            std::vector<ResolvedStateLayer::ShadowCandidate> registryCandidates;
-            std::unordered_set<cocos2d::CCSprite*> registryCandidateSprites;
-            std::unordered_set<cocos2d::CCSprite*> deferredRegistrySprites;
+            // in a stock atlas or has a proven future stock-atlas home.
             std::unordered_set<cocos2d::CCSpriteBatchNode*> deferredAtlasTargetBatches;
             standaloneObjects.reserve(candidatesByObject.size());
-            registryCandidates.reserve(candidates.size());
-            registryCandidateSprites.reserve(candidates.size());
-            deferredRegistrySprites.reserve(candidates.size());
             deferredAtlasTargetBatches.reserve(32);
 
             for (auto& [object, objectCandidates] : candidatesByObject) {
