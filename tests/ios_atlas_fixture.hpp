@@ -188,6 +188,7 @@ struct CCTextureAtlas {
     void drawQuads() { drawNumberOfQuads(quads.size(),0); }
 };
 struct CCSpriteBatchNode;
+struct ccBlendFunc { u32 src=GL_SRC_ALPHA, dst=GL_ONE_MINUS_SRC_ALPHA; };
 struct CCSprite : CCNode {
     int id=0;
     bool dirty=true, m_bShouldBeHidden=false;
@@ -197,15 +198,16 @@ struct CCSprite : CCNode {
     CCTexture2D* texture=nullptr;
     GameObjectClassType m_classType=GameObjectClassType::Normal;
     bool interactive=false, synced=false, m_isInvisibleBlock=false;
+    ccBlendFunc blend;
     CCSprite *m_glowSprite=nullptr, *m_colorSprite=nullptr;
     bool getHasSyncedAnimation() { return synced; }
     CCSpriteBatchNode* getBatchNode() { return batch; }
     u32 getAtlasIndex() { return slot; }
     CCTexture2D* getTexture() { return texture; }
+    ccBlendFunc getBlendFunc() { return blend; }
     void setDirty(bool d) { dirty=d; }
     virtual void updateTransform();
 };
-struct ccBlendFunc { u32 src=GL_SRC_ALPHA, dst=GL_ONE_MINUS_SRC_ALPHA; };
 struct CCSpriteBatchNode : CCNode {
     CCTextureAtlas atlas;
     CCTexture2D texture;
