@@ -516,13 +516,47 @@ bool AtlasInterleaveRegistry::drawBatch(
 ) {
     auto& state = registry();
     bool submittedAny = false;
+    bool stockTransformsSuppressed = false;
+
+    // Once hybrid selection is known we deliberately skip Cocos quad expansion
+    // for GPU-owned slots. If anything fails before the first custom submission,
+    // rebuild those exact stock quads before handing the batch back to Cocos.
+    // CCSpriteBatchNode::draw() itself only submits the atlas; it is too late to
+    // assume the normal child visit will repair transforms after this hook.
+    auto restoreSuppressedStockTransforms = [&]() {
+        if (!stockTransformsSuppressed)
+            return;
+
+        auto previousRenderer = state.activeRenderer;
+        auto previousBatch = state.activeBatch;
+        state.activeRenderer = nullptr;
+        state.activeBatch = nullptr;
+
+        const usize count = std::min(state.atlasSprites.size(), state.atlasOwners.size());
+        for (usize slot = 0; slot < count; ++slot) {
+            if (state.atlasOwners[slot].empty())
+                continue;
+            auto sprite = state.atlasSprites[slot];
+            if (!sprite || sprite->getBatchNode() != batch)
+                continue;
+            sprite->setDirty(true);
+            sprite->updateTransform();
+        }
+
+        state.activeRenderer = previousRenderer;
+        state.activeBatch = previousBatch;
+        stockTransformsSuppressed = false;
+    };
+
     auto fail = [&](const char* reason, int slot = -1, u32 atlasSize = 0) -> bool {
+        if (!submittedAny)
+            restoreSuppressedStockTransforms();
         state.lastFailureReason = reason;
         state.lastFailureSlot = slot;
         state.lastFailureAtlasSize = atlasSize;
         // A complete stock redraw is only safe before this custom pass has
-        // emitted anything. This makes structural/readiness failures invisible
-        // instead of turning them into a one-frame atlas flash.
+        // emitted anything. The skipped GPU-owned stock transforms are restored
+        // above before that fallback is authorized.
         state.lastFailureCanUseStock = !submittedAny;
         return false;
     };
@@ -787,6 +821,7 @@ bool AtlasInterleaveRegistry::drawBatch(
     }
     state.activeBatch = nullptr;
     state.activeRenderer = nullptr;
+    stockTransformsSuppressed = true;
 
     if (atlas->getTotalQuads() != totalQuads || descendants->count() != totalQuads)
         return fail("atlas-mutated-after-transform", -1, static_cast<u32>(totalQuads));
