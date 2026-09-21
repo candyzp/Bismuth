@@ -972,22 +972,30 @@ bool Renderer::useOptimizations() {
     return false;
 }
 
-bool Renderer::isGPUOwnedSprite(cocos2d::CCSprite* sprite) const {
+bool Renderer::isGPUPersistentlyOwnedSprite(cocos2d::CCSprite* sprite) const {
     if (!enabled || !sprite)
         return false;
 
     auto state = iosState(const_cast<Renderer*>(this));
     if (!state || !state->batchOwnedSprites.contains(sprite) ||
-        !state->resolvedState || !state->resolvedState->isSpriteActive(sprite) ||
-        !state->resolvedState->canDrawSprite(sprite))
+        !state->resolvedState || !state->resolvedState->canDrawSprite(sprite))
         return false;
 
-    // A deferred-atlas sprite is only allowed to bypass stock matrix expansion
-    // after GD has actually inserted it into a stock batch.
+    // Deferred geometry becomes drawable only after GD inserts the sprite into
+    // a real stock atlas. Before that there is no exact live render home.
     if (state->deferredAtlasOwnedSprites.contains(sprite) && !sprite->getBatchNode())
         return false;
 
     return true;
+}
+
+bool Renderer::isGPUOwnedSprite(cocos2d::CCSprite* sprite) const {
+    if (!isGPUPersistentlyOwnedSprite(sprite))
+        return false;
+
+    auto state = iosState(const_cast<Renderer*>(this));
+    return state && state->resolvedState &&
+        state->resolvedState->isSpriteActive(sprite);
 }
 
 bool Renderer::hasForcedDecorationInBatch(cocos2d::CCSpriteBatchNode* batch) const {
