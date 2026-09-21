@@ -214,16 +214,29 @@ ResolvedStateLayer::SafetyClass ResolvedStateLayer::classifyObject(
         return SafetyClass::StockOnly;
     }
 
-    if (outSprites.size() != 1 || outSprites.front() != object ||
-        object->m_glowSprite || object->m_colorSprite ||
-        (object->getChildren() && object->getChildren()->count() != 0))
+    const bool simpleRoot =
+        collectionSafe && !invalidSprite &&
+        outSprites.size() == 1 && outSprites.front() == object &&
+        !object->m_glowSprite && !object->m_colorSprite &&
+        (!object->getChildren() || object->getChildren()->count() == 0);
+
+    if (simpleRoot) {
+        const bool dynamic =
+            object->m_groupCount > 0 ||
+            object->getHasRotateAction() || object->m_usesAudioScale;
+        return dynamic ? SafetyClass::DynamicSafe : SafetyClass::StaticSafe;
+    }
+
+    // Complex non-interactive solids used to be thrown back to stock merely
+    // because they had glow/detail/color children. That is exactly the expensive
+    // visual structure the resolved-state path already handles for Decoration.
+    // Reuse the same ordered sprite-tree collector and keep the root dynamic so
+    // GD remains authoritative for group movement/rotation/audio scaling.
+    outSprites.clear();
+    collectForcedDecorationSprites(object, outSprites);
+    if (outSprites.empty())
         return SafetyClass::StockOnly;
-
-    const bool dynamic =
-        object->m_groupCount > 0 ||
-        object->getHasRotateAction() || object->m_usesAudioScale;
-
-    return dynamic ? SafetyClass::DynamicSafe : SafetyClass::StaticSafe;
+    return SafetyClass::DynamicSafe;
 }
 
 bool ResolvedStateLayer::isShadowValidationCandidate(
@@ -697,11 +710,15 @@ bool ResolvedStateLayer::canDrawSprite(cocos2d::CCSprite* sprite) {
         // still keep their own normal Cocos draw lifecycle.
         if (object && sprite && sprite->getTexture() &&
             objectRecord.safety != SafetyClass::StockOnly) {
-            if (object->m_objectType == GameObjectType::Decoration) {
+            if (object->m_objectType == GameObjectType::Decoration ||
+                object->m_objectType == GameObjectType::Solid) {
+                // Every sprite recorded for a proven visual tree is eligible.
+                // LiveGeometry still validates texture/crop/local transform at
+                // draw time, and runtime-attached sprites that were never part of
+                // this record simply remain on stock Cocos.
                 result = true;
             } else if (object == sprite &&
-                (object->m_objectType == GameObjectType::Solid ||
-                 object->m_objectType == GameObjectType::Hazard)) {
+                object->m_objectType == GameObjectType::Hazard) {
                 result = true;
             }
         }
