@@ -19,6 +19,11 @@ bool BackgroundGPU::init() {
     GLint previousVAO = 0, previousVBO = 0;
     glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &previousVAO);
     glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &previousVBO);
+    // Ignore sticky errors left by stock rendering or another mod. Only
+    // errors produced by this allocation should decide whether the persistent
+    // background GPU path is available.
+    while (glGetError() != GL_NO_ERROR) {}
+
     glGenVertexArrays(1, &vao);
     glGenBuffers(1, &vbo);
     if (vao && vbo) {
@@ -28,10 +33,12 @@ bool BackgroundGPU::init() {
         glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(float) * 2, nullptr);
         glEnableVertexAttribArray(0);
     }
-    const auto error = glGetError();
+    bool allocationOK = true;
+    while (glGetError() != GL_NO_ERROR)
+        allocationOK = false;
     glBindVertexArray(static_cast<u32>(previousVAO));
     glBindBuffer(GL_ARRAY_BUFFER, static_cast<u32>(previousVBO));
-    if (error != GL_NO_ERROR || !vao || !vbo) {
+    if (!allocationOK || !vao || !vbo) {
         if (vao) glDeleteVertexArrays(1, &vao);
         if (vbo) glDeleteBuffers(1, &vbo);
         vao = vbo = 0;
@@ -67,6 +74,10 @@ bool BackgroundGPU::draw(cocos2d::CCSprite* sprite) {
     glGetIntegerv(GL_ACTIVE_TEXTURE, &previousUnit);
     glActiveTexture(GL_TEXTURE0);
     glGetIntegerv(GL_TEXTURE_BINDING_2D, &previousTexture);
+    // A stale error must not turn a valid strict background submission into
+    // a false failure (which would suppress the stock draw for this frame).
+    while (glGetError() != GL_NO_ERROR) {}
+
     const auto blend = sprite->getBlendFunc();
     cocos2d::ccGLBlendFunc(blend.src, blend.dst);
     shader->use();
@@ -77,11 +88,13 @@ bool BackgroundGPU::draw(cocos2d::CCSprite* sprite) {
     glBindTexture(GL_TEXTURE_2D, sprite->getTexture()->getName());
     glBindVertexArray(vao);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-    const auto error = glGetError();
+    bool drawOK = true;
+    while (glGetError() != GL_NO_ERROR)
+        drawOK = false;
     glBindVertexArray(static_cast<u32>(previousVAO));
     glUseProgram(static_cast<u32>(previousProgram));
     glBindTexture(GL_TEXTURE_2D, static_cast<u32>(previousTexture));
     glActiveTexture(static_cast<GLenum>(previousUnit));
-    return error == GL_NO_ERROR;
+    return drawOK;
 }
 #endif
