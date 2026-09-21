@@ -15,6 +15,7 @@
 
 #include <cstring>
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <memory>
 #include <unordered_map>
@@ -89,6 +90,12 @@ struct IOSRendererState {
 
     usize batchTransformSkipsCurrentFrame = 0;
     usize batchTransformSkipsLastFrame = 0;
+
+    std::array<usize, 60> gpuSpriteHistory{};
+    usize gpuSpriteHistoryIndex = 0;
+    usize gpuSpriteHistoryCount = 0;
+    usize gpuSpriteHistorySum = 0;
+
     std::string lastDebugText;
     bool suspended = false;
     bool enabledBeforeSuspend = false;
@@ -456,6 +463,20 @@ bool Renderer::init(PlayLayer* playLayer) {
                     return a < b;
                 });
 
+            // Weight persistent ownership by atlas density. Equal sharing made
+            // huge decoration atlases receive tiny slices, which translated to
+            // only ~20-70 active GPU sprites in complex sections.
+            std::vector<usize> remainingCandidateSprites(
+                rankedCandidateBatches.size() + 1,
+                0
+            );
+            for (usize i = rankedCandidateBatches.size(); i-- > 0;) {
+                auto* rankedBatch = rankedCandidateBatches[i];
+                remainingCandidateSprites[i] =
+                    remainingCandidateSprites[i + 1] +
+                    (rankedBatch ? candidateBatchCounts[rankedBatch] : 0);
+            }
+
             for (usize batchIndex = 0; batchIndex < rankedCandidateBatches.size(); ++batchIndex) {
                 auto batch = rankedCandidateBatches[batchIndex];
                 if (!batch)
@@ -472,19 +493,22 @@ bool Renderer::init(PlayLayer* playLayer) {
                     continue;
                 }
 
-                // Do not let the biggest Z-layer monopolize persistent GPU
-                // geometry. Give each remaining stock atlas a fair share so GPU
-                // ownership survives across different visual layers and later
-                // sections of the level.
-                const usize batchesLeft = rankedCandidateBatches.size() - batchIndex;
-                const usize fairShare = std::max<usize>(
-                    64,
-                    (immediateRemaining + batchesLeft - 1) / batchesLeft
-                );
+                // Dense atlases get a proportional slice of the remaining
+                // persistent budget instead of the old equal split. Keep a
+                // 384-sprite floor for genuinely dense atlases so a complex
+                // decoration layer can feed the per-frame scheduler hundreds of
+                // sprites instead of a few dozen.
+                const usize candidatesLeft = remainingCandidateSprites[batchIndex];
+                usize weightedShare = candidatesLeft
+                    ? (immediateRemaining * estimatedSprites + candidatesLeft - 1) / candidatesLeft
+                    : immediateRemaining;
+                if (estimatedSprites >= 384)
+                    weightedShare = std::max<usize>(384, weightedShare);
+
                 const usize ownershipLimit = std::min<usize>({
                     estimatedSprites,
                     immediateRemaining,
-                    fairShare
+                    weightedShare
                 });
 
                 auto parent = batch->getParent();
@@ -753,12 +777,26 @@ void Renderer::updateDebugText() {
                 indices += batch->getStats().indicesLastFrame;
             }
         }
+        const usize currentSprites = indices / 6;
+        if (state->gpuSpriteHistoryCount < state->gpuSpriteHistory.size()) {
+            ++state->gpuSpriteHistoryCount;
+        } else {
+            state->gpuSpriteHistorySum -= state->gpuSpriteHistory[state->gpuSpriteHistoryIndex];
+        }
+        state->gpuSpriteHistory[state->gpuSpriteHistoryIndex] = currentSprites;
+        state->gpuSpriteHistorySum += currentSprites;
+        state->gpuSpriteHistoryIndex =
+            (state->gpuSpriteHistoryIndex + 1) % state->gpuSpriteHistory.size();
+        const usize averageSprites = state->gpuSpriteHistoryCount
+            ? state->gpuSpriteHistorySum / state->gpuSpriteHistoryCount
+            : 0;
+
         const bool ready = state->assistShader && state->resolvedState &&
             state->resolvedState->isGPUStateReady();
         const char* status = !enabled ? "OFF" : !ready ? "UNAVAILABLE" : calls ? "ACTIVE" : "IDLE";
         text = fmt::format(
-            "Bismuth GPU [{}]\nGPU Draw: {} sprites/frame\nCalls: {} | Transforms skipped: {}",
-            status, indices / 6, calls,
+            "Bismuth GPU [{}]\nGPU Draw: {} sprites/frame | avg {}\nCalls: {} | Transforms skipped: {}",
+            status, currentSprites, averageSprites, calls,
             state->batchTransformSkipsLastFrame + state->standaloneRootVisitsLastFrame
         );
     }
