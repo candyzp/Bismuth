@@ -336,13 +336,21 @@ bool Renderer::init(PlayLayer* playLayer) {
 
                 const bool forcedDecoration =
                     object->m_objectType == GameObjectType::Decoration;
+                const bool complexResolvedSolid =
+                    object->m_objectType == GameObjectType::Solid &&
+                    (objectCandidates.size() > 1 ||
+                     object->m_glowSprite || object->m_colorSprite ||
+                     (object->getChildren() && object->getChildren()->count() != 0));
+                const bool resolvedVisualTree = forcedDecoration || complexResolvedSolid;
 
-                // Complex decorations may have some sprites already atlas-owned
-                // and others still standalone. Keep the atlas sprites in their
-                // GPU batch and build a second GPU buffer for the standalone
-                // subset instead of demoting the whole decoration.
+                // Resolved visual trees may have some sprites already atlas-owned
+                // and others still standalone. Keep atlas sprites in their exact
+                // stock batch and build deferred geometry only for the standalone
+                // subset. The old code granted this to Decoration only, which
+                // discarded thousands of complex Solid candidates one layer
+                // after classifyObject() had already proven them safe.
                 std::vector<ResolvedStateLayer::ShadowCandidate> standaloneCandidates;
-                if (forcedDecoration && anyAtlas) {
+                if (resolvedVisualTree && anyAtlas) {
                     standaloneCandidates.reserve(objectCandidates.size());
                     for (const auto& candidate : objectCandidates) {
                         if (candidate.sprite && !candidate.sprite->getBatchNode())
@@ -354,7 +362,7 @@ bool Renderer::init(PlayLayer* playLayer) {
                     standaloneCandidates = objectCandidates;
                 }
 
-                if (!forcedDecoration && anyAtlas) {
+                if (!resolvedVisualTree && anyAtlas) {
                     ++state->standaloneMixedRejected;
                     continue;
                 }
@@ -369,7 +377,7 @@ bool Renderer::init(PlayLayer* playLayer) {
                     continue;
                 }
 
-                if (!forcedDecoration && externalVisual) {
+                if (!resolvedVisualTree && externalVisual) {
                     ++state->standaloneExternalRejected;
                     if (externalGlow)
                         ++state->standaloneExternalGlowObjects;
@@ -385,7 +393,7 @@ bool Renderer::init(PlayLayer* playLayer) {
                     continue;
                 }
 
-                if (!forcedDecoration && object->getBatchNode()) {
+                if (!resolvedVisualTree && object->getBatchNode()) {
                     ++state->standaloneRootBatchRejected;
                     continue;
                 }
@@ -394,20 +402,16 @@ bool Renderer::init(PlayLayer* playLayer) {
                 if (!parent) {
                     ++state->standaloneParentlessAtInit;
 
-                    // Source research + device counters showed that GD removes
-                    // these roots while inactive and later addMainSpriteToParent()
-                    // inserts them into parentForZLayer(). Only promote the simple
-                    // one-root-sprite shape here; more complex visual trees remain
-                    // stock until we have an equally exact render-home proof.
+                    // GD removes these roots while inactive and later
+                    // addMainSpriteToParent() inserts them into parentForZLayer().
+                    // Simple roots and already-resolved complex visual trees both
+                    // have exact deferred geometry. Interactive/animated objects
+                    // never reach this candidate set.
                     const bool simpleDeferredRoot =
                         standaloneCandidates.size() == 1 &&
                         standaloneCandidates[0].sprite == static_cast<cocos2d::CCSprite*>(object);
 
-                    // Forced decorations do not require the historical simple-root
-                    // proof. Parentless complex decoration buffers register as
-                    // deferred GPU owners and bind when GD later inserts sprites
-                    // into a live stock atlas.
-                    if ((!forcedDecoration && !simpleDeferredRoot) || !layer->m_batchNodes) {
+                    if ((!resolvedVisualTree && !simpleDeferredRoot) || !layer->m_batchNodes) {
                         ++state->deferredAtlasUnmapped;
                         continue;
                     }
@@ -805,12 +809,18 @@ void Renderer::updateDebugText() {
             "Bismuth GPU [{}]\n"
             "GPU Draw: {} sprites/frame | avg {}\n"
             "Calls: {} | Transforms skipped: {}\n"
-            "Active owned: {} | persistent: {} | candidates: {}",
+            "Active owned: {} | persistent: {} | candidates: {}\n"
+            "Atlas: {} | no-batch: {} | deferred: {} | CPU roots: {} | mixed rej: {}",
             status, currentSprites, averageSprites, calls,
             state->batchTransformSkipsLastFrame + state->standaloneRootVisitsLastFrame,
             coverage.activeGPUSprites,
             state->ownedSprites.size(),
-            state->gpuCandidateSprites
+            state->gpuCandidateSprites,
+            state->candidatesWithBatch,
+            state->candidatesWithoutBatch,
+            state->deferredAtlasObjects,
+            state->standaloneCPUObjects,
+            state->standaloneMixedRejected
         );
     }
     if (state->lastDebugText == text)
