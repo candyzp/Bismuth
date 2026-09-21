@@ -10,6 +10,14 @@ int main() {
     state.spriteIndexByPointer.emplace(&object,0);
     state.objectTexels.resize(2); state.spriteTexels.resize(3);
     assert(state.canDrawSprite(&object));
+    // Before lifecycle compilation a registered record remains conservatively
+    // usable; afterwards the stock active mask is authoritative.
+    assert(state.isSpriteActive(&object));
+    state.eventOwnershipReady=true; state.activeSpriteMask={true};
+    assert(state.isSpriteActive(&object));
+    state.activeSpriteMask[0]=false;
+    assert(!state.isSpriteActive(&object));
+    state.activeSpriteMask[0]=true;
     {
         GameObject glow, detail;
         object.m_objectType=GameObjectType::Hazard;
