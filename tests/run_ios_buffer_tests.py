@@ -23,7 +23,7 @@ fixture = r'''
 #include <iostream>
 #include <vector>
 using usize=std::size_t; using u8=std::uint8_t; using u32=std::uint32_t;
-using GLenum=unsigned; using GLint=int;
+using GLenum=unsigned; using GLint=int; using GLuint=unsigned;
 constexpr GLenum GL_NO_ERROR=0, GL_ARRAY_BUFFER=1, GL_ARRAY_BUFFER_BINDING=2;
 constexpr GLenum GL_STATIC_DRAW=3, GL_DYNAMIC_DRAW=4;
 namespace geode { namespace prelude {
@@ -34,7 +34,6 @@ GLenum errorFlag=0;
 bool failAllocation=false;
 int allocations=0, subUploads=0, deletes=0;
 std::vector<u8> gpu(256);
-using GLuint=unsigned;
 void glGenBuffers(int n, GLuint* out){ while(n--) *out++=nextId++; }
 void glDeleteBuffers(int n,const GLuint*){ deletes+=n; }
 void glGetIntegerv(GLenum key,GLint* out){ assert(key==GL_ARRAY_BUFFER_BINDING); *out=bound; }
