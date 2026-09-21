@@ -717,32 +717,55 @@ bool AtlasInterleaveRegistry::drawBatch(
         auto& selected = state.selectedSlots;
         selected.assign(totalQuads, false);
 
-        for (const auto& run : candidateRuns) {
+        auto selectRun = [&](const CandidateRun& run, bool smallPass) {
             if (!remainingRuns || !remainingSprites)
-                break;
+                return;
 
             const bool smallRun = run.count < HYBRID_MIN_GPU_RUN;
-            // Do not abort the atlas just because an early tiny island exhausted
-            // the small-run grace. Larger profitable runs may still exist later
-            // in atlas order, especially with distributed long-level ownership.
+            if (smallRun != smallPass)
+                return;
             if (smallRun && !smallRunGraceLeft)
-                continue;
+                return;
 
             const usize keep = std::min(run.count, remainingSprites);
             if (!keep)
-                continue;
-            if (smallRun)
-                --smallRunGraceLeft;
-            else if (keep < HYBRID_MIN_GPU_RUN)
-                continue;
+                return;
+            // Never spend a draw call on a truncated "large" run that has
+            // become smaller than the profitability floor.
+            if (!smallRun && keep < HYBRID_MIN_GPU_RUN)
+                return;
 
             for (usize slot = run.start; slot < run.start + keep; ++slot)
                 selected[slot] = true;
 
+            if (smallRun)
+                --smallRunGraceLeft;
             keptSprites += keep;
             remainingSprites -= keep;
             --remainingRuns;
             ++keptRuns;
+        };
+
+        // First pass: reserve the scarce GL-call budget for profitable runs.
+        // Previously eight tiny islands at the start of an atlas could consume
+        // HYBRID_MAX_GPU_RUNS_PER_BATCH and hide a 100+ sprite run later in the
+        // same atlas. We still preserve atlas order inside each pass, and the
+        // final draw plan itself is emitted in stock atlas order.
+        for (const auto& run : candidateRuns) {
+            if (!remainingRuns || !remainingSprites)
+                break;
+            if (run.count >= HYBRID_MIN_GPU_RUN)
+                selectRun(run, false);
+        }
+
+        // Second pass: tiny islands are opportunistic filler only. They can use
+        // leftover calls, but can no longer starve the dense GPU work this
+        // scheduler exists to accelerate.
+        for (const auto& run : candidateRuns) {
+            if (!remainingRuns || !remainingSprites || !smallRunGraceLeft)
+                break;
+            if (run.count < HYBRID_MIN_GPU_RUN)
+                selectRun(run, true);
         }
 
         for (usize slot = 0; slot < totalQuads; ++slot) {
