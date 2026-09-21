@@ -50,9 +50,13 @@ bool BackgroundGPU::init() {
     return true;
 }
 
+bool BackgroundGPU::canDraw(cocos2d::CCSprite* sprite) {
+    return sprite && !sprite->getBatchNode() && sprite->getTexture() &&
+        sprite->getTexture()->getName() && init();
+}
+
 bool BackgroundGPU::draw(cocos2d::CCSprite* sprite) {
-    if (!sprite || sprite->getBatchNode() || !sprite->getTexture() ||
-        !sprite->getTexture()->getName() || !init())
+    if (!canDraw(sprite))
         return false;
     const auto quad = sprite->getQuad();
     const cocos2d::ccV3F_C4B_T2F corners[] = {quad.bl, quad.br, quad.tl, quad.tr};
