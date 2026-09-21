@@ -74,6 +74,7 @@ public:
     void update(bool detailedProbe);
     void beginFrameValidation();
     bool canDrawSprite(cocos2d::CCSprite* sprite);
+    bool isSpriteActive(cocos2d::CCSprite* sprite) const;
 
     // Called once after renderer ownership is resolved. RendererIOS still builds
     // the complete ownership list; reseedActiveFromStock() then compiles the much
