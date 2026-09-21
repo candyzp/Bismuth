@@ -245,21 +245,16 @@ void ResolvedStateLayer::onObjectDeactivated(GameObject* object) {
     if (objectIndex >= pendingDeactivateMask.size() || pendingDeactivateMask[objectIndex])
         return;
 
-    // Stock deactivateObject() already ran. Capture its final hidden root
-    // state immediately into the CPU-side state texture record before retiring
-    // this object from the hot set. A later GPU frame uploads this dirty record
-    // before submission, so an inactive persistent bridge can never reuse stale
-    // visible state from the object's last active frame.
+    // Stock deactivateObject() already ran, so the only state a hidden
+    // bridge must commit immediately is root visibility. Preserve its resident
+    // transform/Z, force the visibility texel to zero, and queue that tiny dirty
+    // span for the next GPU submission.
     auto& record = objects[objectIndex];
-    const ObjectState hidden = captureFrameObjectState(
-        record.object,
-        record.safety,
-        record.state
-    );
-    if (record.state.visible != hidden.visible ||
-        transformChanged(record.state, hidden)) {
-        record.state = hidden;
-        packObjectState(objectIndex, record.state, record.safety);
+    if (record.state.visible) {
+        record.state.visible = false;
+        const usize base = objectIndex * 2;
+        if (base + 1 < objectTexels.size())
+            objectTexels[base + 1].w = 0.f;
         dirtyObjectRecords.push_back(objectIndex);
     }
 
