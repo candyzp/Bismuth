@@ -782,9 +782,15 @@ bool Renderer::drawGPUBackground(cocos2d::CCSprite* sprite) {
         !isDescendantOf(sprite, layer->m_background))
         return false;
     auto state = iosState(this);
-    const bool submitted = state && state->background.draw(sprite);
+    // Only claim the stock draw after every pre-submit requirement is proven.
+    // If background GPU initialization/texture eligibility is unavailable, let
+    // CCSprite::draw() run normally. Once the custom draw begins, ownership is
+    // strict because a driver error cannot tell us whether pixels were emitted.
+    if (!state || !state->background.canDraw(sprite))
+        return false;
+
+    const bool submitted = state->background.draw(sprite);
     GPUTruth::recordBackground(this, submitted);
-    // Ownership, not success: a failed background draw never calls stock draw.
     return true;
 }
 
