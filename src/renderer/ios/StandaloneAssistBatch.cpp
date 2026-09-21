@@ -163,7 +163,13 @@ bool StandaloneAssistBatch::buildGeometry(
     for (const auto& candidate : candidates) {
         auto object = candidate.object;
         auto sprite = candidate.sprite;
-        if (!object || !sprite || sprite->getBatchNode())
+        if (!object || !sprite)
+            return false;
+        // Root-addressable standalone buffers still require genuinely standalone
+        // sprites. Registry-only buffers may also own sprites already living in
+        // stock atlases; AtlasInterleave submits their vertices from the exact
+        // live batch and preserves stock ordering.
+        if (rootAddressable && sprite->getBatchNode())
             return false;
 
         // Root-addressable buffers need a range boundary per object so a stock
@@ -262,12 +268,12 @@ bool StandaloneAssistBatch::buildGeometry(
         return false;
 
     vertexBuffer = Buffer::createStaticDraw(
-        rootAddressable ? "Standalone resolved GPU vertices" : "Deferred atlas GPU vertices",
+        rootAddressable ? "Standalone resolved GPU vertices" : "Unified atlas registry GPU vertices",
         vertices.data(),
         vertices.size() * sizeof(Vertex)
     );
     indexBuffer = Buffer::createStaticDraw(
-        rootAddressable ? "Standalone resolved GPU indices" : "Deferred atlas GPU indices",
+        rootAddressable ? "Standalone resolved GPU indices" : "Unified atlas registry GPU indices",
         indices.data(),
         indices.size() * sizeof(u16)
     );
