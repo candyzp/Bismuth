@@ -11,7 +11,7 @@
 using namespace geode::prelude;
 
 namespace {
-constexpr usize MAX_BATCH_SPRITES = 16383;
+constexpr usize MAX_BATCH_SPRITES = 16384;
 
 static glm::vec2 quadUV(const cocos2d::ccV3F_C4B_T2F& vertex) {
     return { vertex.texCoords.u, vertex.texCoords.v };
