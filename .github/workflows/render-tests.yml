@@ -20,5 +20,6 @@ jobs:
           python3 tests/run_ios_active_tests.py
           python3 tests/run_ios_lifecycle_tests.py
           python3 tests/run_ios_upload_tests.py
+          python3 tests/run_ios_buffer_tests.py
           python3 tests/run_ios_geometry_tests.py
           python3 tests/run_ios_shader_tests.py
