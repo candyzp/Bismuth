@@ -794,10 +794,19 @@ void Renderer::updateDebugText() {
         const bool ready = state->assistShader && state->resolvedState &&
             state->resolvedState->isGPUStateReady();
         const char* status = !enabled ? "OFF" : !ready ? "UNAVAILABLE" : calls ? "ACTIVE" : "IDLE";
+        const auto& coverage = state->resolvedState
+            ? state->resolvedState->getStats()
+            : ResolvedStateLayer::Stats{};
         text = fmt::format(
-            "Bismuth GPU [{}]\nGPU Draw: {} sprites/frame | avg {}\nCalls: {} | Transforms skipped: {}",
+            "Bismuth GPU [{}]\n"
+            "GPU Draw: {} sprites/frame | avg {}\n"
+            "Calls: {} | Transforms skipped: {}\n"
+            "Active owned: {} | persistent: {} | candidates: {}",
             status, currentSprites, averageSprites, calls,
-            state->batchTransformSkipsLastFrame + state->standaloneRootVisitsLastFrame
+            state->batchTransformSkipsLastFrame + state->standaloneRootVisitsLastFrame,
+            coverage.activeGPUSprites,
+            state->ownedSprites.size(),
+            state->gpuCandidateSprites
         );
     }
     if (state->lastDebugText == text)
