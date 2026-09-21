@@ -545,15 +545,18 @@ bool AtlasInterleaveRegistry::drawBatch(
         state.activeRenderer = nullptr;
         state.activeBatch = nullptr;
 
-        const usize count = std::min(state.atlasSprites.size(), state.atlasOwners.size());
-        for (usize slot = 0; slot < count; ++slot) {
-            if (state.atlasOwners[slot].empty())
-                continue;
-            auto sprite = state.atlasSprites[slot];
-            if (!sprite || sprite->getBatchNode() != batch)
-                continue;
-            sprite->setDirty(true);
-            sprite->updateTransform();
+        // Rebuild through the stock root hierarchy rather than calling only
+        // selected atlas descendants. A decoration can place a negative-Z child
+        // before its parent in atlas order; direct descendant restoration can
+        // therefore observe a stale parent m_transformToBatch. A full root walk
+        // is rare (failure-only) and exactly preserves Cocos' transform order.
+        if (auto children = batch->getChildren()) {
+            for (auto child : CCArrayExt<cocos2d::CCNode*>(children)) {
+                if (auto sprite = typeinfo_cast<cocos2d::CCSprite*>(child)) {
+                    sprite->setDirty(true);
+                    sprite->updateTransform();
+                }
+            }
         }
 
         state.activeRenderer = previousRenderer;
