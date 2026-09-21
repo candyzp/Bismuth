@@ -19,7 +19,12 @@ struct Scene {
         }
     }
     void claim(const std::vector<int>& indices) {
-        for(int i:indices) { owner.ownedSprites.push_back(&sprites.at(i)); renderer.owned.insert(&sprites.at(i)); fixture::vaoSpriteIDs[owner.vao].push_back(i); }
+        for(int i:indices) {
+            owner.ownedSprites.push_back(&sprites.at(i));
+            renderer.owned.insert(&sprites.at(i));
+            renderer.persistentOwned.insert(&sprites.at(i));
+            fixture::vaoSpriteIDs[owner.vao].push_back(i);
+        }
         AtlasInterleaveRegistry::registerDeferred(&owner);
     }
     void reorder(const std::vector<int>& indices) {
@@ -76,6 +81,25 @@ int main() {
         assert(fixture::pixels == expected);
         assert(fixture::gpuDraws == 8);
         assert(fixture::stockTransforms == 500 - (100 + 7));
+    }
+    {
+        // Orbit-style lifecycle pattern: every other slot is currently inactive
+        // but remains persistently safe and hidden in GPU state. Those hidden
+        // owned slots must bridge the active sprites into one useful submission
+        // instead of consuming eight calls on eight one-sprite islands.
+        Scene s(200);
+        std::vector<int> all(200);
+        std::iota(all.begin(), all.end(), 0);
+        s.claim(all);
+        for (int i = 1; i < 200; i += 2)
+            s.renderer.owned.erase(&s.sprites[i]);
+
+        s.draw();
+        std::vector<int> expected(200);
+        std::iota(expected.begin(), expected.end(), 0);
+        assert(fixture::pixels == expected);
+        assert(fixture::gpuDraws == 1);
+        assert(fixture::stockTransforms == 1);
     }
     {
         Scene s(10000);
