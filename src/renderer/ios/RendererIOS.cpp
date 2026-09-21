@@ -221,6 +221,7 @@ bool Renderer::init(PlayLayer* playLayer) {
             std::unordered_map<GameObject*, std::vector<ResolvedStateLayer::ShadowCandidate>> candidatesByObject;
             std::unordered_map<cocos2d::CCSprite*, GameObject*> firstSpriteOwner;
             std::unordered_set<GameObject*> sharedVisualObjects;
+            std::unordered_set<cocos2d::CCSprite*> sharedVisualSprites;
             candidateBatches.reserve(64);
             candidateBatchCounts.reserve(64);
             candidatesByObject.reserve(std::min<usize>(
@@ -228,20 +229,32 @@ bool Renderer::init(PlayLayer* playLayer) {
                 MAX_PERSISTENT_GPU_SPRITES
             ));
             firstSpriteOwner.reserve(candidates.size());
+            sharedVisualSprites.reserve(32);
 
+            // Detect cross-object visual aliases before assigning any GPU owner.
+            // One sprite cannot safely carry two object-state indices or two
+            // persistent vertex identities. Shared visuals stay on stock Cocos.
             for (const auto& candidate : candidates) {
                 auto object = candidate.object;
                 auto sprite = candidate.sprite;
                 if (!object || !sprite)
                     continue;
 
-                candidatesByObject[object].push_back(candidate);
-
                 const auto [ownerIt, insertedOwner] = firstSpriteOwner.emplace(sprite, object);
                 if (!insertedOwner && ownerIt->second != object) {
+                    sharedVisualSprites.insert(sprite);
                     sharedVisualObjects.insert(object);
                     sharedVisualObjects.insert(ownerIt->second);
                 }
+            }
+
+            for (const auto& candidate : candidates) {
+                auto object = candidate.object;
+                auto sprite = candidate.sprite;
+                if (!object || !sprite || sharedVisualSprites.contains(sprite))
+                    continue;
+
+                candidatesByObject[object].push_back(candidate);
 
                 if (auto batch = sprite->getBatchNode()) {
                     ++state->candidatesWithBatch;
