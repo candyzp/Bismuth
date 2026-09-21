@@ -443,12 +443,46 @@ bool ResolvedStateLayer::init(PlayLayer* playLayer) {
     ));
     initSpriteRetains.reserve(MAX_RESOLVED_SPRITE_RECORDS);
 
+    // Whole-level state is a persistent ownership pool, not per-frame work.
+    // Filling that pool in m_objects order can accidentally spend the complete
+    // budget on the opening section of a long level. Interleave 128 spatial
+    // lanes so a bounded pool still represents the entire X span; stock GD keeps
+    // everything that is not selected here.
+    std::vector<GameObject*> renderableObjects;
+    renderableObjects.reserve(static_cast<usize>(layer->m_objects->count()));
     for (auto object : CCArrayExt<GameObject*>(layer->m_objects)) {
         if (!object || object == layer->m_anticheatSpike || object->isTrigger() || object->m_isHide)
             continue;
+        renderableObjects.push_back(object);
+    }
+    stats.renderableObjects = renderableObjects.size();
 
-        ++stats.renderableObjects;
+    const auto spatialX = [](GameObject* object) {
+        if (!object)
+            return 0.f;
+        const float x = object->getPositionX();
+        return std::isfinite(x) ? x : 0.f;
+    };
+    std::stable_sort(renderableObjects.begin(), renderableObjects.end(),
+        [&](GameObject* a, GameObject* b) {
+            return spatialX(a) < spatialX(b);
+        });
 
+    constexpr usize SPATIAL_BUDGET_LANES = 128;
+    const usize laneCount = std::min<usize>(SPATIAL_BUDGET_LANES, renderableObjects.size());
+    std::vector<GameObject*> spatialBudgetOrder;
+    spatialBudgetOrder.reserve(renderableObjects.size());
+    for (usize offset = 0; spatialBudgetOrder.size() < renderableObjects.size(); ++offset) {
+        for (usize lane = 0; lane < laneCount; ++lane) {
+            const usize begin = lane * renderableObjects.size() / laneCount;
+            const usize end = (lane + 1) * renderableObjects.size() / laneCount;
+            const usize index = begin + offset;
+            if (index < end)
+                spatialBudgetOrder.push_back(renderableObjects[index]);
+        }
+    }
+
+    for (auto object : spatialBudgetOrder) {
         // Once the persistent state budget is saturated, leave additional
         // objects entirely to Cocos instead of even constructing GPU records.
         if (objects.size() >= MAX_RESOLVED_OBJECT_RECORDS ||
