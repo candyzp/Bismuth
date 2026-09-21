@@ -25,9 +25,13 @@
 using namespace geode::prelude;
 
 namespace {
-constexpr usize MAX_STANDALONE_BUFFER_SPRITES = 16383;
-constexpr usize MAX_PERSISTENT_GPU_SPRITES = 12288;
-constexpr usize MAX_IMMEDIATE_GPU_SPRITES = 9216;
+// Match the resolved-state sprite ceiling. The old 9,216/12,288 ownership
+// caps discarded thousands of already-proven-safe sprites at setup time. Since
+// live atlas order changes as GD activates/deactivates objects, those sampled
+// owners became scattered later in the level and produced tiny GPU islands.
+constexpr usize MAX_STANDALONE_BUFFER_SPRITES = 16384;
+constexpr usize MAX_PERSISTENT_GPU_SPRITES = 16384;
+constexpr usize MAX_IMMEDIATE_GPU_SPRITES = 16384;
 
 struct StandaloneObjectDesc {
     GameObject* root = nullptr;
