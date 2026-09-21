@@ -304,11 +304,20 @@ ResolvedStateLayer::SpriteState ResolvedStateLayer::captureSpriteState(cocos2d::
     if (!sprite)
         return state;
 
-    state.color = sprite->getDisplayedColor();
-    state.opacity = sprite->getDisplayedOpacity();
+    // Mirror the final stock quad color bytes exactly. GameObject visual
+    // helpers can apply opacity/premultiplication rules beyond the generic
+    // displayedColor/displayedOpacity path; reconstructing those rules caused
+    // newly GPU-owned solid blocks to appear translucent.
+    const auto& stockQuad = sprite->getQuad();
+    state.color = {
+        stockQuad.bl.colors.r,
+        stockQuad.bl.colors.g,
+        stockQuad.bl.colors.b
+    };
+    state.opacity = stockQuad.bl.colors.a;
     state.textureRect = sprite->getTextureRect();
     state.offset = sprite->getOffsetPosition();
-    state.opacityModifyRGB = sprite->isOpacityModifyRGB();
+    state.opacityModifyRGB = false;
     state.visible = sprite->isVisible() && !sprite->getDontDraw();
     state.rotated = sprite->isTextureRectRotated();
     state.flipX = sprite->isFlipX();
@@ -340,9 +349,14 @@ ResolvedStateLayer::SpriteState ResolvedStateLayer::captureFrameSpriteState(
     // conservative solid/spike path. Forced decorations already use persistent
     // geometry, so polling those unused geometry fields thousands of times per
     // frame was pure CPU overhead.
-    state.color = sprite->getDisplayedColor();
-    state.opacity = sprite->getDisplayedOpacity();
-    state.opacityModifyRGB = sprite->isOpacityModifyRGB();
+    const auto& stockQuad = sprite->getQuad();
+    state.color = {
+        stockQuad.bl.colors.r,
+        stockQuad.bl.colors.g,
+        stockQuad.bl.colors.b
+    };
+    state.opacity = stockQuad.bl.colors.a;
+    state.opacityModifyRGB = false;
     state.visible = sprite->isVisible() && !sprite->getDontDraw();
     return state;
 }
@@ -371,15 +385,10 @@ void ResolvedStateLayer::packSpriteState(usize index, const SpriteState& state, 
     if (base + 1 >= spriteTexels.size())
         return;
 
-    const auto colorByte = [&](u8 value) -> float {
-        const u8 resolved = state.opacityModifyRGB
-            ? static_cast<u8>(value * (state.opacity / 255.f)) : value;
-        return static_cast<float>(resolved) / 255.f;
-    };
     spriteTexels[base + 0] = {
-        colorByte(state.color.r),
-        colorByte(state.color.g),
-        colorByte(state.color.b),
+        (float)state.color.r / 255.f,
+        (float)state.color.g / 255.f,
+        (float)state.color.b / 255.f,
         (float)state.opacity / 255.f
     };
 
