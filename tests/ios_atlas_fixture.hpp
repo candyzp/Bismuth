@@ -273,10 +273,14 @@ struct Renderer {
     bool enabled=true;
     PlayLayer layer;
     std::unordered_set<cocos2d::CCSprite*> owned;
+    std::unordered_set<cocos2d::CCSprite*> persistentOwned;
     static geode::Ref<Renderer> get(){return current;}
     bool isEnabled(){return enabled;}
     PlayLayer* getPlayLayer(){return &layer;}
     bool isGPUOwnedSprite(cocos2d::CCSprite* s) const {return enabled && owned.contains(s);}
+    bool isGPUPersistentlyOwnedSprite(cocos2d::CCSprite* s) const {
+        return enabled && (persistentOwned.contains(s) || owned.contains(s));
+    }
     bool prepareGPUOwnedSprite(cocos2d::CCSprite* s);
     void prepareGPUFrame() {}
     bool isGPUInterleavedBatch(cocos2d::CCSpriteBatchNode*) const;
