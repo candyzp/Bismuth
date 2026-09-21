@@ -279,10 +279,16 @@ bool Renderer::init(PlayLayer* playLayer) {
             state->candidateBatchNodes = candidateBatches.size();
 
             std::vector<StandaloneObjectDesc> standaloneObjects;
-            std::unordered_map<cocos2d::CCSpriteBatchNode*, std::vector<StandaloneObjectDesc>> deferredAtlasObjectsByBatch;
+            // Parentless safe objects eventually land in many stock atlases, but
+            // their persistent geometry does not need to be split by predicted
+            // target batch. One shared registry VBO keeps a single owner identity
+            // after GD interleaves those sprites at runtime.
+            std::vector<StandaloneObjectDesc> deferredAtlasObjectsGlobal;
+            std::unordered_set<cocos2d::CCSpriteBatchNode*> deferredAtlasTargetBatches;
             std::unordered_map<cocos2d::CCSpriteBatchNode*, cocos2d::CCNode*> gpuInsertionTails;
             standaloneObjects.reserve(candidatesByObject.size());
-            deferredAtlasObjectsByBatch.reserve(32);
+            deferredAtlasObjectsGlobal.reserve(candidatesByObject.size());
+            deferredAtlasTargetBatches.reserve(32);
             gpuInsertionTails.reserve(64);
 
             for (auto& [object, objectCandidates] : candidatesByObject) {
@@ -446,7 +452,8 @@ bool Renderer::init(PlayLayer* playLayer) {
 
                     ++state->standaloneObjectEligible;
                     ++state->deferredAtlasObjects;
-                    deferredAtlasObjectsByBatch[targetBatch].push_back({ object, standaloneCandidates });
+                    deferredAtlasTargetBatches.insert(targetBatch);
+                    deferredAtlasObjectsGlobal.push_back({ object, standaloneCandidates });
                     continue;
                 }
 
@@ -551,66 +558,50 @@ bool Renderer::init(PlayLayer* playLayer) {
                 }
             }
 
-            // Parentless-at-init roots are not really standalone. Build their
-            // geometry once, grouped by the exact stock batch GD will later use,
-            // and attach one shared buffer beside that batch. The shader consumes
-            // stock visibility, so inactive/offscreen records cost no pixels.
-            state->deferredAtlasBatchNodes = deferredAtlasObjectsByBatch.size();
-            for (auto& [targetBatch, objects] : deferredAtlasObjectsByBatch) {
-                if (!targetBatch)
+            // Parentless-at-init roots are registry geometry, not scene draw
+            // nodes. Coalesce them globally so runtime atlas interleaving does
+            // not turn every predicted target-batch boundary into a different
+            // GPU owner and therefore a separate tiny run.
+            state->deferredAtlasBatchNodes = deferredAtlasTargetBatches.size();
+            const auto deferredChunks = buildStandaloneChunks(deferredAtlasObjectsGlobal);
+            for (const auto& chunk : deferredChunks) {
+                if (chunk.candidates.empty())
                     continue;
 
-                auto parent = targetBatch->getParent();
-                if (!parent) {
-                    state->deferredAtlasUnmapped += objects.size();
+                const usize ownedNow = state->ownedSprites.size();
+                const usize remaining =
+                    ownedNow < MAX_PERSISTENT_GPU_SPRITES
+                        ? MAX_PERSISTENT_GPU_SPRITES - ownedNow
+                        : 0;
+                if (chunk.candidates.size() > remaining) {
+                    state->persistentBudgetRejectedSprites += chunk.candidates.size();
                     continue;
                 }
 
-                cocos2d::CCNode* insertionAnchor = targetBatch;
-                if (auto tailIt = gpuInsertionTails.find(targetBatch); tailIt != gpuInsertionTails.end() && tailIt->second)
-                    insertionAnchor = tailIt->second;
+                auto gpuBuffer = StandaloneAssistBatch::create(
+                    state->resolvedState.get(),
+                    state->assistShader,
+                    chunk.candidates,
+                    false // Registry-only deferred ownership; no scene draw visit.
+                );
+                if (!gpuBuffer || !gpuBuffer->getStats().ready)
+                    continue;
+                if (gpuBuffer->getOwnedSprites().size() != chunk.candidates.size())
+                    continue;
 
-                const auto chunks = buildStandaloneChunks(objects);
-                for (const auto& chunk : chunks) {
-                    if (chunk.candidates.empty())
+                // state->standaloneBatches owns the node. It intentionally stays
+                // unparented: AtlasInterleave submits its VBO from the exact live
+                // stock atlas and therefore preserves stock ordering.
+                state->standaloneBatches.push_back(gpuBuffer);
+                ++state->deferredAtlasBufferCount;
+
+                for (auto sprite : gpuBuffer->getOwnedSprites()) {
+                    if (!sprite)
                         continue;
-
-                    const usize ownedNow = state->ownedSprites.size();
-                    const usize remaining =
-                        ownedNow < MAX_PERSISTENT_GPU_SPRITES
-                            ? MAX_PERSISTENT_GPU_SPRITES - ownedNow
-                            : 0;
-                    if (chunk.candidates.size() > remaining) {
-                        state->persistentBudgetRejectedSprites += chunk.candidates.size();
-                        continue;
-                    }
-
-                    auto gpuBuffer = StandaloneAssistBatch::create(
-                        state->resolvedState.get(),
-                        state->assistShader,
-                        chunk.candidates,
-                        false // Explicit deferred-atlas ownership, even if GD reparents a root.
-                    );
-                    if (!gpuBuffer || !gpuBuffer->getStats().ready)
-                        continue;
-                    if (gpuBuffer->getOwnedSprites().size() != chunk.candidates.size())
-                        continue;
-
-                    parent->insertAfter(gpuBuffer, insertionAnchor);
-                    insertionAnchor = gpuBuffer;
-                    state->standaloneBatches.push_back(gpuBuffer);
-                    ++state->deferredAtlasBufferCount;
-
-                    for (auto sprite : gpuBuffer->getOwnedSprites()) {
-                        if (!sprite)
-                            continue;
-                        state->deferredAtlasOwnedSprites.insert(sprite);
-                        state->batchOwnedSprites.insert(sprite);
-                        state->ownedSprites.insert(sprite);
-                    }
+                    state->deferredAtlasOwnedSprites.insert(sprite);
+                    state->batchOwnedSprites.insert(sprite);
+                    state->ownedSprites.insert(sprite);
                 }
-
-                gpuInsertionTails[targetBatch] = insertionAnchor;
             }
 
             // True standalone roots deliberately remain stock. The old
