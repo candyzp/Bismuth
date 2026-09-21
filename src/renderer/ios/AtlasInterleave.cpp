@@ -391,7 +391,8 @@ void AtlasInterleaveRegistry::registerImmediate(AssistShadowBatch* owner) {
             static_cast<u16>(i * 4)
         };
         auto [it, inserted] = state.spriteOwners.emplace(sprite, record);
-        if (!inserted && !it->second.sameOwner(record)) {
+        if (!inserted && (!it->second.sameOwner(record) ||
+            it->second.baseVertex != record.baseVertex)) {
             invalidateRenderer(renderer, "GPU sprite ownership collision");
             return;
         }
@@ -457,7 +458,8 @@ void AtlasInterleaveRegistry::registerDeferred(StandaloneAssistBatch* owner) {
             static_cast<u16>(i * 4)
         };
         auto [it, inserted] = state.spriteOwners.emplace(sprite, record);
-        if (!inserted && !it->second.sameOwner(record)) {
+        if (!inserted && (!it->second.sameOwner(record) ||
+            it->second.baseVertex != record.baseVertex)) {
             invalidateRenderer(renderer, "deferred GPU sprite ownership collision");
             return;
         }
