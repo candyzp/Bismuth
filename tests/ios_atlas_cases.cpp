@@ -71,9 +71,9 @@ int main() {
             claimed.push_back(i);
         s.claim(claimed);
         s.draw();
-        assert((fixture::pixels == std::vector<int>(
-            [] { std::vector<int> v(500); std::iota(v.begin(), v.end(), 0); return v; }()
-        )));
+        std::vector<int> expected(500);
+        std::iota(expected.begin(), expected.end(), 0);
+        assert(fixture::pixels == expected);
         assert(fixture::gpuDraws == 8);
         assert(fixture::stockTransforms == 500 - (100 + 7));
     }
