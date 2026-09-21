@@ -39,7 +39,8 @@ inline std::array<GLboolean,4> colorMask{1,1,1,1};
 inline GLboolean depthMask=1;
 inline GLint frontMask=7, backMask=13;
 inline GLenum error=0;
-inline bool failUpload=false, failAtlasSync=false;
+inline bool failUpload=false, failAtlasSync=false, failGeometryFlush=false;
+inline bool stockDrawUpdatesTransforms=true;
 inline int uploads=0, stockDraws=0, gpuDraws=0, stockTransforms=0;
 inline std::vector<int> pixels;
 inline std::unordered_map<GLuint, GLuint> elements;
@@ -216,7 +217,8 @@ struct CCSpriteBatchNode : CCNode {
     ccBlendFunc getBlendFunc() { return {}; }
     void draw() override {
         ++stockCalls;
-        for(auto child:children.nodes) if(auto sprite=dynamic_cast<CCSprite*>(child)) sprite->updateTransform();
+        if (fixture::stockDrawUpdatesTransforms)
+            for(auto child:children.nodes) if(auto sprite=dynamic_cast<CCSprite*>(child)) sprite->updateTransform();
         atlas.drawQuads();
     }
 };
@@ -282,7 +284,7 @@ namespace GPUTruth {
 inline void recordObjectBatch(Renderer*,cocos2d::CCSpriteBatchNode*) {}
 inline void recordObjectFailure(Renderer*) {}
 }
-struct LiveGeometry { bool canUseBatch(usize,cocos2d::CCNode*) { return true; } bool refresh(usize) { return true; } bool flush(u32) { return true; } };
+struct LiveGeometry { bool canUseBatch(usize,cocos2d::CCNode*) { return true; } bool refresh(usize) { return true; } bool flush(u32) { return !fixture::failGeometryFlush; } };
 struct BatchStats { bool ready=true; usize drawCallsLastFrame=0,indicesLastFrame=0; };
 struct AssistShadowBatch : cocos2d::CCNode {
     BatchStats stats;
