@@ -662,19 +662,12 @@ bool AtlasInterleaveRegistry::drawBatch(
 
         const bool activeNow = renderer->isGPUOwnedSprite(sprite);
 
-        auto spriteTexture = sprite->getTexture();
-        if (!spriteTexture || spriteTexture->getName() != texture->getName())
-            continue;
-
-        // The stock batch establishes one blend function for this atlas draw.
-        // A sprite whose live blend differs must remain on Cocos; rendering it
-        // through the assist shader under the batch blend can look translucent
-        // or additive even when geometry/color state is otherwise exact.
-        const auto spriteBlend = sprite->getBlendFunc();
-        const auto batchBlend = batch->getBlendFunc();
-        if (spriteBlend.src != batchBlend.src || spriteBlend.dst != batchBlend.dst)
-            continue;
-
+        // Mirror CCSpriteBatchNode semantics exactly. Once a sprite is resident
+        // in this stock atlas, the batch's texture and blend state are
+        // authoritative for the draw. Per-sprite getTexture()/getBlendFunc()
+        // metadata does not cause Cocos to split the atlas into separate GL
+        // submissions, so using those values as GPU eligibility gates created
+        // artificial one-sprite islands on effect-heavy levels like Orbit.
         const auto& record = recordIt->second;
         auto& geometry = record.immediate ? record.immediate->liveGeometry : record.deferred->liveGeometry;
         // Eligibility is cheap. Do not rebuild live geometry yet: the hybrid
