@@ -1153,6 +1153,16 @@ bool AtlasInterleaveRegistry::drawBatch(
         restoreStockState();
     if (!consumeGLErrors())
         return fail("gl-submit-error", -1, static_cast<u32>(totalQuads));
+
+    // Work accounting intentionally excludes hidden bridge slots. Count only
+    // active sprites that survived final scheduling/geometry validation and were
+    // part of this completed custom batch submission.
+    usize activeGPUWork = 0;
+    for (usize slot = 0; slot < totalQuads; ++slot) {
+        if (!state.atlasOwners[slot].empty() && state.activeSlots[slot])
+            ++activeGPUWork;
+    }
+    renderer->recordGPUWork(activeGPUWork);
     return true;
 }
 
