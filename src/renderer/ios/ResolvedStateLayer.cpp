@@ -110,6 +110,31 @@ inline bool rectChanged(const cocos2d::CCRect& a, const cocos2d::CCRect& b) {
            changedFloat(a.size.height, b.size.height);
 }
 
+static void captureCocosDisplayedColor(
+    cocos2d::CCSprite* sprite,
+    cocos2d::ccColor3B& color,
+    u8& opacity
+) {
+    if (!sprite) {
+        color = {255, 255, 255};
+        opacity = 0;
+        return;
+    }
+
+    color = sprite->getDisplayedColor();
+    opacity = sprite->getDisplayedOpacity();
+
+    // This is the same final vertex-color rule CCSprite::updateColor() uses.
+    // Do not sample getQuad() here: GPU-owned sprites intentionally skip the
+    // stock quad expansion, so that quad may still contain a previous hidden
+    // frame's alpha/color.
+    if (sprite->isOpacityModifyRGB()) {
+        color.r = static_cast<u8>((static_cast<u32>(color.r) * opacity) / 255u);
+        color.g = static_cast<u8>((static_cast<u32>(color.g) * opacity) / 255u);
+        color.b = static_cast<u8>((static_cast<u32>(color.b) * opacity) / 255u);
+    }
+}
+
 bool uploadDirtyRecordSpans(
     DataTexture* texture, const std::vector<glm::vec4>& texels,
     std::vector<usize>& dirtyRecords, usize texelsPerRecord,
@@ -304,17 +329,10 @@ ResolvedStateLayer::SpriteState ResolvedStateLayer::captureSpriteState(cocos2d::
     if (!sprite)
         return state;
 
-    // Mirror the final stock quad color bytes exactly. GameObject visual
-    // helpers can apply opacity/premultiplication rules beyond the generic
-    // displayedColor/displayedOpacity path; reconstructing those rules caused
-    // newly GPU-owned solid blocks to appear translucent.
-    const auto& stockQuad = sprite->getQuad();
-    state.color = {
-        stockQuad.bl.colors.r,
-        stockQuad.bl.colors.g,
-        stockQuad.bl.colors.b
-    };
-    state.opacity = stockQuad.bl.colors.a;
+    // GPU-owned sprites may deliberately skip stock quad expansion. Use
+    // Cocos' current displayed color/opacity and apply its premultiply rule,
+    // rather than trusting a quad that can still contain an older hidden frame.
+    captureCocosDisplayedColor(sprite, state.color, state.opacity);
     state.textureRect = sprite->getTextureRect();
     state.offset = sprite->getOffsetPosition();
     state.opacityModifyRGB = false;
@@ -355,13 +373,7 @@ ResolvedStateLayer::SpriteState ResolvedStateLayer::captureFrameSpriteState(
     // conservative solid/spike path. Forced decorations already use persistent
     // geometry, so polling those unused geometry fields thousands of times per
     // frame was pure CPU overhead.
-    const auto& stockQuad = sprite->getQuad();
-    state.color = {
-        stockQuad.bl.colors.r,
-        stockQuad.bl.colors.g,
-        stockQuad.bl.colors.b
-    };
-    state.opacity = stockQuad.bl.colors.a;
+    captureCocosDisplayedColor(sprite, state.color, state.opacity);
     state.opacityModifyRGB = false;
     state.visible = sprite->isVisible() && !sprite->getDontDraw();
     state.hasBatchTransform = sprite->getBatchNode() != nullptr;
@@ -394,7 +406,7 @@ void ResolvedStateLayer::packObjectState(usize index, const ObjectState& state, 
 
 void ResolvedStateLayer::packSpriteState(usize index, const SpriteState& state, usize objectIndex) {
     const usize base = index * SPRITE_TEXELS_PER_STATE;
-    if (base + 1 >= spriteTexels.size())
+    if (base + 3 >= spriteTexels.size())
         return;
 
     spriteTexels[base + 0] = {
