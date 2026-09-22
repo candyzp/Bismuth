@@ -219,10 +219,12 @@ int main() {
         checkStateRestored();
         fixture::colorMask={0,0,0,0}; s.draw(); assert(fixture::pixels.empty());
         fixture::colorMask={1,1,1,1};
-        std::vector<SpriteOwner> owners{{&s.renderer,nullptr,&s.owner,65532}};
-        std::vector<AtlasDrawRun> runs; std::vector<u16> indices;
+        // Last quad in a 65,536-sprite unified registry. This crosses the
+        // old u16 vertex wall by a full 196,608 vertices.
+        std::vector<SpriteOwner> owners{{&s.renderer,nullptr,&s.owner,262140}};
+        std::vector<AtlasDrawRun> runs; std::vector<u32> indices;
         buildAtlasDrawPlan(owners,runs,indices);
-        assert((indices==std::vector<u16>{65532,65534,65535,65532,65535,65533}));
+        assert((indices==std::vector<u32>{262140,262142,262143,262140,262143,262141}));
     }
     {
         // A single sprite mapped to two different vertices in one owner is not a
@@ -317,5 +319,5 @@ int main() {
         assert(fixture::gpuDraws==1 && fixture::stockTransforms==2);
     }
     assert(registry().spriteOwners.empty() && registry().indexCaches.empty());
-    std::cout << "PASS: mixed stock/GPU order, hybrid recovery, GPU budgeting, batch migration, masks, VAO/EBO state, teardown, u16 limits\n";
+    std::cout << "PASS: mixed stock/GPU order, hybrid recovery, GPU budgeting, batch migration, masks, VAO/EBO state, teardown, 65k/u32 limits\n";
 }
