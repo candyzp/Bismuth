@@ -150,12 +150,27 @@ int main() {
         assert(state.spriteTexels[0].x==color/255.f);
         assert(state.spriteTexels[0].w==opacity/255.f);
     }
-    object.quad.bl.colors={12,34,56,78};
+    // A GPU-owned sprite may retain a stale stock quad from an older hidden
+    // frame. Displayed state must win so alpha zero cannot leak into the GPU.
+    object.quad.bl.colors={0,0,0,0};
+    object.color={12,34,56};
+    object.opacity=78;
+    object.premultiplied=false;
     auto exact=state.captureFrameSpriteState(&object,sprite);
     assert(exact.color.r==12 && exact.color.g==34 && exact.color.b==56 && exact.opacity==78);
     assert(!exact.opacityModifyRGB);
     state.packSpriteState(0,exact,0);
     assert(state.spriteTexels[0].x==12/255.f && state.spriteTexels[0].w==78/255.f);
+
+    object.color={200,100,50};
+    object.opacity=128;
+    object.premultiplied=true;
+    exact=state.captureFrameSpriteState(&object,exact);
+    assert(exact.color.r==(200*128)/255);
+    assert(exact.color.g==(100*128)/255);
+    assert(exact.color.b==(50*128)/255);
+    assert(exact.opacity==128);
+    object.premultiplied=false;
 
     // Stock Cocos is now the transform authority for batched GPU sprites.
     // Prove the exact m_transformToBatch / vertexZ / hidden state reaches the
