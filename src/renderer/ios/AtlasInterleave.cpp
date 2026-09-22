@@ -29,7 +29,6 @@ constexpr usize MAX_REASONABLE_ATLAS_QUADS = 262144;
 // cooperate instead of alternating between GPU spikes and CPU-only stretches.
 constexpr usize HYBRID_GPU_SPRITE_BUDGET = 2304;
 constexpr usize HYBRID_MIN_GPU_RUN = 48;
-constexpr usize HYBRID_SMALL_RUN_GRACE = 8;
 constexpr usize HYBRID_MAX_GPU_RUNS_PER_BATCH = 8;
 constexpr usize HYBRID_MAX_GPU_RUNS_PER_FRAME = 24;
 // Hidden sprites that are already persistently GPU-owned may connect nearby
@@ -767,24 +766,13 @@ bool AtlasInterleaveRegistry::drawBatch(
         const usize balancedBatchTarget = (totalQuads + 1) / 2;
         usize remainingSprites = std::min(spriteBudgetLeft, balancedBatchTarget);
         usize remainingRuns = std::min(HYBRID_MAX_GPU_RUNS_PER_BATCH, frameRunBudgetLeft);
-        usize smallRunGraceLeft =
-            state.gpuDrawRunsUsedThisFrame < HYBRID_SMALL_RUN_GRACE
-                ? HYBRID_SMALL_RUN_GRACE - state.gpuDrawRunsUsedThisFrame
-                : 0;
         usize keptSprites = 0;
         usize keptRuns = 0;
         auto& selected = state.selectedSlots;
         selected.assign(totalQuads, false);
 
-        auto selectRun = [&](const CandidateRun& run, bool smallPass) {
+        auto selectRun = [&](const CandidateRun& run) {
             if (!remainingRuns || !remainingSprites || !run.activeCount)
-                return;
-
-            // Profitability is about useful active work, not hidden bridge slots.
-            const bool smallRun = run.activeCount < HYBRID_MIN_GPU_RUN;
-            if (smallRun != smallPass)
-                return;
-            if (smallRun && !smallRunGraceLeft)
                 return;
 
             const usize keepLimit = std::min(run.count, remainingSprites);
@@ -800,40 +788,42 @@ bool AtlasInterleaveRegistry::drawBatch(
             }
             if (!keep || !keptActive)
                 return;
-            if (!smallRun && keptActive < HYBRID_MIN_GPU_RUN)
-                return;
 
             for (usize slot = run.start; slot < run.start + keep; ++slot)
                 selected[slot] = true;
 
-            if (smallRun)
-                --smallRunGraceLeft;
             keptSprites += keep;
             remainingSprites -= keep;
             --remainingRuns;
             ++keptRuns;
         };
 
-        // First pass: reserve the scarce GL-call budget for profitable runs.
-        // Previously eight tiny islands at the start of an atlas could consume
-        // HYBRID_MAX_GPU_RUNS_PER_BATCH and hide a 100+ sprite run later in the
-        // same atlas. We still preserve atlas order inside each pass, and the
-        // final draw plan itself is emitted in stock atlas order.
-        for (const auto& run : candidateRuns) {
+        // Pick the most useful live runs first. The old scheduler effectively
+        // required 48 active sprites per profitable run and allowed only a tiny
+        // global grace window for fragmented runs. That works on Stereo Madness
+        // but can make dense custom levels report GPU IDLE even with 100+ active
+        // GPU-owned sprites. Rank by useful active work instead.
+        std::vector<usize> runOrder(candidateRuns.size());
+        for (usize i = 0; i < runOrder.size(); ++i)
+            runOrder[i] = i;
+        std::stable_sort(runOrder.begin(), runOrder.end(),
+            [&](usize a, usize b) {
+                const auto& ra = candidateRuns[a];
+                const auto& rb = candidateRuns[b];
+                if (ra.activeCount != rb.activeCount)
+                    return ra.activeCount > rb.activeCount;
+                // Prefer denser runs when useful work ties.
+                const double da = ra.count ? static_cast<double>(ra.activeCount) / ra.count : 0.0;
+                const double db = rb.count ? static_cast<double>(rb.activeCount) / rb.count : 0.0;
+                if (da != db)
+                    return da > db;
+                return ra.start < rb.start;
+            });
+
+        for (usize index : runOrder) {
             if (!remainingRuns || !remainingSprites)
                 break;
-            if (run.activeCount >= HYBRID_MIN_GPU_RUN)
-                selectRun(run, false);
-        }
-
-        // Second pass: tiny islands are opportunistic filler only. They can use
-        // leftover calls, but can no longer starve the dense GPU work this
-        // scheduler exists to accelerate.
-        for (const auto& run : candidateRuns) {
-            if (!remainingRuns || !remainingSprites || !smallRunGraceLeft)
-                break;
-            if (run.activeCount < HYBRID_MIN_GPU_RUN)
-                selectRun(run, true);
+            selectRun(candidateRuns[index]);
         }
 
         for (usize slot = 0; slot < totalQuads; ++slot) {
