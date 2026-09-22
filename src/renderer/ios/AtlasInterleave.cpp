@@ -41,7 +41,7 @@ struct SpriteOwner {
     Renderer* renderer = nullptr;
     AssistShadowBatch* immediate = nullptr;
     StandaloneAssistBatch* deferred = nullptr;
-    u16 baseVertex = 0;
+    u32 baseVertex = 0;
 
     bool empty() const {
         return !immediate && !deferred;
@@ -84,7 +84,7 @@ struct SavedGLState {
 
 struct BatchIndexCache {
     u32 buffer = 0;
-    std::vector<u16> indices;
+    std::vector<u32> indices;
     std::vector<SpriteOwner> owners;
     std::vector<AtlasDrawRun> runs;
 };
@@ -272,7 +272,7 @@ static bool uploadDirtyAtlas(cocos2d::CCTextureAtlas* atlas) {
     return true;
 }
 
-static bool updateIndexCache(BatchIndexCache& cache, const std::vector<u16>& indices) {
+static bool updateIndexCache(BatchIndexCache& cache, const std::vector<u32>& indices) {
     if (cache.buffer && cache.indices == indices)
         return true;
     if (!cache.buffer)
@@ -386,7 +386,7 @@ void AtlasInterleaveRegistry::registerImmediate(AssistShadowBatch* owner) {
 
     for (usize i = 0; i < owner->ownedSprites.size(); ++i) {
         auto sprite = owner->ownedSprites[i];
-        if (!sprite || i * 4 + 3 > 65535) {
+        if (!sprite || i > (static_cast<usize>(UINT_MAX) - 3) / 4) {
             invalidateRenderer(renderer, "invalid immediate GPU sprite vertex mapping");
             return;
         }
@@ -395,7 +395,7 @@ void AtlasInterleaveRegistry::registerImmediate(AssistShadowBatch* owner) {
             renderer,
             owner,
             nullptr,
-            static_cast<u16>(i * 4)
+            static_cast<u32>(i * 4)
         };
         auto [it, inserted] = state.spriteOwners.emplace(sprite, record);
         if (!inserted && (!it->second.sameOwner(record) ||
@@ -1140,8 +1140,8 @@ bool AtlasInterleaveRegistry::drawBatch(
 
         gpuStateActive = true;
         const usize drawIndices = run.slotCount * 6;
-        glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(drawIndices), GL_UNSIGNED_SHORT,
-            reinterpret_cast<void*>(run.firstIndex * sizeof(u16)));
+        glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(drawIndices), GL_UNSIGNED_INT,
+            reinterpret_cast<void*>(run.firstIndex * sizeof(u32)));
         submittedAny = true;
         if (owner.drawCalls)
             ++(*owner.drawCalls);
