@@ -24,35 +24,13 @@ vec4 fetchData(highp sampler2D textureSampler, vec2 textureSize, float index) {
 }
 
 void main() {
-    float objectIndex = floor(a_objectStateIndex + 0.5);
-    float objectBase = objectIndex * 2.0;
-    vec4 o0 = fetchData(u_objectStateTexture, u_objectStateTextureSize, objectBase + 0.0);
-    vec4 o1 = fetchData(u_objectStateTexture, u_objectStateTextureSize, objectBase + 1.0);
-
-    // Stock affine matrix includes separate axis rotations, skew and anchor.
-    // o0 = a,b,c,d; o1 = tx,ty,vertexZ,visibility.
-    if (o1.w < 0.5) {
-        gl_Position = vec4(4.0, 4.0, 4.0, 1.0);
-        t_texCoord = a_texCoord;
-        t_color = vec4(0.0);
-        return;
-    }
-
-    vec2 worldPosition = vec2(
-        a_localPosition.x * o0.x + a_localPosition.y * o0.z + o1.x,
-        a_localPosition.x * o0.y + a_localPosition.y * o0.w + o1.y
-    );
-    gl_Position = u_mvp * vec4(worldPosition, o1.z, 1.0);
     t_texCoord = a_texCoord;
 
     float spriteIndex = floor(a_spriteStateIndex + 0.5);
-    float spriteBase = spriteIndex * 2.0;
+    float spriteBase = spriteIndex * 4.0;
     vec4 resolvedColor = fetchData(u_spriteStateTexture, u_spriteStateTextureSize, spriteBase + 0.0);
     vec4 spriteMeta = fetchData(u_spriteStateTexture, u_spriteStateTextureSize, spriteBase + 1.0);
 
-    // Bit 0 of the packed sprite flags is GD's final child visibility. The
-    // shader consumes that result instead of trying to reproduce animation or
-    // child-hierarchy visibility rules.
     float visibleBit = mod(floor(spriteMeta.x), 2.0);
     if (visibleBit < 0.5) {
         gl_Position = vec4(4.0, 4.0, 4.0, 1.0);
@@ -61,7 +39,9 @@ void main() {
     }
 
     // Bit 4 means Cocos supplied its authoritative sprite->batch matrix.
-    // This path avoids Bismuth reconstructing parent/group transform semantics.
+    // In this branch Cocos is also the sole visibility authority. Do not let
+    // Bismuth's object lifecycle hide a sprite that Cocos has already placed
+    // into the live atlas for this frame.
     float hasBatchTransform = mod(floor(spriteMeta.x / 16.0), 2.0);
     if (hasBatchTransform > 0.5) {
         vec4 s0 = fetchData(u_spriteStateTexture, u_spriteStateTextureSize, spriteBase + 2.0);
@@ -76,8 +56,27 @@ void main() {
             a_localPosition.x * s0.y + a_localPosition.y * s0.w + s1.y
         );
         gl_Position = u_mvp * vec4(batchPosition, s1.z, 1.0);
+    } else {
+        float objectIndex = floor(a_objectStateIndex + 0.5);
+        float objectBase = objectIndex * 2.0;
+        vec4 o0 = fetchData(u_objectStateTexture, u_objectStateTextureSize, objectBase + 0.0);
+        vec4 o1 = fetchData(u_objectStateTexture, u_objectStateTextureSize, objectBase + 1.0);
+
+        if (o1.w < 0.5) {
+            gl_Position = vec4(4.0, 4.0, 4.0, 1.0);
+            t_color = vec4(0.0);
+            return;
+        }
+
+        vec2 worldPosition = vec2(
+            a_localPosition.x * o0.x + a_localPosition.y * o0.z + o1.x,
+            a_localPosition.x * o0.y + a_localPosition.y * o0.w + o1.y
+        );
+        gl_Position = u_mvp * vec4(worldPosition, o1.z, 1.0);
     }
 
-    // Sprite color/alpha is the exact final Cocos quad value.
+    // Color/alpha is reconstructed from Cocos displayed state using the same
+    // premultiply rule as CCSprite::updateColor(), so a stale suppressed quad
+    // can no longer make an active sprite turn clear.
     t_color = resolvedColor;
 }
