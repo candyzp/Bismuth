@@ -296,20 +296,23 @@ class $modify(RendererOwnedCCSprite, cocos2d::CCSprite) {
             return;
         }
 
-        if (auto children = this->getChildren(); children && children->count()) {
-            // Stock children still need their parent's affine/visibility state,
-            // even though this owned quad is expanded by the GPU. Visit children
-            // so each keeps its own stock/GPU ownership and update order.
-            this->m_transformToBatch = this->nodeToParentTransform();
-            this->m_bShouldBeHidden = !this->isVisible();
-            if (auto parent = typeinfo_cast<cocos2d::CCSprite*>(this->getParent());
-                parent && this->getParent() != this->getBatchNode()) {
-                this->m_transformToBatch = cocos2d::CCAffineTransformConcat(
-                    this->m_transformToBatch, parent->m_transformToBatch);
-                this->m_bShouldBeHidden |= parent->m_bShouldBeHidden;
-            }
-            cocos2d::CCNode::updateTransform();
+        // Keep Cocos authoritative for the matrix/visibility that would have
+        // been used by CCSprite::updateTransform(). We only skip expanding four
+        // final quad vertices into the stock atlas; the GPU performs that part.
+        this->m_transformToBatch = this->nodeToParentTransform();
+        this->m_bShouldBeHidden = !this->isVisible();
+        if (auto parent = typeinfo_cast<cocos2d::CCSprite*>(this->getParent());
+            parent && this->getParent() != this->getBatchNode()) {
+            this->m_transformToBatch = cocos2d::CCAffineTransformConcat(
+                this->m_transformToBatch, parent->m_transformToBatch);
+            this->m_bShouldBeHidden |= parent->m_bShouldBeHidden;
         }
+
+        // Children still need the normal hierarchy walk so their own stock/GPU
+        // decision observes the exact parent matrix Cocos just produced.
+        if (auto children = this->getChildren(); children && children->count())
+            cocos2d::CCNode::updateTransform();
+
         this->setDirty(true);
     }
 };
