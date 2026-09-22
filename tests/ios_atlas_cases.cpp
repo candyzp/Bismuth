@@ -120,7 +120,9 @@ int main() {
         std::iota(expected.begin(), expected.end(), 0);
         assert(fixture::pixels == expected);
         assert(fixture::gpuDraws == 1);
-        assert(fixture::stockTransforms == 1);
+        // Balanced scheduler keeps roughly half of the 200 live atlas slots on
+        // stock Cocos instead of allowing the GPU to swallow the whole batch.
+        assert(fixture::stockTransforms == 100);
     }
     {
         Scene s(10000);
