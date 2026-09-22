@@ -11,7 +11,7 @@
 using namespace geode::prelude;
 
 namespace {
-constexpr usize MAX_BATCH_SPRITES = 16384;
+constexpr usize MAX_BATCH_SPRITES = 65536;
 
 static glm::vec2 quadUV(const cocos2d::ccV3F_C4B_T2F& vertex) {
     return { vertex.texCoords.u, vertex.texCoords.v };
@@ -136,7 +136,7 @@ bool StandaloneAssistBatch::buildGeometry(
         return false;
 
     std::vector<Vertex> vertices;
-    std::vector<u16> indices;
+    std::vector<u32> indices;
     vertices.reserve(candidates.size() * 4);
     indices.reserve(candidates.size() * 6);
     ownedSprites.clear();
@@ -239,7 +239,7 @@ bool StandaloneAssistBatch::buildGeometry(
             activeBlendDst = blendDst;
         }
 
-        const u16 baseVertex = (u16)vertices.size();
+        const u32 baseVertex = (u32)vertices.size();
         const float objectIndex = (float)candidate.objectStateIndex;
         const float spriteIndex = (float)candidate.spriteStateIndex;
 
@@ -275,7 +275,7 @@ bool StandaloneAssistBatch::buildGeometry(
     indexBuffer = Buffer::createStaticDraw(
         rootAddressable ? "Standalone resolved GPU indices" : "Unified atlas registry GPU indices",
         indices.data(),
-        indices.size() * sizeof(u16)
+        indices.size() * sizeof(u32)
     );
     if (!vertexBuffer || !indexBuffer) {
         destroyGL();
@@ -453,8 +453,8 @@ bool StandaloneAssistBatch::drawRangeSpan(usize firstRange, usize rangeCount) {
         glDrawElements(
             GL_TRIANGLES,
             (GLsizei)range.indexCount,
-            GL_UNSIGNED_SHORT,
-            (void*)((usize)range.startIndex * sizeof(u16))
+            GL_UNSIGNED_INT,
+            (void*)((usize)range.startIndex * sizeof(u32))
         );
         ++stats.drawCallsLastFrame;
         stats.indicesLastFrame += range.indexCount;
