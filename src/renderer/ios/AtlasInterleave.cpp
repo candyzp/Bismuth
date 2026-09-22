@@ -284,7 +284,7 @@ static bool updateIndexCache(BatchIndexCache& cache, const std::vector<u32>& ind
     glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &previousBuffer);
     glBindBuffer(GL_ARRAY_BUFFER, cache.buffer);
     drainGLErrors();
-    glBufferData(GL_ARRAY_BUFFER, indices.size() * sizeof(u16), indices.data(), GL_DYNAMIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, indices.size() * sizeof(u32), indices.data(), GL_DYNAMIC_DRAW);
     const bool uploadOK = consumeGLErrors();
     glBindBuffer(GL_ARRAY_BUFFER, static_cast<u32>(previousBuffer));
     if (!uploadOK) {
