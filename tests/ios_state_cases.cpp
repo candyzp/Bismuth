@@ -8,7 +8,7 @@ int main() {
     state.sprites.push_back({}); state.sprites[0].sprite=&object;
     state.sprites[0].geometry=state.captureSpriteState(&object);
     state.spriteIndexByPointer.emplace(&object,0);
-    state.objectTexels.resize(2); state.spriteTexels.resize(3);
+    state.objectTexels.resize(2); state.spriteTexels.resize(4);
     assert(state.canDrawSprite(&object));
     // Before lifecycle compilation a registered record remains conservatively
     // usable; afterwards the stock active mask is authoritative.
@@ -156,6 +156,32 @@ int main() {
     assert(!exact.opacityModifyRGB);
     state.packSpriteState(0,exact,0);
     assert(state.spriteTexels[0].x==12/255.f && state.spriteTexels[0].w==78/255.f);
+
+    // Stock Cocos is now the transform authority for batched GPU sprites.
+    // Prove the exact m_transformToBatch / vertexZ / hidden state reaches the
+    // packed GPU state without Bismuth reconstructing a parallel transform.
+    cocos2d::CCSpriteBatchNode stockBatch;
+    object.batch=&stockBatch;
+    object.m_transformToBatch={1.25f,0.15f,-0.2f,0.85f,123.5f,-41.25f};
+    object.vertexZ=7.75f;
+    object.m_bShouldBeHidden=false;
+    auto cocosExact=state.captureFrameSpriteState(&object,exact);
+    state.packSpriteState(0,cocosExact,0);
+    assert(state.spriteTexels[2].x==1.25f);
+    assert(state.spriteTexels[2].y==0.15f);
+    assert(state.spriteTexels[2].z==-0.2f);
+    assert(state.spriteTexels[2].w==0.85f);
+    assert(state.spriteTexels[3].x==123.5f);
+    assert(state.spriteTexels[3].y==-41.25f);
+    assert(state.spriteTexels[3].z==7.75f);
+    assert(state.spriteTexels[3].w==1.f);
+
+    object.m_bShouldBeHidden=true;
+    cocosExact=state.captureFrameSpriteState(&object,cocosExact);
+    state.packSpriteState(0,cocosExact,0);
+    assert(state.spriteTexels[3].w==0.f);
+    object.m_bShouldBeHidden=false;
+    object.batch=nullptr;
     {
         ResolvedStateLayer temporary;
         assert(ResolvedStateLayer::getCurrent()==&temporary);
