@@ -761,7 +761,11 @@ bool AtlasInterleaveRegistry::drawBatch(
                 ? HYBRID_MAX_GPU_RUNS_PER_FRAME - state.gpuDrawRunsUsedThisFrame
                 : 0;
 
-        usize remainingSprites = spriteBudgetLeft;
+        // Balanced hybrid target: hand roughly half of this live stock atlas
+        // to the GPU and leave the other half on Cocos. This is a target, not a
+        // correctness rule: unsupported/fragmented sprites remain CPU-owned.
+        const usize balancedBatchTarget = (totalQuads + 1) / 2;
+        usize remainingSprites = std::min(spriteBudgetLeft, balancedBatchTarget);
         usize remainingRuns = std::min(HYBRID_MAX_GPU_RUNS_PER_BATCH, frameRunBudgetLeft);
         usize smallRunGraceLeft =
             state.gpuDrawRunsUsedThisFrame < HYBRID_SMALL_RUN_GRACE
@@ -885,11 +889,6 @@ bool AtlasInterleaveRegistry::drawBatch(
     }
     state.ownedBatches[batch] = renderer;
 
-    // Resolved-state capture/upload is also delayed until we have proved this
-    // frame will submit object GPU geometry. Idle/CPU-only frames no longer pay
-    // the state-texture update cost.
-    renderer->prepareGPUFrame();
-
     for (usize i = 0; i < totalQuads; ++i) {
         if (!state.atlasSprites[i])
             return fail("missing-atlas-slot", static_cast<int>(i), static_cast<u32>(totalQuads));
@@ -924,6 +923,11 @@ bool AtlasInterleaveRegistry::drawBatch(
     state.activeBatch = nullptr;
     state.activeRenderer = nullptr;
     stockTransformsSuppressed = true;
+
+    // Cocos has now produced current m_transformToBatch / hidden state for every
+    // GPU-selected sprite. Capture those exact values into the state textures
+    // only now; the shader consumes stock authority rather than a parallel guess.
+    renderer->prepareGPUFrame();
 
     if (atlas->getTotalQuads() != totalQuads || descendants->count() != totalQuads)
         return fail("atlas-mutated-after-transform", -1, static_cast<u32>(totalQuads));
