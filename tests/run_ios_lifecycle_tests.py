@@ -10,7 +10,7 @@ resolved_state = (root / 'src/renderer/ios/ResolvedStateLayer.cpp').read_text()
 
 # Long-level coverage must not regress back to first-N ownership, and the first
 # playthrough must seed GD's active lifecycle before the hybrid scheduler runs.
-assert 'SPATIAL_BUDGET_LANES = 128' in resolved_state
+assert 'SPATIAL_BUDGET_LANES = 256' in resolved_state
 assert 'state->resolvedState->reseedActiveFromStock();' in renderer
 assert 'state->resolvedState->isSpriteActive(sprite)' in renderer
 
