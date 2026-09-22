@@ -111,7 +111,7 @@ struct RegistryState {
     std::vector<cocos2d::CCSprite*> atlasSprites;
     std::vector<SpriteOwner> atlasOwners;
     std::vector<AtlasDrawRun> runs;
-    std::vector<u16> indices;
+    std::vector<u32> indices;
     // Per-batch scheduling scratch. Keep capacity across rendered frames so a
     // dense level does not malloc/free run and selection arrays at 60 Hz.
     std::vector<CandidateRun> candidateRuns;
