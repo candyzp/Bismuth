@@ -15,7 +15,7 @@ using namespace geode::prelude;
 
 namespace {
 constexpr usize OBJECT_TEXELS_PER_STATE = 2;
-constexpr usize SPRITE_TEXELS_PER_STATE = 2;
+constexpr usize SPRITE_TEXELS_PER_STATE = 4;
 
 // This is persistent whole-level state, not visible-frame work. Giant effect
 // levels can contain enough decorations to make retaining/uploading every safe
@@ -319,6 +319,12 @@ ResolvedStateLayer::SpriteState ResolvedStateLayer::captureSpriteState(cocos2d::
     state.offset = sprite->getOffsetPosition();
     state.opacityModifyRGB = false;
     state.visible = sprite->isVisible() && !sprite->getDontDraw();
+    state.hasBatchTransform = sprite->getBatchNode() != nullptr;
+    if (state.hasBatchTransform) {
+        state.batchTransform = sprite->m_transformToBatch;
+        state.vertexZ = sprite->getVertexZ();
+        state.visible = state.visible && !sprite->m_bShouldBeHidden;
+    }
     state.rotated = sprite->isTextureRectRotated();
     state.flipX = sprite->isFlipX();
     state.flipY = sprite->isFlipY();
@@ -358,6 +364,12 @@ ResolvedStateLayer::SpriteState ResolvedStateLayer::captureFrameSpriteState(
     state.opacity = stockQuad.bl.colors.a;
     state.opacityModifyRGB = false;
     state.visible = sprite->isVisible() && !sprite->getDontDraw();
+    state.hasBatchTransform = sprite->getBatchNode() != nullptr;
+    if (state.hasBatchTransform) {
+        state.batchTransform = sprite->m_transformToBatch;
+        state.vertexZ = sprite->getVertexZ();
+        state.visible = state.visible && !sprite->m_bShouldBeHidden;
+    }
     return state;
 }
 
@@ -401,11 +413,25 @@ void ResolvedStateLayer::packSpriteState(usize index, const SpriteState& state, 
     // The assist shader only consumes flags + object index here. Texture rect
     // and texture dimensions are geometry-validation data, not render-state
     // data, so keeping a third RGBA texel per sprite wasted 33% of this texture.
+    if (state.hasBatchTransform) flags |= 16u;
+
     spriteTexels[base + 1] = {
         (float)flags,
         (float)objectIndex,
         0.f,
         0.f
+    };
+    spriteTexels[base + 2] = {
+        state.batchTransform.a,
+        state.batchTransform.b,
+        state.batchTransform.c,
+        state.batchTransform.d
+    };
+    spriteTexels[base + 3] = {
+        state.batchTransform.tx,
+        state.batchTransform.ty,
+        state.vertexZ,
+        state.visible ? 1.f : 0.f
     };
 }
 
@@ -424,7 +450,15 @@ bool ResolvedStateLayer::spriteAppearanceChanged(const SpriteState& a, const Spr
     return a.color.r != b.color.r ||
            a.color.g != b.color.g ||
            a.color.b != b.color.b ||
-           a.opacity != b.opacity || a.opacityModifyRGB != b.opacityModifyRGB;
+           a.opacity != b.opacity || a.opacityModifyRGB != b.opacityModifyRGB ||
+           a.hasBatchTransform != b.hasBatchTransform ||
+           a.batchTransform.a != b.batchTransform.a ||
+           a.batchTransform.b != b.batchTransform.b ||
+           a.batchTransform.c != b.batchTransform.c ||
+           a.batchTransform.d != b.batchTransform.d ||
+           a.batchTransform.tx != b.batchTransform.tx ||
+           a.batchTransform.ty != b.batchTransform.ty ||
+           a.vertexZ != b.vertexZ;
 }
 
 bool ResolvedStateLayer::spriteUVChanged(const SpriteState& a, const SpriteState& b) {
