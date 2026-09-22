@@ -65,6 +65,28 @@ int main() {
         assert(fixture::gpuDraws==0);
     }
     {
+        // Custom-level fragmentation regression: ten useful 6-sprite islands
+        // separated by stock-only slots. No run reaches the historical 48-sprite
+        // profitability floor. The scheduler must still keep the GPU working
+        // instead of reporting GPU IDLE like dense custom levels did.
+        Scene s(69);
+        std::vector<int> claimed;
+        for (int group = 0; group < 10; ++group) {
+            const int start = group * 7;
+            for (int j = 0; j < 6; ++j)
+                claimed.push_back(start + j);
+        }
+        s.claim(claimed);
+        s.draw();
+
+        std::vector<int> expected(69);
+        std::iota(expected.begin(), expected.end(), 0);
+        assert(fixture::pixels == expected);
+        assert(fixture::gpuDraws == 6);
+        assert(fixture::stockTransforms == 69 - 35);
+    }
+
+    {
         // Dense runs must win scarce draw-call slots over tiny early islands.
         // Eight 1-sprite islands used to exhaust the per-batch call budget
         // before this later 100-sprite run was even considered.
