@@ -14,7 +14,7 @@ template <class Owner>
 void buildAtlasDrawPlan(
     const std::vector<Owner>& owners,
     std::vector<AtlasDrawRun>& runs,
-    std::vector<std::uint16_t>& indices
+    std::vector<std::uint32_t>& indices
 ) {
     runs.clear();
     indices.clear();
@@ -26,7 +26,7 @@ void buildAtlasDrawPlan(
         if (owner.empty())
             continue;
         const auto base = owner.baseVertex;
-        for (std::uint16_t corner : {0, 2, 3, 0, 3, 1})
-            indices.push_back(static_cast<std::uint16_t>(base + corner));
+        for (std::uint32_t corner : {0u, 2u, 3u, 0u, 3u, 1u})
+            indices.push_back(static_cast<std::uint32_t>(base + corner));
     }
 }
