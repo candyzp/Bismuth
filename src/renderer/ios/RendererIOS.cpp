@@ -95,6 +95,11 @@ struct IOSRendererState {
     usize batchTransformSkipsCurrentFrame = 0;
     usize batchTransformSkipsLastFrame = 0;
 
+    usize cpuWorkCurrentFrame = 0;
+    usize cpuWorkLastFrame = 0;
+    usize gpuWorkCurrentFrame = 0;
+    usize gpuWorkLastFrame = 0;
+
     std::array<usize, 60> gpuSpriteHistory{};
     usize gpuSpriteHistoryIndex = 0;
     usize gpuSpriteHistoryCount = 0;
@@ -707,10 +712,13 @@ void Renderer::updateDebugText() {
             "Bismuth GPU [{}]\n"
             "GPU Draw: {} sprites/frame | avg {}\n"
             "Calls: {} | Transforms skipped: {}\n"
+            "Work: CPU {} | GPU {}\n"
             "Active owned: {} | persistent: {} | candidates: {}\n"
             "Atlas: {} | no-batch: {} | deferred: {} | CPU roots: {} | mixed rej: {}",
             status, currentSprites, averageSprites, calls,
             state->batchTransformSkipsLastFrame + state->standaloneRootVisitsLastFrame,
+            state->cpuWorkLastFrame,
+            state->gpuWorkLastFrame,
             coverage.activeGPUSprites,
             state->ownedSprites.size(),
             state->gpuCandidateSprites,
@@ -760,6 +768,8 @@ void Renderer::beginGPUFrame() {
     state->gpuFramePrepared = false;
     state->standaloneRootVisitsCurrentFrame = 0;
     state->batchTransformSkipsCurrentFrame = 0;
+    state->cpuWorkCurrentFrame = 0;
+    state->gpuWorkCurrentFrame = 0;
     AtlasInterleaveRegistry::beginFrame();
     for (auto& buffer : state->standaloneBatches) {
         if (buffer)
@@ -793,6 +803,8 @@ void Renderer::finishGPUFrame() {
 
     state->standaloneRootVisitsLastFrame = state->standaloneRootVisitsCurrentFrame;
     state->batchTransformSkipsLastFrame = state->batchTransformSkipsCurrentFrame;
+    state->cpuWorkLastFrame = state->cpuWorkCurrentFrame;
+    state->gpuWorkLastFrame = state->gpuWorkCurrentFrame;
     const bool show = Mod::get()->getSettingValue<bool>("ios_gpu_debug");
     if (show != state->debugWasEnabled || (show && state->debugFrames++ % 12 == 0))
         updateDebugText();
@@ -903,6 +915,26 @@ bool Renderer::isGPUOwnedSprite(cocos2d::CCSprite* sprite) const {
     auto state = iosState(const_cast<Renderer*>(this));
     return state && state->resolvedState &&
         state->resolvedState->isSpriteActive(sprite);
+}
+
+void Renderer::recordCPUWork(cocos2d::CCSprite* sprite) {
+    if (!sprite || !layer || !layer->m_batchNodes ||
+        !Mod::get()->getSettingValue<bool>("ios_gpu_debug"))
+        return;
+
+    auto batch = sprite->getBatchNode();
+    if (!batch || layer->m_batchNodes->indexOfObject(batch) == UINT_MAX)
+        return;
+
+    if (auto state = iosState(this))
+        ++state->cpuWorkCurrentFrame;
+}
+
+void Renderer::recordGPUWork(usize sprites) {
+    if (!sprites || !Mod::get()->getSettingValue<bool>("ios_gpu_debug"))
+        return;
+    if (auto state = iosState(this))
+        state->gpuWorkCurrentFrame += sprites;
 }
 
 bool Renderer::hasForcedDecorationInBatch(cocos2d::CCSpriteBatchNode* batch) const {
