@@ -77,10 +77,8 @@ struct GameObject : cocos2d::CCSprite {
     bool m_isInvisible=false;
     bool m_colorZLayerRelated=false;
     cocos2d::CCAffineTransform transform;
-    float vertexZ=0;
     cocos2d::CCArray* getChildren(){return &children;}
     cocos2d::CCAffineTransform nodeToParentTransform(){return transform;}
-    float getVertexZ(){return vertexZ;}
 };
 struct PlayLayer {};
 struct DataTexture {
