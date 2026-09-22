@@ -104,6 +104,12 @@ public:
     // live section into one-sprite GPU islands.
     bool isGPUPersistentlyOwnedSprite(cocos2d::CCSprite* sprite) const;
 
+    // Debug-only hybrid work accounting. CPU work counts actual stock
+    // CCSprite::updateTransform calls in gameplay batches. GPU work counts
+    // active sprites that survive scheduling and complete a custom submission.
+    void recordCPUWork(cocos2d::CCSprite* sprite);
+    void recordGPUWork(usize sprites);
+
     // Skip expansion only while a validated atlas plan owns this exact slot.
     bool prepareGPUOwnedSprite(cocos2d::CCSprite* sprite);
 
