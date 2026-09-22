@@ -290,6 +290,8 @@ class $modify(RendererOwnedCCSprite, cocos2d::CCSprite) {
     void updateTransform() {
         auto renderer = Renderer::get();
         if (!renderer || !renderer->prepareGPUOwnedSprite(this)) {
+            if (renderer)
+                renderer->recordCPUWork(this);
             cocos2d::CCSprite::updateTransform();
             return;
         }
