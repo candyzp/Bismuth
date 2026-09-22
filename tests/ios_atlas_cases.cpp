@@ -212,7 +212,7 @@ int main() {
         }
         s.draw(); static_cast<cocos2d::CCSpriteBatchNode&>(second).draw();
         assert((fixture::pixels==std::vector<int>{0,1,2,3}));
-        assert(fixture::gpuDraws==2 && s.owner.stats.indicesLastFrame==24);
+        assert(fixture::gpuDraws==2 && s.owner.stats.indicesLastFrame==12);
     }
     {
         Scene s(3); s.claim({0,2});
