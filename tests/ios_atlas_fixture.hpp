@@ -282,6 +282,8 @@ struct Renderer {
         return enabled && (persistentOwned.contains(s) || owned.contains(s));
     }
     bool prepareGPUOwnedSprite(cocos2d::CCSprite* s);
+    void recordCPUWork(cocos2d::CCSprite*) {}
+    void recordGPUWork(usize) {}
     void prepareGPUFrame() {}
     bool isGPUInterleavedBatch(cocos2d::CCSpriteBatchNode*) const;
     bool drawGPUInterleavedBatch(cocos2d::CCSpriteBatchNode*);
