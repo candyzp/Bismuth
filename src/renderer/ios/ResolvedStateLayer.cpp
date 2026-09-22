@@ -20,8 +20,8 @@ constexpr usize SPRITE_TEXELS_PER_STATE = 2;
 // This is persistent whole-level state, not visible-frame work. Giant effect
 // levels can contain enough decorations to make retaining/uploading every safe
 // sprite more expensive than stock GD, or exhaust memory during load.
-constexpr usize MAX_RESOLVED_OBJECT_RECORDS = 12288;
-constexpr usize MAX_RESOLVED_SPRITE_RECORDS = 16384;
+constexpr usize MAX_RESOLVED_OBJECT_RECORDS = 65536;
+constexpr usize MAX_RESOLVED_SPRITE_RECORDS = 65536;
 
 bool isSimpleSpikeRoot(GameObject* object) {
     // Only the root quad is GPU-owned. Separate glow/detail nodes keep their
@@ -490,7 +490,7 @@ bool ResolvedStateLayer::init(PlayLayer* playLayer) {
             return spatialX(a) < spatialX(b);
         });
 
-    constexpr usize SPATIAL_BUDGET_LANES = 128;
+    constexpr usize SPATIAL_BUDGET_LANES = 256;
     const usize laneCount = std::min<usize>(SPATIAL_BUDGET_LANES, renderableObjects.size());
     std::vector<GameObject*> spatialBudgetOrder;
     spatialBudgetOrder.reserve(renderableObjects.size());
