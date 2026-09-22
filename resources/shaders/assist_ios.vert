@@ -60,7 +60,24 @@ void main() {
         return;
     }
 
-    // Sprite color/alpha is already GD-resolved. Do not rebuild color channels,
-    // HSV rules, Area Fade, portal state, or other appearance semantics here.
+    // Bit 4 means Cocos supplied its authoritative sprite->batch matrix.
+    // This path avoids Bismuth reconstructing parent/group transform semantics.
+    float hasBatchTransform = mod(floor(spriteMeta.x / 16.0), 2.0);
+    if (hasBatchTransform > 0.5) {
+        vec4 s0 = fetchData(u_spriteStateTexture, u_spriteStateTextureSize, spriteBase + 2.0);
+        vec4 s1 = fetchData(u_spriteStateTexture, u_spriteStateTextureSize, spriteBase + 3.0);
+        if (s1.w < 0.5) {
+            gl_Position = vec4(4.0, 4.0, 4.0, 1.0);
+            t_color = vec4(0.0);
+            return;
+        }
+        vec2 batchPosition = vec2(
+            a_localPosition.x * s0.x + a_localPosition.y * s0.z + s1.x,
+            a_localPosition.x * s0.y + a_localPosition.y * s0.w + s1.y
+        );
+        gl_Position = u_mvp * vec4(batchPosition, s1.z, 1.0);
+    }
+
+    // Sprite color/alpha is the exact final Cocos quad value.
     t_color = resolvedColor;
 }
