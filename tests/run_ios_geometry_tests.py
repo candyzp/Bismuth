@@ -62,10 +62,17 @@ cocos2d::CCSprite child;child.parent=&root;child.batchNode=&batch;child.transfor
 LiveGeometry children;children.add({&root,&child,0,1},quad);
 assert(children.canUseBatch(0,&batch));
 assert(children.refresh(0)&&children.flush(7));
-assert(get(0).localPosition.x==7&&get(0).localPosition.y==8);
-assert(get(3).localPosition.x==-23&&get(3).localPosition.y==38);
-child.transform.tx=9;assert(children.refresh(0)&&children.flush(7));assert(get(0).localPosition.x==9);
-std::cout<<"PASS: live crop, UV, offset, nested batch ownership, child affine, unchanged geometry reuse, stale GL isolation, failed vertex upload retry\n";
+// Batched sprites stay in sprite-local geometry. Cocos' authoritative
+// m_transformToBatch is streamed separately through sprite state and applied
+// by the vertex shader, so child/parent affine changes must not be baked here.
+assert(get(0).localPosition.x==0&&get(0).localPosition.y==0);
+assert(get(3).localPosition.x==30&&get(3).localPosition.y==30);
+const int childBefore=calls;
+child.transform.tx=9;
+assert(children.refresh(0)&&children.flush(7));
+assert(calls==childBefore);
+assert(get(0).localPosition.x==0&&get(3).localPosition.x==30);
+std::cout<<"PASS: live crop, UV, offset, nested batch ownership, sprite-local atlas geometry, unchanged geometry reuse, stale GL isolation, failed vertex upload retry\n";
 }
 '''
 with tempfile.TemporaryDirectory(prefix='bismuth-geometry-') as d:
