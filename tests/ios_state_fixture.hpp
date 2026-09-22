@@ -37,20 +37,28 @@ struct CCNode {
     CCArray* getChildren(){return &children;}
     int getZOrder(){return 0;}
 };
+struct CCSpriteBatchNode;
 struct CCSprite : CCNode {
     bool getDontDraw(){return false;}
     ccColor3B color; u8 opacity=255;
     bool visible=true, rotated=false, flipX=false, flipY=false, premultiplied=false;
+    bool m_bShouldBeHidden=false;
     CCRect rect{{0,0},{30,30}}; CCPoint offset;
     CCTexture2D tex;
     ccV3F_C4B_T2F_Quad quad;
+    CCAffineTransform m_transformToBatch;
+    float vertexZ=0.f;
+    CCSpriteBatchNode* batch=nullptr;
     ccColor3B getDisplayedColor(){return color;} u8 getDisplayedOpacity(){return opacity;}
     CCRect getTextureRect(){return rect;} CCPoint getOffsetPosition(){return offset;}
     bool isVisible(){return visible;} bool isTextureRectRotated(){return rotated;}
     bool isFlipX(){return flipX;} bool isFlipY(){return flipY;} bool isOpacityModifyRGB(){return premultiplied;}
     const ccV3F_C4B_T2F_Quad& getQuad() const { return quad; }
     CCTexture2D* getTexture(){return &tex;}
+    CCSpriteBatchNode* getBatchNode(){return batch;}
+    float getVertexZ(){return vertexZ;}
 };
+struct CCSpriteBatchNode : CCNode {};
 }
 enum class GameObjectType { Solid, Hazard, AnimatedHazard, Decoration };
 enum class GameObjectClassType { Normal, Animated };
