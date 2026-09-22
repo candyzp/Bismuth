@@ -83,6 +83,27 @@ int main() {
         assert(fixture::stockTransforms == 500 - (100 + 7));
     }
     {
+        // CCSpriteBatchNode binds one batch texture/blend for the whole atlas.
+        // Per-sprite metadata differences must not fragment an otherwise
+        // contiguous GPU-safe run.
+        Scene s(96);
+        std::vector<int> claimed(96);
+        std::iota(claimed.begin(), claimed.end(), 0);
+        s.claim(claimed);
+
+        for (int i = 1; i < 96; i += 2) {
+            s.sprites[i].blend.src = GL_ONE;
+            s.sprites[i].blend.dst = GL_ONE;
+        }
+
+        s.draw();
+        std::vector<int> expected(96);
+        std::iota(expected.begin(), expected.end(), 0);
+        assert(fixture::pixels == expected);
+        assert(fixture::gpuDraws == 1);
+    }
+
+    {
         // Orbit-style lifecycle pattern: every other slot is currently inactive
         // but remains persistently safe and hidden in GPU state. Those hidden
         // owned slots must bridge the active sprites into one useful submission
