@@ -272,6 +272,7 @@ struct Renderer {
     inline static Renderer* current=nullptr;
     bool enabled=true;
     PlayLayer layer;
+    ResolvedStateLayer* preparedState=nullptr;
     std::unordered_set<cocos2d::CCSprite*> owned;
     std::unordered_set<cocos2d::CCSprite*> persistentOwned;
     static geode::Ref<Renderer> get(){return current;}
@@ -284,7 +285,7 @@ struct Renderer {
     bool prepareGPUOwnedSprite(cocos2d::CCSprite* s);
     void recordCPUWork(cocos2d::CCSprite*) {}
     void recordGPUWork(usize) {}
-    void prepareGPUFrame() {}
+    void prepareGPUFrame() { if (preparedState) preparedState->ready=true; }
     bool isGPUInterleavedBatch(cocos2d::CCSpriteBatchNode*) const;
     bool drawGPUInterleavedBatch(cocos2d::CCSpriteBatchNode*);
 };
