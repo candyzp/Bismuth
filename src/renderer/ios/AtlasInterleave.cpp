@@ -620,7 +620,7 @@ bool AtlasInterleaveRegistry::drawBatch(
                 rendererIt->second == renderer &&
                 owner->stockBatch == batch &&
                 owner->stats.ready && owner->isVisible() &&
-                owner->resolvedState && owner->resolvedState->isGPUStateReady() &&
+                owner->resolvedState &&
                 owner->resolvedState->getObjectStateTexture() &&
                 owner->resolvedState->getSpriteStateTexture() &&
                 owner->shader && owner->vao && owner->indexBuffer && owner->vertexBuffer;
@@ -631,7 +631,7 @@ bool AtlasInterleaveRegistry::drawBatch(
         return owner && rendererIt != state.deferredRenderers.end() &&
             rendererIt->second == renderer && !owner->rootAddressable &&
             owner->stats.ready && owner->isVisible() &&
-            owner->resolvedState && owner->resolvedState->isGPUStateReady() &&
+            owner->resolvedState &&
             owner->resolvedState->getObjectStateTexture() &&
             owner->resolvedState->getSpriteStateTexture() &&
             owner->shader && owner->vao && owner->indexBuffer && owner->vertexBuffer;
@@ -998,6 +998,8 @@ bool AtlasInterleaveRegistry::drawBatch(
         if (!owner.resolvedState->getObjectStateTexture() ||
             !owner.resolvedState->getSpriteStateTexture())
             return fail("preflight-state-texture", static_cast<int>(run.firstSlot), static_cast<u32>(totalQuads));
+        if (!owner.resolvedState->isGPUStateReady())
+            return fail("preflight-state-stale", static_cast<int>(run.firstSlot), static_cast<u32>(totalQuads));
     }
 
     // glGet* is a synchronization point on mobile drivers. The old path queried
