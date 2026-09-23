@@ -959,11 +959,14 @@ bool Renderer::hasForcedDecorationInBatch(cocos2d::CCSpriteBatchNode* batch) con
 }
 
 bool Renderer::prepareGPUOwnedSprite(cocos2d::CCSprite* sprite) {
-    if (!enabled || !AtlasInterleaveRegistry::shouldSkipTransform(this, sprite))
-        return false;
-    if (auto state = iosState(this))
-        ++state->batchTransformSkipsCurrentFrame;
-    return true;
+    // Correctness-first no-skip mode: keep the GPU interleave/draw path active,
+    // but never bypass Cocos' stock CCSprite::updateTransform(). This guarantees
+    // every atlas sprite gets its normal hierarchy transform, hidden-state
+    // propagation, and stock quad expansion before Bismuth submits GPU runs.
+    //
+    // The parameter is intentionally unused while this diagnostic mode is active.
+    (void)sprite;
+    return false;
 }
 
 bool Renderer::isGPUOwnedStandaloneSprite(cocos2d::CCSprite* sprite) const {
