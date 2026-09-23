@@ -452,7 +452,7 @@ void AtlasInterleaveRegistry::registerDeferred(StandaloneAssistBatch* owner) {
 
     for (usize i = 0; i < owner->ownedSprites.size(); ++i) {
         auto sprite = owner->ownedSprites[i];
-        if (!sprite || i * 4 + 3 > 65535) {
+        if (!sprite || i > (static_cast<usize>(UINT_MAX) - 3) / 4) {
             invalidateRenderer(renderer, "invalid deferred GPU sprite vertex mapping");
             return;
         }
@@ -461,7 +461,7 @@ void AtlasInterleaveRegistry::registerDeferred(StandaloneAssistBatch* owner) {
             renderer,
             nullptr,
             owner,
-            static_cast<u16>(i * 4)
+            static_cast<u32>(i * 4)
         };
         auto [it, inserted] = state.spriteOwners.emplace(sprite, record);
         if (!inserted && (!it->second.sameOwner(record) ||
