@@ -204,9 +204,13 @@ int main() {
         assert(fixture::gpuDraws==0 && fixture::stockTransforms==7);
         checkStateRestored();
         s.draw(); assert(fixture::gpuDraws==2);
+        // Stale state is no longer a pre-selection veto. The Cocos-authoritative
+        // path refreshes it during prepareGPUFrame() after selected transforms
+        // are known, then proceeds with the GPU half.
         s.resolved.ready=false; s.draw();
-        assert(fixture::gpuDraws==0 && (fixture::pixels==std::vector<int>{0,1,2}));
-        assert(fixture::stockTransforms==3);
+        assert(s.resolved.ready);
+        assert((fixture::pixels==std::vector<int>{0,1,2}));
+        assert(fixture::gpuDraws==2);
     }
     {
         // A failure after hybrid transform suppression must restore the selected
