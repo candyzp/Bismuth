@@ -16,6 +16,11 @@ struct CCPoint {float x=0,y=0;};
 struct CCSize {float width=0,height=0;};
 struct CCRect {CCPoint origin; CCSize size;};
 struct ccColor3B {u8 r=255,g=255,b=255;};
+struct ccColor4B {u8 r=255,g=255,b=255,a=255;};
+struct ccV3F_C4B_T2F { ccColor4B colors; };
+struct ccV3F_C4B_T2F_Quad {
+    ccV3F_C4B_T2F bl, br, tl, tr;
+};
 struct CCAffineTransform {float a=1,b=0,c=0,d=1,tx=0,ty=0;};
 inline CCAffineTransform CCAffineTransformMakeIdentity(){return {};}
 struct CCArray { usize size=0; usize count(){return size;} };
@@ -32,18 +37,28 @@ struct CCNode {
     CCArray* getChildren(){return &children;}
     int getZOrder(){return 0;}
 };
+struct CCSpriteBatchNode;
 struct CCSprite : CCNode {
     bool getDontDraw(){return false;}
     ccColor3B color; u8 opacity=255;
     bool visible=true, rotated=false, flipX=false, flipY=false, premultiplied=false;
+    bool m_bShouldBeHidden=false;
     CCRect rect{{0,0},{30,30}}; CCPoint offset;
     CCTexture2D tex;
+    ccV3F_C4B_T2F_Quad quad;
+    CCAffineTransform m_transformToBatch;
+    float vertexZ=0.f;
+    CCSpriteBatchNode* batch=nullptr;
     ccColor3B getDisplayedColor(){return color;} u8 getDisplayedOpacity(){return opacity;}
     CCRect getTextureRect(){return rect;} CCPoint getOffsetPosition(){return offset;}
     bool isVisible(){return visible;} bool isTextureRectRotated(){return rotated;}
     bool isFlipX(){return flipX;} bool isFlipY(){return flipY;} bool isOpacityModifyRGB(){return premultiplied;}
+    const ccV3F_C4B_T2F_Quad& getQuad() const { return quad; }
     CCTexture2D* getTexture(){return &tex;}
+    CCSpriteBatchNode* getBatchNode(){return batch;}
+    float getVertexZ(){return vertexZ;}
 };
+struct CCSpriteBatchNode : CCNode {};
 }
 enum class GameObjectType { Solid, Hazard, AnimatedHazard, Decoration };
 enum class GameObjectClassType { Normal, Animated };
@@ -62,10 +77,8 @@ struct GameObject : cocos2d::CCSprite {
     bool m_isInvisible=false;
     bool m_colorZLayerRelated=false;
     cocos2d::CCAffineTransform transform;
-    float vertexZ=0;
     cocos2d::CCArray* getChildren(){return &children;}
     cocos2d::CCAffineTransform nodeToParentTransform(){return transform;}
-    float getVertexZ(){return vertexZ;}
 };
 struct PlayLayer {};
 struct DataTexture {

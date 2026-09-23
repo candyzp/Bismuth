@@ -16,7 +16,7 @@ namespace {
 // Four vertices per sprite with a u16 index buffer. If one stock batch contains
 // more than this many safe sprites we keep the overflow on stock Cocos instead
 // of disabling GPU ownership for the entire batch.
-constexpr usize MAX_BATCH_SPRITES = 16383;
+constexpr usize MAX_BATCH_SPRITES = 16384;
 
 struct CandidateWithTexture {
     ResolvedStateLayer::ShadowCandidate candidate;
@@ -219,14 +219,20 @@ bool AssistShadowBatch::buildGeometry(usize ownershipLimit) {
         candidates.size()
     });
     if (candidates.size() > limit) {
-        // Spread ownership much more finely across giant atlases. The previous
-        // 32-window cap could leave long mid-level stretches with zero owned
-        // sprites even though plenty of profitable GPU geometry existed later.
-        // Keep each window roughly >=64 sprites so the interleave scheduler can
-        // still submit useful runs without exploding draw-call count.
+        // Prefer broad GPU islands on dense decoration atlases. Tiny ~64-sprite
+        // windows were excellent for coverage but terrible for actual offload:
+        // a complex section often intersected only 20-70 owned sprites. Keep
+        // ownership distributed across the level, but make each window roughly
+        // 384 sprites so visible dense sections can feed the GPU hundreds of
+        // sprites in a small number of draw calls.
+        constexpr usize TARGET_WINDOW_SPRITES = 384;
+        constexpr usize MAX_OWNERSHIP_WINDOWS = 32;
         const usize windowCount = std::max<usize>(
             1,
-            std::min<usize>(128, std::max<usize>(1, limit / 64))
+            std::min<usize>(
+                MAX_OWNERSHIP_WINDOWS,
+                std::max<usize>(1, limit / TARGET_WINDOW_SPRITES)
+            )
         );
         std::vector<CandidateWithTexture> distributed;
         distributed.reserve(limit);

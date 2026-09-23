@@ -28,7 +28,7 @@ enum { GL_TEXTURE0=100, GL_TEXTURE_2D=200, GL_ARRAY_BUFFER,
     GL_VERTEX_ARRAY_BINDING, GL_CURRENT_PROGRAM, GL_ACTIVE_TEXTURE,
     GL_TEXTURE_BINDING_2D, GL_COLOR_WRITEMASK, GL_DEPTH_WRITEMASK,
     GL_STENCIL_WRITEMASK, GL_STENCIL_BACK_WRITEMASK, GL_FRONT, GL_BACK,
-    GL_DYNAMIC_DRAW, GL_TRIANGLES, GL_UNSIGNED_SHORT, GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA };
+    GL_DYNAMIC_DRAW, GL_TRIANGLES, GL_UNSIGNED_SHORT, GL_UNSIGNED_INT, GL_ONE, GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA };
 namespace fixture {
 inline GLuint vao=99, program=77, arrayBuffer=88, nextBuffer=1000;
 inline GLuint cachedVAO=99;
@@ -39,11 +39,12 @@ inline std::array<GLboolean,4> colorMask{1,1,1,1};
 inline GLboolean depthMask=1;
 inline GLint frontMask=7, backMask=13;
 inline GLenum error=0;
-inline bool failUpload=false, failAtlasSync=false;
+inline bool failUpload=false, failAtlasSync=false, failGeometryFlush=false;
+inline bool stockDrawUpdatesTransforms=true;
 inline int uploads=0, stockDraws=0, gpuDraws=0, stockTransforms=0;
 inline std::vector<int> pixels;
 inline std::unordered_map<GLuint, GLuint> elements;
-inline std::unordered_map<GLuint, std::vector<u16>> buffers;
+inline std::unordered_map<GLuint, std::vector<u32>> buffers;
 inline std::unordered_map<GLuint, std::vector<int>> vaoSpriteIDs;
 inline std::unordered_map<GLuint, GLuint> atlasBuffers;
 inline int atlasUploads=0;
@@ -105,13 +106,13 @@ inline void glBufferData(GLenum target,usize bytes,const void* data,GLenum) {
     }
     ++fixture::uploads;
     if(fixture::failUpload) { fixture::error=1; return; }
-    auto first=static_cast<const u16*>(data);
-    fixture::buffers[fixture::arrayBuffer].assign(first,first+bytes/sizeof(u16));
+    auto first=static_cast<const u32*>(data);
+    fixture::buffers[fixture::arrayBuffer].assign(first,first+bytes/sizeof(u32));
 }
 inline void glDrawElements(GLenum mode,GLsizei count,GLenum type,const void* offset) {
-    assert(mode==GL_TRIANGLES && type==GL_UNSIGNED_SHORT && count%6==0);
+    assert(mode==GL_TRIANGLES && type==GL_UNSIGNED_INT && count%6==0);
     ++fixture::gpuDraws;
-    auto first=reinterpret_cast<std::uintptr_t>(offset)/sizeof(u16);
+    auto first=reinterpret_cast<std::uintptr_t>(offset)/sizeof(u32);
     auto& indices=fixture::buffers.at(fixture::elements.at(fixture::vao));
     assert(first+count<=indices.size());
     auto& ids=fixture::vaoSpriteIDs.at(fixture::vao);
@@ -187,6 +188,7 @@ struct CCTextureAtlas {
     void drawQuads() { drawNumberOfQuads(quads.size(),0); }
 };
 struct CCSpriteBatchNode;
+struct ccBlendFunc { u32 src=GL_SRC_ALPHA, dst=GL_ONE_MINUS_SRC_ALPHA; };
 struct CCSprite : CCNode {
     int id=0;
     bool dirty=true, m_bShouldBeHidden=false;
@@ -196,15 +198,16 @@ struct CCSprite : CCNode {
     CCTexture2D* texture=nullptr;
     GameObjectClassType m_classType=GameObjectClassType::Normal;
     bool interactive=false, synced=false, m_isInvisibleBlock=false;
+    ccBlendFunc blend;
     CCSprite *m_glowSprite=nullptr, *m_colorSprite=nullptr;
     bool getHasSyncedAnimation() { return synced; }
     CCSpriteBatchNode* getBatchNode() { return batch; }
     u32 getAtlasIndex() { return slot; }
     CCTexture2D* getTexture() { return texture; }
+    ccBlendFunc getBlendFunc() { return blend; }
     void setDirty(bool d) { dirty=d; }
     virtual void updateTransform();
 };
-struct ccBlendFunc { u32 src=GL_SRC_ALPHA, dst=GL_ONE_MINUS_SRC_ALPHA; };
 struct CCSpriteBatchNode : CCNode {
     CCTextureAtlas atlas;
     CCTexture2D texture;
@@ -216,7 +219,8 @@ struct CCSpriteBatchNode : CCNode {
     ccBlendFunc getBlendFunc() { return {}; }
     void draw() override {
         ++stockCalls;
-        for(auto child:children.nodes) if(auto sprite=dynamic_cast<CCSprite*>(child)) sprite->updateTransform();
+        if (fixture::stockDrawUpdatesTransforms)
+            for(auto child:children.nodes) if(auto sprite=dynamic_cast<CCSprite*>(child)) sprite->updateTransform();
         atlas.drawQuads();
     }
 };
@@ -268,13 +272,20 @@ struct Renderer {
     inline static Renderer* current=nullptr;
     bool enabled=true;
     PlayLayer layer;
+    ResolvedStateLayer* preparedState=nullptr;
     std::unordered_set<cocos2d::CCSprite*> owned;
+    std::unordered_set<cocos2d::CCSprite*> persistentOwned;
     static geode::Ref<Renderer> get(){return current;}
     bool isEnabled(){return enabled;}
     PlayLayer* getPlayLayer(){return &layer;}
     bool isGPUOwnedSprite(cocos2d::CCSprite* s) const {return enabled && owned.contains(s);}
+    bool isGPUPersistentlyOwnedSprite(cocos2d::CCSprite* s) const {
+        return enabled && (persistentOwned.contains(s) || owned.contains(s));
+    }
     bool prepareGPUOwnedSprite(cocos2d::CCSprite* s);
-    void prepareGPUFrame() {}
+    void recordCPUWork(cocos2d::CCSprite*) {}
+    void recordGPUWork(usize) {}
+    void prepareGPUFrame() { if (preparedState) preparedState->ready=true; }
     bool isGPUInterleavedBatch(cocos2d::CCSpriteBatchNode*) const;
     bool drawGPUInterleavedBatch(cocos2d::CCSpriteBatchNode*);
 };
@@ -282,7 +293,7 @@ namespace GPUTruth {
 inline void recordObjectBatch(Renderer*,cocos2d::CCSpriteBatchNode*) {}
 inline void recordObjectFailure(Renderer*) {}
 }
-struct LiveGeometry { bool canUseBatch(usize,cocos2d::CCNode*) { return true; } bool refresh(usize) { return true; } bool flush(u32) { return true; } };
+struct LiveGeometry { bool canUseBatch(usize,cocos2d::CCNode*) { return true; } bool refresh(usize) { return true; } bool flush(u32) { return !fixture::failGeometryFlush; } };
 struct BatchStats { bool ready=true; usize drawCallsLastFrame=0,indicesLastFrame=0; };
 struct AssistShadowBatch : cocos2d::CCNode {
     BatchStats stats;

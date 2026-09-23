@@ -29,15 +29,18 @@ constexpr usize MAX_REASONABLE_ATLAS_QUADS = 262144;
 // cooperate instead of alternating between GPU spikes and CPU-only stretches.
 constexpr usize HYBRID_GPU_SPRITE_BUDGET = 2304;
 constexpr usize HYBRID_MIN_GPU_RUN = 48;
-constexpr usize HYBRID_SMALL_RUN_GRACE = 8;
 constexpr usize HYBRID_MAX_GPU_RUNS_PER_BATCH = 8;
 constexpr usize HYBRID_MAX_GPU_RUNS_PER_FRAME = 24;
+// Hidden sprites that are already persistently GPU-owned may connect nearby
+// active sprites without emitting pixels. Bound the gap so a useful run never
+// spends the 2,304-slot budget crossing a huge empty stretch.
+constexpr usize HYBRID_MAX_INACTIVE_BRIDGE = 64;
 
 struct SpriteOwner {
     Renderer* renderer = nullptr;
     AssistShadowBatch* immediate = nullptr;
     StandaloneAssistBatch* deferred = nullptr;
-    u16 baseVertex = 0;
+    u32 baseVertex = 0;
 
     bool empty() const {
         return !immediate && !deferred;
@@ -80,9 +83,15 @@ struct SavedGLState {
 
 struct BatchIndexCache {
     u32 buffer = 0;
-    std::vector<u16> indices;
+    std::vector<u32> indices;
     std::vector<SpriteOwner> owners;
     std::vector<AtlasDrawRun> runs;
+};
+
+struct CandidateRun {
+    usize start = 0;
+    usize count = 0;       // submitted slots, including hidden bridge slots
+    usize activeCount = 0; // useful GD-active sprites inside this run
 };
 
 struct RegistryState {
@@ -101,7 +110,12 @@ struct RegistryState {
     std::vector<cocos2d::CCSprite*> atlasSprites;
     std::vector<SpriteOwner> atlasOwners;
     std::vector<AtlasDrawRun> runs;
-    std::vector<u16> indices;
+    std::vector<u32> indices;
+    // Per-batch scheduling scratch. Keep capacity across rendered frames so a
+    // dense level does not malloc/free run and selection arrays at 60 Hz.
+    std::vector<CandidateRun> candidateRuns;
+    std::vector<bool> selectedSlots;
+    std::vector<u8> activeSlots;
     Renderer* activeRenderer = nullptr;
     cocos2d::CCSpriteBatchNode* activeBatch = nullptr;
 
@@ -213,6 +227,9 @@ static void releaseScratchIfUnused() {
     state.uniformLocations.clear();
     state.runs.clear();
     state.indices.clear();
+    state.candidateRuns.clear();
+    state.selectedSlots.clear();
+    state.activeSlots.clear();
     state.activeRenderer = nullptr;
     state.activeBatch = nullptr;
     state.atlasSprites.clear();
@@ -254,7 +271,7 @@ static bool uploadDirtyAtlas(cocos2d::CCTextureAtlas* atlas) {
     return true;
 }
 
-static bool updateIndexCache(BatchIndexCache& cache, const std::vector<u16>& indices) {
+static bool updateIndexCache(BatchIndexCache& cache, const std::vector<u32>& indices) {
     if (cache.buffer && cache.indices == indices)
         return true;
     if (!cache.buffer)
@@ -266,7 +283,7 @@ static bool updateIndexCache(BatchIndexCache& cache, const std::vector<u16>& ind
     glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &previousBuffer);
     glBindBuffer(GL_ARRAY_BUFFER, cache.buffer);
     drainGLErrors();
-    glBufferData(GL_ARRAY_BUFFER, indices.size() * sizeof(u16), indices.data(), GL_DYNAMIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, indices.size() * sizeof(u32), indices.data(), GL_DYNAMIC_DRAW);
     const bool uploadOK = consumeGLErrors();
     glBindBuffer(GL_ARRAY_BUFFER, static_cast<u32>(previousBuffer));
     if (!uploadOK) {
@@ -368,7 +385,7 @@ void AtlasInterleaveRegistry::registerImmediate(AssistShadowBatch* owner) {
 
     for (usize i = 0; i < owner->ownedSprites.size(); ++i) {
         auto sprite = owner->ownedSprites[i];
-        if (!sprite || i * 4 + 3 > 65535) {
+        if (!sprite || i > (static_cast<usize>(UINT_MAX) - 3) / 4) {
             invalidateRenderer(renderer, "invalid immediate GPU sprite vertex mapping");
             return;
         }
@@ -377,10 +394,11 @@ void AtlasInterleaveRegistry::registerImmediate(AssistShadowBatch* owner) {
             renderer,
             owner,
             nullptr,
-            static_cast<u16>(i * 4)
+            static_cast<u32>(i * 4)
         };
         auto [it, inserted] = state.spriteOwners.emplace(sprite, record);
-        if (!inserted && !it->second.sameOwner(record)) {
+        if (!inserted && (!it->second.sameOwner(record) ||
+            it->second.baseVertex != record.baseVertex)) {
             invalidateRenderer(renderer, "GPU sprite ownership collision");
             return;
         }
@@ -434,7 +452,7 @@ void AtlasInterleaveRegistry::registerDeferred(StandaloneAssistBatch* owner) {
 
     for (usize i = 0; i < owner->ownedSprites.size(); ++i) {
         auto sprite = owner->ownedSprites[i];
-        if (!sprite || i * 4 + 3 > 65535) {
+        if (!sprite || i > (static_cast<usize>(UINT_MAX) - 3) / 4) {
             invalidateRenderer(renderer, "invalid deferred GPU sprite vertex mapping");
             return;
         }
@@ -443,10 +461,11 @@ void AtlasInterleaveRegistry::registerDeferred(StandaloneAssistBatch* owner) {
             renderer,
             nullptr,
             owner,
-            static_cast<u16>(i * 4)
+            static_cast<u32>(i * 4)
         };
         auto [it, inserted] = state.spriteOwners.emplace(sprite, record);
-        if (!inserted && !it->second.sameOwner(record)) {
+        if (!inserted && (!it->second.sameOwner(record) ||
+            it->second.baseVertex != record.baseVertex)) {
             invalidateRenderer(renderer, "deferred GPU sprite ownership collision");
             return;
         }
@@ -516,13 +535,50 @@ bool AtlasInterleaveRegistry::drawBatch(
 ) {
     auto& state = registry();
     bool submittedAny = false;
+    bool stockTransformsSuppressed = false;
+
+    // Once hybrid selection is known we deliberately skip Cocos quad expansion
+    // for GPU-owned slots. If anything fails before the first custom submission,
+    // rebuild those exact stock quads before handing the batch back to Cocos.
+    // CCSpriteBatchNode::draw() itself only submits the atlas; it is too late to
+    // assume the normal child visit will repair transforms after this hook.
+    auto restoreSuppressedStockTransforms = [&]() {
+        if (!stockTransformsSuppressed)
+            return;
+
+        auto previousRenderer = state.activeRenderer;
+        auto previousBatch = state.activeBatch;
+        state.activeRenderer = nullptr;
+        state.activeBatch = nullptr;
+
+        // Rebuild through the stock root hierarchy rather than calling only
+        // selected atlas descendants. A decoration can place a negative-Z child
+        // before its parent in atlas order; direct descendant restoration can
+        // therefore observe a stale parent m_transformToBatch. A full root walk
+        // is rare (failure-only) and exactly preserves Cocos' transform order.
+        if (auto children = batch->getChildren()) {
+            for (auto child : CCArrayExt<cocos2d::CCNode*>(children)) {
+                if (auto sprite = typeinfo_cast<cocos2d::CCSprite*>(child)) {
+                    sprite->setDirty(true);
+                    sprite->updateTransform();
+                }
+            }
+        }
+
+        state.activeRenderer = previousRenderer;
+        state.activeBatch = previousBatch;
+        stockTransformsSuppressed = false;
+    };
+
     auto fail = [&](const char* reason, int slot = -1, u32 atlasSize = 0) -> bool {
+        if (!submittedAny)
+            restoreSuppressedStockTransforms();
         state.lastFailureReason = reason;
         state.lastFailureSlot = slot;
         state.lastFailureAtlasSize = atlasSize;
         // A complete stock redraw is only safe before this custom pass has
-        // emitted anything. This makes structural/readiness failures invisible
-        // instead of turning them into a one-frame atlas flash.
+        // emitted anything. The skipped GPU-owned stock transforms are restored
+        // above before that fallback is authorized.
         state.lastFailureCanUseStock = !submittedAny;
         return false;
     };
@@ -549,6 +605,7 @@ bool AtlasInterleaveRegistry::drawBatch(
 
     state.atlasSprites.assign(totalQuads, nullptr);
     state.atlasOwners.assign(totalQuads, {});
+    state.activeSlots.assign(totalQuads, 0);
 
     bool hasGPU = false;
 
@@ -563,7 +620,7 @@ bool AtlasInterleaveRegistry::drawBatch(
                 rendererIt->second == renderer &&
                 owner->stockBatch == batch &&
                 owner->stats.ready && owner->isVisible() &&
-                owner->resolvedState && owner->resolvedState->isGPUStateReady() &&
+                owner->resolvedState &&
                 owner->resolvedState->getObjectStateTexture() &&
                 owner->resolvedState->getSpriteStateTexture() &&
                 owner->shader && owner->vao && owner->indexBuffer && owner->vertexBuffer;
@@ -574,7 +631,7 @@ bool AtlasInterleaveRegistry::drawBatch(
         return owner && rendererIt != state.deferredRenderers.end() &&
             rendererIt->second == renderer && !owner->rootAddressable &&
             owner->stats.ready && owner->isVisible() &&
-            owner->resolvedState && owner->resolvedState->isGPUStateReady() &&
+            owner->resolvedState &&
             owner->resolvedState->getObjectStateTexture() &&
             owner->resolvedState->getSpriteStateTexture() &&
             owner->shader && owner->vao && owner->indexBuffer && owner->vertexBuffer;
@@ -595,17 +652,21 @@ bool AtlasInterleaveRegistry::drawBatch(
         auto recordIt = state.spriteOwners.find(sprite);
         if (recordIt == state.spriteOwners.end() || recordIt->second.renderer != renderer)
             continue;
-        // Hybrid ownership is per frame, not a permanent all-or-nothing claim.
-        // If a registered sprite is temporarily not ready, has changed texture,
-        // or cannot refresh its live geometry, leave just that sprite on stock
-        // Cocos for this frame. Its neighbors can still be GPU drawn.
-        if (!renderer->isGPUOwnedSprite(sprite) || !ownerReady(recordIt->second))
+        // Build the live atlas from persistent-safe ownership first. Stock-active
+        // state is tracked separately below: an inactive persistent sprite may
+        // bridge two nearby active sprites, but it never makes a run useful by
+        // itself and its object-state visibility keeps it pixel-silent.
+        if (!renderer->isGPUPersistentlyOwnedSprite(sprite) || !ownerReady(recordIt->second))
             continue;
 
-        auto spriteTexture = sprite->getTexture();
-        if (!spriteTexture || spriteTexture->getName() != texture->getName())
-            continue;
+        const bool activeNow = renderer->isGPUOwnedSprite(sprite);
 
+        // Mirror CCSpriteBatchNode semantics exactly. Once a sprite is resident
+        // in this stock atlas, the batch's texture and blend state are
+        // authoritative for the draw. Per-sprite getTexture()/getBlendFunc()
+        // metadata does not cause Cocos to split the atlas into separate GL
+        // submissions, so using those values as GPU eligibility gates created
+        // artificial one-sprite islands on effect-heavy levels like Orbit.
         const auto& record = recordIt->second;
         auto& geometry = record.immediate ? record.immediate->liveGeometry : record.deferred->liveGeometry;
         // Eligibility is cheap. Do not rebuild live geometry yet: the hybrid
@@ -615,7 +676,8 @@ bool AtlasInterleaveRegistry::drawBatch(
             continue;
 
         state.atlasOwners[atlasIndex] = record;
-        hasGPU = true;
+        state.activeSlots[atlasIndex] = activeNow ? 1 : 0;
+        hasGPU |= activeNow;
     }
 
     const usize frameSpritesBeforeBatch = state.gpuSpritesUsedThisFrame;
@@ -627,25 +689,63 @@ bool AtlasInterleaveRegistry::drawBatch(
     // than Cocos' CPU transform work. Rank contiguous owner runs by size and only
     // keep the profitable ones, with hard per-batch and per-frame call ceilings.
     if (hasGPU) {
-        struct CandidateRun {
-            usize start = 0;
-            usize count = 0;
-        };
+        auto& candidateRuns = state.candidateRuns;
+        candidateRuns.clear();
 
-        std::vector<CandidateRun> candidateRuns;
-        for (usize start = 0; start < totalQuads;) {
-            if (state.atlasOwners[start].empty()) {
-                ++start;
+        // First find each contiguous persistent-owner segment. Inside it, merge
+        // active islands separated by at most HYBRID_MAX_INACTIVE_BRIDGE hidden
+        // owned slots. Leading/trailing hidden slots are never submitted.
+        for (usize segmentStart = 0; segmentStart < totalQuads;) {
+            if (state.atlasOwners[segmentStart].empty()) {
+                ++segmentStart;
                 continue;
             }
 
-            const auto owner = state.atlasOwners[start];
-            usize end = start + 1;
-            while (end < totalQuads && state.atlasOwners[end].sameOwner(owner))
-                ++end;
+            const auto owner = state.atlasOwners[segmentStart];
+            usize segmentEnd = segmentStart + 1;
+            while (segmentEnd < totalQuads &&
+                state.atlasOwners[segmentEnd].sameOwner(owner)) {
+                ++segmentEnd;
+            }
 
-            candidateRuns.push_back({ start, end - start });
-            start = end;
+            usize clusterStart = totalQuads;
+            usize lastActive = totalQuads;
+            usize activeCount = 0;
+
+            for (usize slot = segmentStart; slot < segmentEnd; ++slot) {
+                if (!state.activeSlots[slot])
+                    continue;
+
+                if (clusterStart == totalQuads) {
+                    clusterStart = lastActive = slot;
+                    activeCount = 1;
+                    continue;
+                }
+
+                const usize hiddenGap = slot - lastActive - 1;
+                if (hiddenGap > HYBRID_MAX_INACTIVE_BRIDGE) {
+                    candidateRuns.push_back({
+                        clusterStart,
+                        lastActive - clusterStart + 1,
+                        activeCount
+                    });
+                    clusterStart = slot;
+                    activeCount = 1;
+                } else {
+                    ++activeCount;
+                }
+                lastActive = slot;
+            }
+
+            if (clusterStart != totalQuads) {
+                candidateRuns.push_back({
+                    clusterStart,
+                    lastActive - clusterStart + 1,
+                    activeCount
+                });
+            }
+
+            segmentStart = segmentEnd;
         }
 
         // Keep atlas order stable. Re-sorting by run size made the chosen GPU
@@ -660,34 +760,34 @@ bool AtlasInterleaveRegistry::drawBatch(
                 ? HYBRID_MAX_GPU_RUNS_PER_FRAME - state.gpuDrawRunsUsedThisFrame
                 : 0;
 
-        usize remainingSprites = spriteBudgetLeft;
+        // Balanced hybrid target: hand roughly half of this live stock atlas
+        // to the GPU and leave the other half on Cocos. This is a target, not a
+        // correctness rule: unsupported/fragmented sprites remain CPU-owned.
+        const usize balancedBatchTarget = (totalQuads + 1) / 2;
+        usize remainingSprites = std::min(spriteBudgetLeft, balancedBatchTarget);
         usize remainingRuns = std::min(HYBRID_MAX_GPU_RUNS_PER_BATCH, frameRunBudgetLeft);
-        usize smallRunGraceLeft =
-            state.gpuDrawRunsUsedThisFrame < HYBRID_SMALL_RUN_GRACE
-                ? HYBRID_SMALL_RUN_GRACE - state.gpuDrawRunsUsedThisFrame
-                : 0;
         usize keptSprites = 0;
         usize keptRuns = 0;
-        std::vector<bool> selected(totalQuads, false);
+        auto& selected = state.selectedSlots;
+        selected.assign(totalQuads, false);
 
-        for (const auto& run : candidateRuns) {
-            if (!remainingRuns || !remainingSprites)
-                break;
+        auto selectRun = [&](const CandidateRun& run) {
+            if (!remainingRuns || !remainingSprites || !run.activeCount)
+                return;
 
-            const bool smallRun = run.count < HYBRID_MIN_GPU_RUN;
-            // Do not abort the atlas just because an early tiny island exhausted
-            // the small-run grace. Larger profitable runs may still exist later
-            // in atlas order, especially with distributed long-level ownership.
-            if (smallRun && !smallRunGraceLeft)
-                continue;
-
-            const usize keep = std::min(run.count, remainingSprites);
-            if (!keep)
-                continue;
-            if (smallRun)
-                --smallRunGraceLeft;
-            else if (keep < HYBRID_MIN_GPU_RUN)
-                continue;
+            const usize keepLimit = std::min(run.count, remainingSprites);
+            usize keep = 0;
+            usize keptActive = 0;
+            // Trim a budget-limited run at its last active sprite so the GPU
+            // never spends budget on a trailing invisible bridge.
+            for (usize offset = 0; offset < keepLimit; ++offset) {
+                if (state.activeSlots[run.start + offset]) {
+                    keep = offset + 1;
+                    ++keptActive;
+                }
+            }
+            if (!keep || !keptActive)
+                return;
 
             for (usize slot = run.start; slot < run.start + keep; ++slot)
                 selected[slot] = true;
@@ -696,6 +796,34 @@ bool AtlasInterleaveRegistry::drawBatch(
             remainingSprites -= keep;
             --remainingRuns;
             ++keptRuns;
+        };
+
+        // Pick the most useful live runs first. The old scheduler effectively
+        // required 48 active sprites per profitable run and allowed only a tiny
+        // global grace window for fragmented runs. That works on Stereo Madness
+        // but can make dense custom levels report GPU IDLE even with 100+ active
+        // GPU-owned sprites. Rank by useful active work instead.
+        std::vector<usize> runOrder(candidateRuns.size());
+        for (usize i = 0; i < runOrder.size(); ++i)
+            runOrder[i] = i;
+        std::stable_sort(runOrder.begin(), runOrder.end(),
+            [&](usize a, usize b) {
+                const auto& ra = candidateRuns[a];
+                const auto& rb = candidateRuns[b];
+                if (ra.activeCount != rb.activeCount)
+                    return ra.activeCount > rb.activeCount;
+                // Prefer denser runs when useful work ties.
+                const double da = ra.count ? static_cast<double>(ra.activeCount) / ra.count : 0.0;
+                const double db = rb.count ? static_cast<double>(rb.activeCount) / rb.count : 0.0;
+                if (da != db)
+                    return da > db;
+                return ra.start < rb.start;
+            });
+
+        for (usize index : runOrder) {
+            if (!remainingRuns || !remainingSprites)
+                break;
+            selectRun(candidateRuns[index]);
         }
 
         for (usize slot = 0; slot < totalQuads; ++slot) {
@@ -715,6 +843,8 @@ bool AtlasInterleaveRegistry::drawBatch(
         for (usize slot = 0; slot < totalQuads; ++slot) {
             const auto record = state.atlasOwners[slot];
             if (record.empty())
+                continue;
+            if (!state.activeSlots[slot])
                 continue;
             auto& geometry = record.immediate
                 ? record.immediate->liveGeometry
@@ -749,11 +879,6 @@ bool AtlasInterleaveRegistry::drawBatch(
     }
     state.ownedBatches[batch] = renderer;
 
-    // Resolved-state capture/upload is also delayed until we have proved this
-    // frame will submit object GPU geometry. Idle/CPU-only frames no longer pay
-    // the state-texture update cost.
-    renderer->prepareGPUFrame();
-
     for (usize i = 0; i < totalQuads; ++i) {
         if (!state.atlasSprites[i])
             return fail("missing-atlas-slot", static_cast<int>(i), static_cast<u32>(totalQuads));
@@ -787,6 +912,14 @@ bool AtlasInterleaveRegistry::drawBatch(
     }
     state.activeBatch = nullptr;
     state.activeRenderer = nullptr;
+    // No stock transforms were suppressed in correctness-first no-skip mode.
+    // Keep failure recovery from redundantly rebuilding the hierarchy.
+    stockTransformsSuppressed = false;
+
+    // Cocos has now produced current m_transformToBatch / hidden state for every
+    // GPU-selected sprite. Capture those exact values into the state textures
+    // only now; the shader consumes stock authority rather than a parallel guess.
+    renderer->prepareGPUFrame();
 
     if (atlas->getTotalQuads() != totalQuads || descendants->count() != totalQuads)
         return fail("atlas-mutated-after-transform", -1, static_cast<u32>(totalQuads));
@@ -867,6 +1000,8 @@ bool AtlasInterleaveRegistry::drawBatch(
         if (!owner.resolvedState->getObjectStateTexture() ||
             !owner.resolvedState->getSpriteStateTexture())
             return fail("preflight-state-texture", static_cast<int>(run.firstSlot), static_cast<u32>(totalQuads));
+        if (!owner.resolvedState->isGPUStateReady())
+            return fail("preflight-state-stale", static_cast<int>(run.firstSlot), static_cast<u32>(totalQuads));
     }
 
     // glGet* is a synchronization point on mobile drivers. The old path queried
@@ -1003,8 +1138,8 @@ bool AtlasInterleaveRegistry::drawBatch(
 
         gpuStateActive = true;
         const usize drawIndices = run.slotCount * 6;
-        glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(drawIndices), GL_UNSIGNED_SHORT,
-            reinterpret_cast<void*>(run.firstIndex * sizeof(u16)));
+        glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(drawIndices), GL_UNSIGNED_INT,
+            reinterpret_cast<void*>(run.firstIndex * sizeof(u32)));
         submittedAny = true;
         if (owner.drawCalls)
             ++(*owner.drawCalls);
@@ -1016,6 +1151,16 @@ bool AtlasInterleaveRegistry::drawBatch(
         restoreStockState();
     if (!consumeGLErrors())
         return fail("gl-submit-error", -1, static_cast<u32>(totalQuads));
+
+    // Work accounting intentionally excludes hidden bridge slots. Count only
+    // active sprites that survived final scheduling/geometry validation and were
+    // part of this completed custom batch submission.
+    usize activeGPUWork = 0;
+    for (usize slot = 0; slot < totalQuads; ++slot) {
+        if (!state.atlasOwners[slot].empty() && state.activeSlots[slot])
+            ++activeGPUWork;
+    }
+    renderer->recordGPUWork(activeGPUWork);
     return true;
 }
 

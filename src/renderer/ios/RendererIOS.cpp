@@ -15,6 +15,7 @@
 
 #include <cstring>
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <memory>
 #include <unordered_map>
@@ -24,9 +25,13 @@
 using namespace geode::prelude;
 
 namespace {
-constexpr usize MAX_STANDALONE_BUFFER_SPRITES = 16383;
-constexpr usize MAX_PERSISTENT_GPU_SPRITES = 12288;
-constexpr usize MAX_IMMEDIATE_GPU_SPRITES = 9216;
+// Match the resolved-state sprite ceiling. The old 9,216/12,288 ownership
+// caps discarded thousands of already-proven-safe sprites at setup time. Since
+// live atlas order changes as GD activates/deactivates objects, those sampled
+// owners became scattered later in the level and produced tiny GPU islands.
+constexpr usize MAX_STANDALONE_BUFFER_SPRITES = 65536;
+constexpr usize MAX_PERSISTENT_GPU_SPRITES = 65536;
+constexpr usize MAX_IMMEDIATE_GPU_SPRITES = 65536;
 
 struct StandaloneObjectDesc {
     GameObject* root = nullptr;
@@ -89,6 +94,17 @@ struct IOSRendererState {
 
     usize batchTransformSkipsCurrentFrame = 0;
     usize batchTransformSkipsLastFrame = 0;
+
+    usize cpuWorkCurrentFrame = 0;
+    usize cpuWorkLastFrame = 0;
+    usize gpuWorkCurrentFrame = 0;
+    usize gpuWorkLastFrame = 0;
+
+    std::array<usize, 60> gpuSpriteHistory{};
+    usize gpuSpriteHistoryIndex = 0;
+    usize gpuSpriteHistoryCount = 0;
+    usize gpuSpriteHistorySum = 0;
+
     std::string lastDebugText;
     bool suspended = false;
     bool enabledBeforeSuspend = false;
@@ -221,6 +237,7 @@ bool Renderer::init(PlayLayer* playLayer) {
             std::unordered_map<GameObject*, std::vector<ResolvedStateLayer::ShadowCandidate>> candidatesByObject;
             std::unordered_map<cocos2d::CCSprite*, GameObject*> firstSpriteOwner;
             std::unordered_set<GameObject*> sharedVisualObjects;
+            std::unordered_set<cocos2d::CCSprite*> sharedVisualSprites;
             candidateBatches.reserve(64);
             candidateBatchCounts.reserve(64);
             candidatesByObject.reserve(std::min<usize>(
@@ -228,25 +245,46 @@ bool Renderer::init(PlayLayer* playLayer) {
                 MAX_PERSISTENT_GPU_SPRITES
             ));
             firstSpriteOwner.reserve(candidates.size());
+            sharedVisualSprites.reserve(32);
 
+            std::vector<ResolvedStateLayer::ShadowCandidate> registryCandidates;
+            std::unordered_set<cocos2d::CCSprite*> registryCandidateSprites;
+            std::unordered_set<cocos2d::CCSprite*> deferredRegistrySprites;
+            registryCandidates.reserve(candidates.size());
+            registryCandidateSprites.reserve(candidates.size());
+            deferredRegistrySprites.reserve(candidates.size());
+
+            // Detect cross-object visual aliases before assigning any GPU owner.
+            // One sprite cannot safely carry two object-state indices or two
+            // persistent vertex identities. Shared visuals stay on stock Cocos.
             for (const auto& candidate : candidates) {
                 auto object = candidate.object;
                 auto sprite = candidate.sprite;
                 if (!object || !sprite)
                     continue;
 
-                candidatesByObject[object].push_back(candidate);
-
                 const auto [ownerIt, insertedOwner] = firstSpriteOwner.emplace(sprite, object);
                 if (!insertedOwner && ownerIt->second != object) {
+                    sharedVisualSprites.insert(sprite);
                     sharedVisualObjects.insert(object);
                     sharedVisualObjects.insert(ownerIt->second);
                 }
+            }
+
+            for (const auto& candidate : candidates) {
+                auto object = candidate.object;
+                auto sprite = candidate.sprite;
+                if (!object || !sprite || sharedVisualSprites.contains(sprite))
+                    continue;
+
+                candidatesByObject[object].push_back(candidate);
 
                 if (auto batch = sprite->getBatchNode()) {
                     ++state->candidatesWithBatch;
                     candidateBatches.insert(batch);
                     ++candidateBatchCounts[batch];
+                    if (registryCandidateSprites.insert(sprite).second)
+                        registryCandidates.push_back(candidate);
                 } else {
                     ++state->candidatesWithoutBatch;
                 }
@@ -255,11 +293,11 @@ bool Renderer::init(PlayLayer* playLayer) {
             state->candidateBatchNodes = candidateBatches.size();
 
             std::vector<StandaloneObjectDesc> standaloneObjects;
-            std::unordered_map<cocos2d::CCSpriteBatchNode*, std::vector<StandaloneObjectDesc>> deferredAtlasObjectsByBatch;
-            std::unordered_map<cocos2d::CCSpriteBatchNode*, cocos2d::CCNode*> gpuInsertionTails;
+            // One registry VBO owns every safe sprite that either already lives
+            // in a stock atlas or has a proven future stock-atlas home.
+            std::unordered_set<cocos2d::CCSpriteBatchNode*> deferredAtlasTargetBatches;
             standaloneObjects.reserve(candidatesByObject.size());
-            deferredAtlasObjectsByBatch.reserve(32);
-            gpuInsertionTails.reserve(64);
+            deferredAtlasTargetBatches.reserve(32);
 
             for (auto& [object, objectCandidates] : candidatesByObject) {
                 if (!object || objectCandidates.empty())
@@ -312,13 +350,21 @@ bool Renderer::init(PlayLayer* playLayer) {
 
                 const bool forcedDecoration =
                     object->m_objectType == GameObjectType::Decoration;
+                const bool complexResolvedSolid =
+                    object->m_objectType == GameObjectType::Solid &&
+                    (objectCandidates.size() > 1 ||
+                     object->m_glowSprite || object->m_colorSprite ||
+                     (object->getChildren() && object->getChildren()->count() != 0));
+                const bool resolvedVisualTree = forcedDecoration || complexResolvedSolid;
 
-                // Complex decorations may have some sprites already atlas-owned
-                // and others still standalone. Keep the atlas sprites in their
-                // GPU batch and build a second GPU buffer for the standalone
-                // subset instead of demoting the whole decoration.
+                // Resolved visual trees may have some sprites already atlas-owned
+                // and others still standalone. Keep atlas sprites in their exact
+                // stock batch and build deferred geometry only for the standalone
+                // subset. The old code granted this to Decoration only, which
+                // discarded thousands of complex Solid candidates one layer
+                // after classifyObject() had already proven them safe.
                 std::vector<ResolvedStateLayer::ShadowCandidate> standaloneCandidates;
-                if (forcedDecoration && anyAtlas) {
+                if (resolvedVisualTree && anyAtlas) {
                     standaloneCandidates.reserve(objectCandidates.size());
                     for (const auto& candidate : objectCandidates) {
                         if (candidate.sprite && !candidate.sprite->getBatchNode())
@@ -330,7 +376,7 @@ bool Renderer::init(PlayLayer* playLayer) {
                     standaloneCandidates = objectCandidates;
                 }
 
-                if (!forcedDecoration && anyAtlas) {
+                if (!resolvedVisualTree && anyAtlas) {
                     ++state->standaloneMixedRejected;
                     continue;
                 }
@@ -345,7 +391,7 @@ bool Renderer::init(PlayLayer* playLayer) {
                     continue;
                 }
 
-                if (!forcedDecoration && externalVisual) {
+                if (!resolvedVisualTree && externalVisual) {
                     ++state->standaloneExternalRejected;
                     if (externalGlow)
                         ++state->standaloneExternalGlowObjects;
@@ -361,7 +407,7 @@ bool Renderer::init(PlayLayer* playLayer) {
                     continue;
                 }
 
-                if (!forcedDecoration && object->getBatchNode()) {
+                if (!resolvedVisualTree && object->getBatchNode()) {
                     ++state->standaloneRootBatchRejected;
                     continue;
                 }
@@ -370,20 +416,16 @@ bool Renderer::init(PlayLayer* playLayer) {
                 if (!parent) {
                     ++state->standaloneParentlessAtInit;
 
-                    // Source research + device counters showed that GD removes
-                    // these roots while inactive and later addMainSpriteToParent()
-                    // inserts them into parentForZLayer(). Only promote the simple
-                    // one-root-sprite shape here; more complex visual trees remain
-                    // stock until we have an equally exact render-home proof.
+                    // GD removes these roots while inactive and later
+                    // addMainSpriteToParent() inserts them into parentForZLayer().
+                    // Simple roots and already-resolved complex visual trees both
+                    // have exact deferred geometry. Interactive/animated objects
+                    // never reach this candidate set.
                     const bool simpleDeferredRoot =
                         standaloneCandidates.size() == 1 &&
                         standaloneCandidates[0].sprite == static_cast<cocos2d::CCSprite*>(object);
 
-                    // Forced decorations do not require the historical simple-root
-                    // proof. Parentless complex decoration buffers register as
-                    // deferred GPU owners and bind when GD later inserts sprites
-                    // into a live stock atlas.
-                    if ((!forcedDecoration && !simpleDeferredRoot) || !layer->m_batchNodes) {
+                    if ((!resolvedVisualTree && !simpleDeferredRoot) || !layer->m_batchNodes) {
                         ++state->deferredAtlasUnmapped;
                         continue;
                     }
@@ -418,7 +460,14 @@ bool Renderer::init(PlayLayer* playLayer) {
 
                     ++state->standaloneObjectEligible;
                     ++state->deferredAtlasObjects;
-                    deferredAtlasObjectsByBatch[targetBatch].push_back({ object, standaloneCandidates });
+                    deferredAtlasTargetBatches.insert(targetBatch);
+                    for (const auto& candidate : standaloneCandidates) {
+                        if (!candidate.sprite)
+                            continue;
+                        deferredRegistrySprites.insert(candidate.sprite);
+                        if (registryCandidateSprites.insert(candidate.sprite).second)
+                            registryCandidates.push_back(candidate);
+                    }
                     continue;
                 }
 
@@ -431,141 +480,40 @@ bool Renderer::init(PlayLayer* playLayer) {
                 continue;
             }
 
-            std::vector<cocos2d::CCSpriteBatchNode*> rankedCandidateBatches(
-                candidateBatches.begin(), candidateBatches.end()
-            );
-            std::sort(rankedCandidateBatches.begin(), rankedCandidateBatches.end(),
-                [&](auto* a, auto* b) {
-                    const usize ac = a ? candidateBatchCounts[a] : 0;
-                    const usize bc = b ? candidateBatchCounts[b] : 0;
-                    if (ac != bc)
-                        return ac > bc;
-                    return a < b;
-                });
-
-            for (usize batchIndex = 0; batchIndex < rankedCandidateBatches.size(); ++batchIndex) {
-                auto batch = rankedCandidateBatches[batchIndex];
-                if (!batch)
-                    continue;
-
-                const usize estimatedSprites = candidateBatchCounts[batch];
-                const usize ownedNow = state->ownedSprites.size();
-                const usize immediateRemaining =
-                    ownedNow < MAX_IMMEDIATE_GPU_SPRITES
-                        ? MAX_IMMEDIATE_GPU_SPRITES - ownedNow
-                        : 0;
-                if (!estimatedSprites || !immediateRemaining) {
-                    state->persistentBudgetRejectedSprites += estimatedSprites;
-                    continue;
+            // All atlas-capable safe geometry shares one persistent owner.
+            // The VBO may contain sprites from many stock batches and textures;
+            // AtlasInterleave selects only the live batch's exact sprites and
+            // binds that stock batch's texture/blend state for each submission.
+            state->deferredAtlasBatchNodes = deferredAtlasTargetBatches.size();
+            if (!registryCandidates.empty()) {
+                if (registryCandidates.size() > MAX_PERSISTENT_GPU_SPRITES) {
+                    state->persistentBudgetRejectedSprites +=
+                        registryCandidates.size() - MAX_PERSISTENT_GPU_SPRITES;
+                    registryCandidates.resize(MAX_PERSISTENT_GPU_SPRITES);
                 }
 
-                // Do not let the biggest Z-layer monopolize persistent GPU
-                // geometry. Give each remaining stock atlas a fair share so GPU
-                // ownership survives across different visual layers and later
-                // sections of the level.
-                const usize batchesLeft = rankedCandidateBatches.size() - batchIndex;
-                const usize fairShare = std::max<usize>(
-                    64,
-                    (immediateRemaining + batchesLeft - 1) / batchesLeft
-                );
-                const usize ownershipLimit = std::min<usize>({
-                    estimatedSprites,
-                    immediateRemaining,
-                    fairShare
-                });
-
-                auto parent = batch->getParent();
-                if (!parent) {
-                    ++state->batchesWithoutParent;
-                    continue;
-                }
-
-                auto gpuBatch = AssistShadowBatch::create(
+                auto gpuRegistry = StandaloneAssistBatch::create(
                     state->resolvedState.get(),
                     state->assistShader,
-                    batch,
-                    ownershipLimit
+                    registryCandidates,
+                    false
                 );
-                if (!gpuBatch || !gpuBatch->getStats().ready || gpuBatch->getStats().batchedSprites == 0)
-                    continue;
+                if (gpuRegistry && gpuRegistry->getStats().ready &&
+                    gpuRegistry->getOwnedSprites().size() == registryCandidates.size()) {
+                    state->standaloneBatches.push_back(gpuRegistry);
+                    state->deferredAtlasBufferCount = 1;
 
-                // Same Z is not enough. Preserve the stock sibling ordering by
-                // placing the GPU geometry directly after the exact atlas node it
-                // shadows. Later deferred chunks for this batch continue the chain.
-                parent->insertAfter(gpuBatch, batch);
-                gpuInsertionTails[batch] = gpuBatch;
-                state->gpuBatches.push_back(gpuBatch);
-                if (estimatedSprites > gpuBatch->getOwnedSprites().size())
-                    state->persistentBudgetRejectedSprites +=
-                        estimatedSprites - gpuBatch->getOwnedSprites().size();
-                for (auto sprite : gpuBatch->getOwnedSprites()) {
-                    if (!sprite)
-                        continue;
-                    state->batchOwnedSprites.insert(sprite);
-                    state->ownedSprites.insert(sprite);
-                }
-            }
-
-            // Parentless-at-init roots are not really standalone. Build their
-            // geometry once, grouped by the exact stock batch GD will later use,
-            // and attach one shared buffer beside that batch. The shader consumes
-            // stock visibility, so inactive/offscreen records cost no pixels.
-            state->deferredAtlasBatchNodes = deferredAtlasObjectsByBatch.size();
-            for (auto& [targetBatch, objects] : deferredAtlasObjectsByBatch) {
-                if (!targetBatch)
-                    continue;
-
-                auto parent = targetBatch->getParent();
-                if (!parent) {
-                    state->deferredAtlasUnmapped += objects.size();
-                    continue;
-                }
-
-                cocos2d::CCNode* insertionAnchor = targetBatch;
-                if (auto tailIt = gpuInsertionTails.find(targetBatch); tailIt != gpuInsertionTails.end() && tailIt->second)
-                    insertionAnchor = tailIt->second;
-
-                const auto chunks = buildStandaloneChunks(objects);
-                for (const auto& chunk : chunks) {
-                    if (chunk.candidates.empty())
-                        continue;
-
-                    const usize ownedNow = state->ownedSprites.size();
-                    const usize remaining =
-                        ownedNow < MAX_PERSISTENT_GPU_SPRITES
-                            ? MAX_PERSISTENT_GPU_SPRITES - ownedNow
-                            : 0;
-                    if (chunk.candidates.size() > remaining) {
-                        state->persistentBudgetRejectedSprites += chunk.candidates.size();
-                        continue;
-                    }
-
-                    auto gpuBuffer = StandaloneAssistBatch::create(
-                        state->resolvedState.get(),
-                        state->assistShader,
-                        chunk.candidates,
-                        false // Explicit deferred-atlas ownership, even if GD reparents a root.
-                    );
-                    if (!gpuBuffer || !gpuBuffer->getStats().ready)
-                        continue;
-                    if (gpuBuffer->getOwnedSprites().size() != chunk.candidates.size())
-                        continue;
-
-                    parent->insertAfter(gpuBuffer, insertionAnchor);
-                    insertionAnchor = gpuBuffer;
-                    state->standaloneBatches.push_back(gpuBuffer);
-                    ++state->deferredAtlasBufferCount;
-
-                    for (auto sprite : gpuBuffer->getOwnedSprites()) {
+                    for (auto sprite : gpuRegistry->getOwnedSprites()) {
                         if (!sprite)
                             continue;
-                        state->deferredAtlasOwnedSprites.insert(sprite);
                         state->batchOwnedSprites.insert(sprite);
                         state->ownedSprites.insert(sprite);
+                        if (deferredRegistrySprites.contains(sprite))
+                            state->deferredAtlasOwnedSprites.insert(sprite);
                     }
+                } else {
+                    state->persistentBudgetRejectedSprites += registryCandidates.size();
                 }
-
-                gpuInsertionTails[targetBatch] = insertionAnchor;
             }
 
             // True standalone roots deliberately remain stock. The old
@@ -574,6 +522,11 @@ bool Renderer::init(PlayLayer* playLayer) {
             // optimization on dense iOS scenes.
             state->standaloneBufferCount = state->standaloneBatches.size();
             state->resolvedState->setGPUOwnedSprites(state->ownedSprites);
+            // Compile the event-driven hot set now, not only after a scene
+            // suspend/resume. Otherwise every persistently owned sprite looks
+            // active during the first playthrough and dead level sections can
+            // consume the hybrid GPU run budget.
+            state->resolvedState->reseedActiveFromStock();
 
             log::info(
                 "Bismuth iOS ownership: {} candidates ({} atlas-now / {} parentless-or-standalone); standalone {} candidates / {} ownership-eligible; rejects mixed {} / duplicate {} / shared {} / external {} (glow {} / color {} / other {}) / invalid {} / root-batched {}; parentless-at-init {} -> deferred atlas {} object(s), {} target batch(es), {} buffer(s), {} unmapped; {} immediate atlas node(s), {} true standalone root(s), {} total GPU sprite(s); CPU standalone {} / persistent-budget rejects {} sprite(s)",
@@ -596,7 +549,7 @@ bool Renderer::init(PlayLayer* playLayer) {
                 state->deferredAtlasBatchNodes,
                 state->deferredAtlasBufferCount,
                 state->deferredAtlasUnmapped,
-                state->gpuBatches.size(),
+                state->deferredAtlasBufferCount,
                 state->standaloneOwnedRoots.size(),
                 state->ownedSprites.size(),
                 state->standaloneCPUObjects,
@@ -735,13 +688,45 @@ void Renderer::updateDebugText() {
                 indices += batch->getStats().indicesLastFrame;
             }
         }
+        const usize currentSprites = indices / 6;
+        if (state->gpuSpriteHistoryCount < state->gpuSpriteHistory.size()) {
+            ++state->gpuSpriteHistoryCount;
+        } else {
+            state->gpuSpriteHistorySum -= state->gpuSpriteHistory[state->gpuSpriteHistoryIndex];
+        }
+        state->gpuSpriteHistory[state->gpuSpriteHistoryIndex] = currentSprites;
+        state->gpuSpriteHistorySum += currentSprites;
+        state->gpuSpriteHistoryIndex =
+            (state->gpuSpriteHistoryIndex + 1) % state->gpuSpriteHistory.size();
+        const usize averageSprites = state->gpuSpriteHistoryCount
+            ? state->gpuSpriteHistorySum / state->gpuSpriteHistoryCount
+            : 0;
+
         const bool ready = state->assistShader && state->resolvedState &&
             state->resolvedState->isGPUStateReady();
         const char* status = !enabled ? "OFF" : !ready ? "UNAVAILABLE" : calls ? "ACTIVE" : "IDLE";
+        const auto& coverage = state->resolvedState
+            ? state->resolvedState->getStats()
+            : ResolvedStateLayer::Stats{};
         text = fmt::format(
-            "Bismuth GPU [{}]\nGPU Draw: {} sprites/frame\nCalls: {} | Transforms skipped: {}",
-            status, indices / 6, calls,
-            state->batchTransformSkipsLastFrame + state->standaloneRootVisitsLastFrame
+            "Bismuth GPU [{}]\n"
+            "GPU Draw: {} sprites/frame | avg {}\n"
+            "Calls: {} | Transforms skipped: {}\n"
+            "Work: CPU {} | GPU {}\n"
+            "Active owned: {} | persistent: {} | candidates: {}\n"
+            "Atlas: {} | no-batch: {} | deferred: {} | CPU roots: {} | mixed rej: {}",
+            status, currentSprites, averageSprites, calls,
+            state->batchTransformSkipsLastFrame + state->standaloneRootVisitsLastFrame,
+            state->cpuWorkLastFrame,
+            state->gpuWorkLastFrame,
+            coverage.activeGPUSprites,
+            state->ownedSprites.size(),
+            state->gpuCandidateSprites,
+            state->candidatesWithBatch,
+            state->candidatesWithoutBatch,
+            state->deferredAtlasObjects,
+            state->standaloneCPUObjects,
+            state->standaloneMixedRejected
         );
     }
     if (state->lastDebugText == text)
@@ -764,9 +749,15 @@ bool Renderer::drawGPUBackground(cocos2d::CCSprite* sprite) {
         !isDescendantOf(sprite, layer->m_background))
         return false;
     auto state = iosState(this);
-    const bool submitted = state && state->background.draw(sprite);
+    // Only claim the stock draw after every pre-submit requirement is proven.
+    // If background GPU initialization/texture eligibility is unavailable, let
+    // CCSprite::draw() run normally. Once the custom draw begins, ownership is
+    // strict because a driver error cannot tell us whether pixels were emitted.
+    if (!state || !state->background.canDraw(sprite))
+        return false;
+
+    const bool submitted = state->background.draw(sprite);
     GPUTruth::recordBackground(this, submitted);
-    // Ownership, not success: a failed background draw never calls stock draw.
     return true;
 }
 
@@ -777,6 +768,8 @@ void Renderer::beginGPUFrame() {
     state->gpuFramePrepared = false;
     state->standaloneRootVisitsCurrentFrame = 0;
     state->batchTransformSkipsCurrentFrame = 0;
+    state->cpuWorkCurrentFrame = 0;
+    state->gpuWorkCurrentFrame = 0;
     AtlasInterleaveRegistry::beginFrame();
     for (auto& buffer : state->standaloneBatches) {
         if (buffer)
@@ -801,11 +794,17 @@ void Renderer::finishGPUFrame() {
     auto state = iosState(this);
     if (!state)
         return;
-    // Do not force a full resolved-state update on a frame where no object GPU
-    // draw happened. Pending deactivations can safely remain queued until the
-    // next real GPU submission; reactivation cancels that pending removal.
+    // A CPU-only frame never needs a final hidden-state upload, but it still
+    // must retire deactivated records from the event-driven hot set. Leaving
+    // them queued until some future GPU submission can make dead level sections
+    // keep participating in hybrid scheduling for arbitrarily long stretches.
+    if (!state->gpuFramePrepared && state->resolvedState)
+        state->resolvedState->finishEventFrame();
+
     state->standaloneRootVisitsLastFrame = state->standaloneRootVisitsCurrentFrame;
     state->batchTransformSkipsLastFrame = state->batchTransformSkipsCurrentFrame;
+    state->cpuWorkLastFrame = state->cpuWorkCurrentFrame;
+    state->gpuWorkLastFrame = state->gpuWorkCurrentFrame;
     const bool show = Mod::get()->getSettingValue<bool>("ios_gpu_debug");
     if (show != state->debugWasEnabled || (show && state->debugFrames++ % 12 == 0))
         updateDebugText();
@@ -892,7 +891,7 @@ bool Renderer::useOptimizations() {
     return false;
 }
 
-bool Renderer::isGPUOwnedSprite(cocos2d::CCSprite* sprite) const {
+bool Renderer::isGPUPersistentlyOwnedSprite(cocos2d::CCSprite* sprite) const {
     if (!enabled || !sprite)
         return false;
 
@@ -901,12 +900,41 @@ bool Renderer::isGPUOwnedSprite(cocos2d::CCSprite* sprite) const {
         !state->resolvedState || !state->resolvedState->canDrawSprite(sprite))
         return false;
 
-    // A deferred-atlas sprite is only allowed to bypass stock matrix expansion
-    // after GD has actually inserted it into a stock batch.
+    // Deferred geometry becomes drawable only after GD inserts the sprite into
+    // a real stock atlas. Before that there is no exact live render home.
     if (state->deferredAtlasOwnedSprites.contains(sprite) && !sprite->getBatchNode())
         return false;
 
     return true;
+}
+
+bool Renderer::isGPUOwnedSprite(cocos2d::CCSprite* sprite) const {
+    if (!isGPUPersistentlyOwnedSprite(sprite))
+        return false;
+
+    auto state = iosState(const_cast<Renderer*>(this));
+    return state && state->resolvedState &&
+        state->resolvedState->isSpriteActive(sprite);
+}
+
+void Renderer::recordCPUWork(cocos2d::CCSprite* sprite) {
+    if (!sprite || !layer || !layer->m_batchNodes ||
+        !Mod::get()->getSettingValue<bool>("ios_gpu_debug"))
+        return;
+
+    auto batch = sprite->getBatchNode();
+    if (!batch || layer->m_batchNodes->indexOfObject(batch) == UINT_MAX)
+        return;
+
+    if (auto state = iosState(this))
+        ++state->cpuWorkCurrentFrame;
+}
+
+void Renderer::recordGPUWork(usize sprites) {
+    if (!sprites || !Mod::get()->getSettingValue<bool>("ios_gpu_debug"))
+        return;
+    if (auto state = iosState(this))
+        state->gpuWorkCurrentFrame += sprites;
 }
 
 bool Renderer::hasForcedDecorationInBatch(cocos2d::CCSpriteBatchNode* batch) const {
@@ -931,11 +959,14 @@ bool Renderer::hasForcedDecorationInBatch(cocos2d::CCSpriteBatchNode* batch) con
 }
 
 bool Renderer::prepareGPUOwnedSprite(cocos2d::CCSprite* sprite) {
-    if (!enabled || !AtlasInterleaveRegistry::shouldSkipTransform(this, sprite))
-        return false;
-    if (auto state = iosState(this))
-        ++state->batchTransformSkipsCurrentFrame;
-    return true;
+    // Correctness-first no-skip mode: keep the GPU interleave/draw path active,
+    // but never bypass Cocos' stock CCSprite::updateTransform(). This guarantees
+    // every atlas sprite gets its normal hierarchy transform, hidden-state
+    // propagation, and stock quad expansion before Bismuth submits GPU runs.
+    //
+    // The parameter is intentionally unused while this diagnostic mode is active.
+    (void)sprite;
+    return false;
 }
 
 bool Renderer::isGPUOwnedStandaloneSprite(cocos2d::CCSprite* sprite) const {

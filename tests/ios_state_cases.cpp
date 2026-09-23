@@ -8,8 +8,16 @@ int main() {
     state.sprites.push_back({}); state.sprites[0].sprite=&object;
     state.sprites[0].geometry=state.captureSpriteState(&object);
     state.spriteIndexByPointer.emplace(&object,0);
-    state.objectTexels.resize(2); state.spriteTexels.resize(3);
+    state.objectTexels.resize(2); state.spriteTexels.resize(4);
     assert(state.canDrawSprite(&object));
+    // Before lifecycle compilation a registered record remains conservatively
+    // usable; afterwards the stock active mask is authoritative.
+    assert(state.isSpriteActive(&object));
+    state.eventOwnershipReady=true; state.activeSpriteMask={true};
+    assert(state.isSpriteActive(&object));
+    state.activeSpriteMask[0]=false;
+    assert(!state.isSpriteActive(&object));
+    state.activeSpriteMask[0]=true;
     {
         GameObject glow, detail;
         object.m_objectType=GameObjectType::Hazard;
@@ -42,6 +50,40 @@ int main() {
         object.m_glowSprite=nullptr; object.m_colorSprite=nullptr;
         object.m_objectType=GameObjectType::Solid;
     }
+    {
+        // Layered non-interactive solids are a major dense-level workload.
+        // They must use the same resolved visual-tree path as decorations rather
+        // than falling back just because glow/color sprites exist.
+        GameObject solid, glow, color;
+        solid.parent=&solid;
+        solid.m_objectType=GameObjectType::Solid;
+        solid.m_glowSprite=&glow;
+        solid.m_colorSprite=&color;
+        glow.parent=nullptr;
+        color.parent=nullptr;
+
+        ResolvedStateLayer complex;
+        std::vector<cocos2d::CCSprite*> accepted;
+        ResolvedStateLayer::CollectionDiagnostics diagnostics;
+        assert(complex.classifyObject(&solid,accepted,diagnostics)==
+            ResolvedStateLayer::SafetyClass::DynamicSafe);
+        assert(accepted.size()==3);
+        assert(accepted[0]==&glow && accepted[1]==&color && accepted[2]==&solid);
+
+        complex.objects.push_back({});
+        complex.objects[0].object=&solid;
+        complex.objects[0].safety=ResolvedStateLayer::SafetyClass::DynamicSafe;
+        for (auto* sprite : accepted) {
+            ResolvedStateLayer::SpriteRecord record;
+            record.sprite=sprite;
+            record.objectIndex=0;
+            complex.spriteIndexByPointer.emplace(sprite,complex.sprites.size());
+            complex.sprites.push_back(record);
+        }
+        for (auto* sprite : accepted)
+            assert(complex.canDrawSprite(sprite));
+    }
+
     object.transform={0.7f,1.3f,-0.2f,-2.f,84000.f,700.f};
     object.vertexZ=9;
 
@@ -97,20 +139,64 @@ int main() {
     object.tex.id=5; assert(state.canDrawSprite(&object)); object.tex.id=4;
     object.tex.width=2048; assert(state.canDrawSprite(&object)); object.tex.width=1024;
     assert(state.canDrawSprite(&object));
+    // The GPU consumes the exact color already written into Cocos' stock
+    // quad. Do not apply opacityModifyRGB a second time.
     auto sprite=state.captureSpriteState(&object);
     sprite.opacityModifyRGB=true;
     for(int color=0;color<256;++color) for(int opacity=0;opacity<256;++opacity) {
         sprite.color={static_cast<u8>(color),static_cast<u8>(color),static_cast<u8>(color)};
         sprite.opacity=opacity;
         state.packSpriteState(0,sprite,0);
-        u8 stockByte=color;
-        stockByte*=opacity/255.0f;
-        assert(state.spriteTexels[0].x==stockByte/255.f);
+        assert(state.spriteTexels[0].x==color/255.f);
         assert(state.spriteTexels[0].w==opacity/255.f);
     }
-    sprite.opacityModifyRGB=false; sprite.color={100,150,200}; sprite.opacity=3;
-    state.packSpriteState(0,sprite,0);
-    assert(state.spriteTexels[0].x==100/255.f && state.spriteTexels[0].w==3/255.f);
+    // A GPU-owned sprite may retain a stale stock quad from an older hidden
+    // frame. Displayed state must win so alpha zero cannot leak into the GPU.
+    object.quad.bl.colors={0,0,0,0};
+    object.color={12,34,56};
+    object.opacity=78;
+    object.premultiplied=false;
+    auto exact=state.captureFrameSpriteState(&object,sprite);
+    assert(exact.color.r==12 && exact.color.g==34 && exact.color.b==56 && exact.opacity==78);
+    assert(!exact.opacityModifyRGB);
+    state.packSpriteState(0,exact,0);
+    assert(state.spriteTexels[0].x==12/255.f && state.spriteTexels[0].w==78/255.f);
+
+    object.color={200,100,50};
+    object.opacity=128;
+    object.premultiplied=true;
+    exact=state.captureFrameSpriteState(&object,exact);
+    assert(exact.color.r==(200*128)/255);
+    assert(exact.color.g==(100*128)/255);
+    assert(exact.color.b==(50*128)/255);
+    assert(exact.opacity==128);
+    object.premultiplied=false;
+
+    // Stock Cocos is now the transform authority for batched GPU sprites.
+    // Prove the exact m_transformToBatch / vertexZ / hidden state reaches the
+    // packed GPU state without Bismuth reconstructing a parallel transform.
+    cocos2d::CCSpriteBatchNode stockBatch;
+    object.batch=&stockBatch;
+    object.m_transformToBatch={1.25f,0.15f,-0.2f,0.85f,123.5f,-41.25f};
+    object.vertexZ=7.75f;
+    object.m_bShouldBeHidden=false;
+    auto cocosExact=state.captureFrameSpriteState(&object,exact);
+    state.packSpriteState(0,cocosExact,0);
+    assert(state.spriteTexels[2].x==1.25f);
+    assert(state.spriteTexels[2].y==0.15f);
+    assert(state.spriteTexels[2].z==-0.2f);
+    assert(state.spriteTexels[2].w==0.85f);
+    assert(state.spriteTexels[3].x==123.5f);
+    assert(state.spriteTexels[3].y==-41.25f);
+    assert(state.spriteTexels[3].z==7.75f);
+    assert(state.spriteTexels[3].w==1.f);
+
+    object.m_bShouldBeHidden=true;
+    cocosExact=state.captureFrameSpriteState(&object,cocosExact);
+    state.packSpriteState(0,cocosExact,0);
+    assert(state.spriteTexels[3].w==0.f);
+    object.m_bShouldBeHidden=false;
+    object.batch=nullptr;
     {
         ResolvedStateLayer temporary;
         assert(ResolvedStateLayer::getCurrent()==&temporary);
@@ -158,5 +244,5 @@ int main() {
         assert(pending.isGPUStateReady() && pending.dirtyObjectRecords.empty());
         assert(objects.uploads==2);
     }
-    std::cout << "PASS: exact affine state, static transform reuse, detached visibility, small transform changes, live geometry eligibility, per-frame validation cache, 65,536 stock opacity/color pairs, current-state teardown\n";
+    std::cout << "PASS: exact affine state, static transform reuse, detached visibility, small transform changes, live geometry eligibility, per-frame validation cache, 65,536 exact stock color/alpha pairs, current-state teardown\n";
 }

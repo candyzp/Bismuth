@@ -305,7 +305,7 @@ void finishFrame(Renderer* renderer) {
 
     const std::string chart = fmt::format(
         "GPU TRUTH: {} | submits {} | sprites {}\n"
-        "Clear suspects: {} | spikes {}\n"
+        "Clear suspects: {} | faded hazards {}\n"
         "Background: {} draws | failures {}\n"
         "Failures: batches {} | strict, no redraw\n"
         "Last fail: {} | slot {}/{} | {}f ago",

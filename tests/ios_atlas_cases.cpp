@@ -9,6 +9,7 @@ struct Scene {
     StandaloneAssistBatch owner;
     explicit Scene(int count) : sprites(count) {
         Renderer::current=&renderer;
+        renderer.preparedState=&resolved;
         batches.nodes={&batch}; renderer.layer.m_batchNodes=&batches;
         owner.resolvedState=&resolved; owner.shader=&shader; owner.indexBuffer=&buffer; owner.vao=40;
         fixture::elements[owner.vao]=123;
@@ -19,7 +20,12 @@ struct Scene {
         }
     }
     void claim(const std::vector<int>& indices) {
-        for(int i:indices) { owner.ownedSprites.push_back(&sprites.at(i)); renderer.owned.insert(&sprites.at(i)); fixture::vaoSpriteIDs[owner.vao].push_back(i); }
+        for(int i:indices) {
+            owner.ownedSprites.push_back(&sprites.at(i));
+            renderer.owned.insert(&sprites.at(i));
+            renderer.persistentOwned.insert(&sprites.at(i));
+            fixture::vaoSpriteIDs[owner.vao].push_back(i);
+        }
         AtlasInterleaveRegistry::registerDeferred(&owner);
     }
     void reorder(const std::vector<int>& indices) {
@@ -60,6 +66,112 @@ int main() {
         assert(fixture::gpuDraws==0);
     }
     {
+        // Readiness regression: selection must not require uploadsCurrent before
+        // Cocos has produced this frame's authoritative transforms. Production
+        // prepareGPUFrame() refreshes the state after selection and before draw.
+        Scene s(4);
+        s.claim({0,1,2,3});
+        s.resolved.ready=false;
+        s.draw();
+        assert(s.resolved.ready);
+        assert(fixture::gpuDraws==1);
+    }
+    {
+        // 32-bit deferred registry regression. Sprite 16,385 begins at vertex
+        // 65,536, one vertex beyond the old u16-addressable range.
+        Scene s(16385);
+        std::vector<int> all(16385);
+        std::iota(all.begin(), all.end(), 0);
+        s.claim(all);
+        auto it=registry().spriteOwners.find(&s.sprites[16384]);
+        assert(it!=registry().spriteOwners.end());
+        assert(it->second.baseVertex==65536u);
+        assert(!registry().invalidRenderers.contains(&s.renderer));
+    }
+
+    {
+        // Custom-level fragmentation regression: ten useful 6-sprite islands
+        // separated by stock-only slots. No run reaches the historical 48-sprite
+        // profitability floor. The scheduler must still keep the GPU working
+        // instead of reporting GPU IDLE like dense custom levels did.
+        Scene s(69);
+        std::vector<int> claimed;
+        for (int group = 0; group < 10; ++group) {
+            const int start = group * 7;
+            for (int j = 0; j < 6; ++j)
+                claimed.push_back(start + j);
+        }
+        s.claim(claimed);
+        s.draw();
+
+        std::vector<int> expected(69);
+        std::iota(expected.begin(), expected.end(), 0);
+        assert(fixture::pixels == expected);
+        assert(fixture::gpuDraws == 6);
+        assert(fixture::stockTransforms == 69 - 35);
+    }
+
+    {
+        // Dense runs must win scarce draw-call slots over tiny early islands.
+        // Eight 1-sprite islands used to exhaust the per-batch call budget
+        // before this later 100-sprite run was even considered.
+        Scene s(500);
+        std::vector<int> claimed;
+        for (int i = 0; i < 8; ++i)
+            claimed.push_back(i * 2);
+        for (int i = 200; i < 300; ++i)
+            claimed.push_back(i);
+        s.claim(claimed);
+        s.draw();
+        std::vector<int> expected(500);
+        std::iota(expected.begin(), expected.end(), 0);
+        assert(fixture::pixels == expected);
+        assert(fixture::gpuDraws == 8);
+        assert(fixture::stockTransforms == 500 - (100 + 7));
+    }
+    {
+        // CCSpriteBatchNode binds one batch texture/blend for the whole atlas.
+        // Per-sprite metadata differences must not fragment an otherwise
+        // contiguous GPU-safe run.
+        Scene s(96);
+        std::vector<int> claimed(96);
+        std::iota(claimed.begin(), claimed.end(), 0);
+        s.claim(claimed);
+
+        for (int i = 1; i < 96; i += 2) {
+            s.sprites[i].blend.src = GL_ONE;
+            s.sprites[i].blend.dst = GL_ONE;
+        }
+
+        s.draw();
+        std::vector<int> expected(96);
+        std::iota(expected.begin(), expected.end(), 0);
+        assert(fixture::pixels == expected);
+        assert(fixture::gpuDraws == 1);
+    }
+
+    {
+        // Orbit-style lifecycle pattern: every other slot is currently inactive
+        // but remains persistently safe and hidden in GPU state. Those hidden
+        // owned slots must bridge the active sprites into one useful submission
+        // instead of consuming eight calls on eight one-sprite islands.
+        Scene s(200);
+        std::vector<int> all(200);
+        std::iota(all.begin(), all.end(), 0);
+        s.claim(all);
+        for (int i = 1; i < 200; i += 2)
+            s.renderer.owned.erase(&s.sprites[i]);
+
+        s.draw();
+        std::vector<int> expected(200);
+        std::iota(expected.begin(), expected.end(), 0);
+        assert(fixture::pixels == expected);
+        assert(fixture::gpuDraws == 1);
+        // Fifty active GPU sprites require 49 inactive bridge slots between
+        // them, so the selected prefix is 99 atlas slots and stock visits 101.
+        assert(fixture::stockTransforms == 101);
+    }
+    {
         Scene s(10000);
         std::vector<int> order(10000); std::iota(order.begin(),order.end(),0);
         auto shuffled=order; std::mt19937 random(13); std::shuffle(shuffled.begin(),shuffled.end(),random);
@@ -85,14 +197,35 @@ int main() {
         assert(fixture::gpuDraws==0 && fixture::stockTransforms==3);
         s.batch.atlas.dirty=true; fixture::failAtlasSync=true; s.draw(); fixture::failAtlasSync=false;
         assert((fixture::pixels==std::vector<int>{0,1,2}));
-        // The hybrid attempt updates the one stock-owned sprite before atlas
-        // synchronization fails, then the safe CPU recovery updates all three.
+        // The hybrid attempt updates the one stock-owned sprite, explicitly
+        // restores the two suppressed GPU-owned quads, then this fixture's stock
+        // draw simulates a full child-transform visit. The dedicated raw-draw
+        // case below verifies recovery when that final visit does not exist.
+        assert(fixture::gpuDraws==0 && fixture::stockTransforms==7);
+        checkStateRestored();
+        s.draw(); assert(fixture::gpuDraws==2);
+        // Stale state is no longer a pre-selection veto. The Cocos-authoritative
+        // path refreshes it during prepareGPUFrame() after selected transforms
+        // are known, then proceeds with the GPU half.
+        s.resolved.ready=false; s.draw();
+        assert(s.resolved.ready);
+        assert((fixture::pixels==std::vector<int>{0,1,2}));
+        assert(fixture::gpuDraws==2);
+    }
+    {
+        // A failure after hybrid transform suppression must restore the selected
+        // stock quads before the draw hook falls back to raw CCSpriteBatchNode::draw().
+        // Model the real draw path here without a second child-transform visit.
+        Scene s(3); s.claim({0,2});
+        fixture::stockDrawUpdatesTransforms=false;
+        fixture::failGeometryFlush=true;
+        s.draw();
+        fixture::failGeometryFlush=false;
+        fixture::stockDrawUpdatesTransforms=true;
+        assert((fixture::pixels==std::vector<int>{0,1,2}));
         assert(fixture::gpuDraws==0 && fixture::stockTransforms==4);
         checkStateRestored();
         s.draw(); assert(fixture::gpuDraws==2);
-        s.resolved.ready=false; s.draw();
-        assert(fixture::gpuDraws==0 && (fixture::pixels==std::vector<int>{0,1,2}));
-        assert(fixture::stockTransforms==3);
     }
     {
         Scene s(2); s.claim({0,1});
@@ -130,7 +263,7 @@ int main() {
         }
         s.draw(); static_cast<cocos2d::CCSpriteBatchNode&>(second).draw();
         assert((fixture::pixels==std::vector<int>{0,1,2,3}));
-        assert(fixture::gpuDraws==2 && s.owner.stats.indicesLastFrame==24);
+        assert(fixture::gpuDraws==2 && s.owner.stats.indicesLastFrame==12);
     }
     {
         Scene s(3); s.claim({0,2});
@@ -139,10 +272,27 @@ int main() {
         checkStateRestored();
         fixture::colorMask={0,0,0,0}; s.draw(); assert(fixture::pixels.empty());
         fixture::colorMask={1,1,1,1};
-        std::vector<SpriteOwner> owners{{&s.renderer,nullptr,&s.owner,65532}};
-        std::vector<AtlasDrawRun> runs; std::vector<u16> indices;
+        // Last quad in a 65,536-sprite unified registry. This crosses the
+        // old u16 vertex wall by a full 196,608 vertices.
+        std::vector<SpriteOwner> owners{{&s.renderer,nullptr,&s.owner,262140}};
+        std::vector<AtlasDrawRun> runs; std::vector<u32> indices;
         buildAtlasDrawPlan(owners,runs,indices);
-        assert((indices==std::vector<u16>{65532,65534,65535,65532,65535,65533}));
+        assert((indices==std::vector<u32>{262140,262142,262143,262140,262143,262141}));
+    }
+    {
+        // A single sprite mapped to two different vertices in one owner is not a
+        // valid GPU identity. Reject the renderer instead of silently using the
+        // first mapping and drawing arbitrary geometry.
+        Scene s(2);
+        s.owner.ownedSprites={&s.sprites[0],&s.sprites[0]};
+        s.renderer.owned.insert(&s.sprites[0]);
+        fixture::vaoSpriteIDs[s.owner.vao]={0,0};
+        AtlasInterleaveRegistry::registerDeferred(&s.owner);
+        s.draw();
+        assert(fixture::gpuDraws==0 && (fixture::pixels==std::vector<int>{0,1}));
+        assert(fixture::stockTransforms==2);
+        AtlasInterleaveRegistry::unregisterDeferred(&s.owner);
+        s.owner.ownedSprites.clear();
     }
     {
         Scene s(3);
@@ -222,5 +372,5 @@ int main() {
         assert(fixture::gpuDraws==1 && fixture::stockTransforms==2);
     }
     assert(registry().spriteOwners.empty() && registry().indexCaches.empty());
-    std::cout << "PASS: mixed stock/GPU order, hybrid recovery, GPU budgeting, batch migration, masks, VAO/EBO state, teardown, u16 limits\n";
+    std::cout << "PASS: mixed stock/GPU order, hybrid recovery, GPU budgeting, batch migration, masks, VAO/EBO state, teardown, 65k/u32 limits\n";
 }

@@ -13,6 +13,7 @@ class BackgroundGPU {
 public:
     ~BackgroundGPU();
     bool prepare() { return init(); }
+    bool canDraw(cocos2d::CCSprite* sprite);
     bool draw(cocos2d::CCSprite* sprite);
 };
 #endif

@@ -15,13 +15,13 @@ using namespace geode::prelude;
 
 namespace {
 constexpr usize OBJECT_TEXELS_PER_STATE = 2;
-constexpr usize SPRITE_TEXELS_PER_STATE = 2;
+constexpr usize SPRITE_TEXELS_PER_STATE = 4;
 
 // This is persistent whole-level state, not visible-frame work. Giant effect
 // levels can contain enough decorations to make retaining/uploading every safe
 // sprite more expensive than stock GD, or exhaust memory during load.
-constexpr usize MAX_RESOLVED_OBJECT_RECORDS = 12288;
-constexpr usize MAX_RESOLVED_SPRITE_RECORDS = 16384;
+constexpr usize MAX_RESOLVED_OBJECT_RECORDS = 65536;
+constexpr usize MAX_RESOLVED_SPRITE_RECORDS = 65536;
 
 bool isSimpleSpikeRoot(GameObject* object) {
     // Only the root quad is GPU-owned. Separate glow/detail nodes keep their
@@ -108,6 +108,31 @@ inline bool rectChanged(const cocos2d::CCRect& a, const cocos2d::CCRect& b) {
            changedFloat(a.origin.y, b.origin.y) ||
            changedFloat(a.size.width, b.size.width) ||
            changedFloat(a.size.height, b.size.height);
+}
+
+static void captureCocosDisplayedColor(
+    cocos2d::CCSprite* sprite,
+    cocos2d::ccColor3B& color,
+    u8& opacity
+) {
+    if (!sprite) {
+        color = {255, 255, 255};
+        opacity = 0;
+        return;
+    }
+
+    color = sprite->getDisplayedColor();
+    opacity = sprite->getDisplayedOpacity();
+
+    // This is the same final vertex-color rule CCSprite::updateColor() uses.
+    // Do not sample getQuad() here: GPU-owned sprites intentionally skip the
+    // stock quad expansion, so that quad may still contain a previous hidden
+    // frame's alpha/color.
+    if (sprite->isOpacityModifyRGB()) {
+        color.r = static_cast<u8>((static_cast<u32>(color.r) * opacity) / 255u);
+        color.g = static_cast<u8>((static_cast<u32>(color.g) * opacity) / 255u);
+        color.b = static_cast<u8>((static_cast<u32>(color.b) * opacity) / 255u);
+    }
 }
 
 bool uploadDirtyRecordSpans(
@@ -214,16 +239,29 @@ ResolvedStateLayer::SafetyClass ResolvedStateLayer::classifyObject(
         return SafetyClass::StockOnly;
     }
 
-    if (outSprites.size() != 1 || outSprites.front() != object ||
-        object->m_glowSprite || object->m_colorSprite ||
-        (object->getChildren() && object->getChildren()->count() != 0))
+    const bool simpleRoot =
+        collectionSafe && !invalidSprite &&
+        outSprites.size() == 1 && outSprites.front() == object &&
+        !object->m_glowSprite && !object->m_colorSprite &&
+        (!object->getChildren() || object->getChildren()->count() == 0);
+
+    if (simpleRoot) {
+        const bool dynamic =
+            object->m_groupCount > 0 ||
+            object->getHasRotateAction() || object->m_usesAudioScale;
+        return dynamic ? SafetyClass::DynamicSafe : SafetyClass::StaticSafe;
+    }
+
+    // Complex non-interactive solids used to be thrown back to stock merely
+    // because they had glow/detail/color children. That is exactly the expensive
+    // visual structure the resolved-state path already handles for Decoration.
+    // Reuse the same ordered sprite-tree collector and keep the root dynamic so
+    // GD remains authoritative for group movement/rotation/audio scaling.
+    outSprites.clear();
+    collectForcedDecorationSprites(object, outSprites);
+    if (outSprites.empty())
         return SafetyClass::StockOnly;
-
-    const bool dynamic =
-        object->m_groupCount > 0 ||
-        object->getHasRotateAction() || object->m_usesAudioScale;
-
-    return dynamic ? SafetyClass::DynamicSafe : SafetyClass::StaticSafe;
+    return SafetyClass::DynamicSafe;
 }
 
 bool ResolvedStateLayer::isShadowValidationCandidate(
@@ -291,12 +329,20 @@ ResolvedStateLayer::SpriteState ResolvedStateLayer::captureSpriteState(cocos2d::
     if (!sprite)
         return state;
 
-    state.color = sprite->getDisplayedColor();
-    state.opacity = sprite->getDisplayedOpacity();
+    // GPU-owned sprites may deliberately skip stock quad expansion. Use
+    // Cocos' current displayed color/opacity and apply its premultiply rule,
+    // rather than trusting a quad that can still contain an older hidden frame.
+    captureCocosDisplayedColor(sprite, state.color, state.opacity);
     state.textureRect = sprite->getTextureRect();
     state.offset = sprite->getOffsetPosition();
-    state.opacityModifyRGB = sprite->isOpacityModifyRGB();
+    state.opacityModifyRGB = false;
     state.visible = sprite->isVisible() && !sprite->getDontDraw();
+    state.hasBatchTransform = sprite->getBatchNode() != nullptr;
+    if (state.hasBatchTransform) {
+        state.batchTransform = sprite->m_transformToBatch;
+        state.vertexZ = sprite->getVertexZ();
+        state.visible = state.visible && !sprite->m_bShouldBeHidden;
+    }
     state.rotated = sprite->isTextureRectRotated();
     state.flipX = sprite->isFlipX();
     state.flipY = sprite->isFlipY();
@@ -327,10 +373,15 @@ ResolvedStateLayer::SpriteState ResolvedStateLayer::captureFrameSpriteState(
     // conservative solid/spike path. Forced decorations already use persistent
     // geometry, so polling those unused geometry fields thousands of times per
     // frame was pure CPU overhead.
-    state.color = sprite->getDisplayedColor();
-    state.opacity = sprite->getDisplayedOpacity();
-    state.opacityModifyRGB = sprite->isOpacityModifyRGB();
+    captureCocosDisplayedColor(sprite, state.color, state.opacity);
+    state.opacityModifyRGB = false;
     state.visible = sprite->isVisible() && !sprite->getDontDraw();
+    state.hasBatchTransform = sprite->getBatchNode() != nullptr;
+    if (state.hasBatchTransform) {
+        state.batchTransform = sprite->m_transformToBatch;
+        state.vertexZ = sprite->getVertexZ();
+        state.visible = state.visible && !sprite->m_bShouldBeHidden;
+    }
     return state;
 }
 
@@ -355,18 +406,13 @@ void ResolvedStateLayer::packObjectState(usize index, const ObjectState& state, 
 
 void ResolvedStateLayer::packSpriteState(usize index, const SpriteState& state, usize objectIndex) {
     const usize base = index * SPRITE_TEXELS_PER_STATE;
-    if (base + 1 >= spriteTexels.size())
+    if (base + 3 >= spriteTexels.size())
         return;
 
-    const auto colorByte = [&](u8 value) -> float {
-        const u8 resolved = state.opacityModifyRGB
-            ? static_cast<u8>(value * (state.opacity / 255.f)) : value;
-        return static_cast<float>(resolved) / 255.f;
-    };
     spriteTexels[base + 0] = {
-        colorByte(state.color.r),
-        colorByte(state.color.g),
-        colorByte(state.color.b),
+        (float)state.color.r / 255.f,
+        (float)state.color.g / 255.f,
+        (float)state.color.b / 255.f,
         (float)state.opacity / 255.f
     };
 
@@ -379,11 +425,25 @@ void ResolvedStateLayer::packSpriteState(usize index, const SpriteState& state, 
     // The assist shader only consumes flags + object index here. Texture rect
     // and texture dimensions are geometry-validation data, not render-state
     // data, so keeping a third RGBA texel per sprite wasted 33% of this texture.
+    if (state.hasBatchTransform) flags |= 16u;
+
     spriteTexels[base + 1] = {
         (float)flags,
         (float)objectIndex,
         0.f,
         0.f
+    };
+    spriteTexels[base + 2] = {
+        state.batchTransform.a,
+        state.batchTransform.b,
+        state.batchTransform.c,
+        state.batchTransform.d
+    };
+    spriteTexels[base + 3] = {
+        state.batchTransform.tx,
+        state.batchTransform.ty,
+        state.vertexZ,
+        state.visible ? 1.f : 0.f
     };
 }
 
@@ -402,7 +462,15 @@ bool ResolvedStateLayer::spriteAppearanceChanged(const SpriteState& a, const Spr
     return a.color.r != b.color.r ||
            a.color.g != b.color.g ||
            a.color.b != b.color.b ||
-           a.opacity != b.opacity || a.opacityModifyRGB != b.opacityModifyRGB;
+           a.opacity != b.opacity || a.opacityModifyRGB != b.opacityModifyRGB ||
+           a.hasBatchTransform != b.hasBatchTransform ||
+           a.batchTransform.a != b.batchTransform.a ||
+           a.batchTransform.b != b.batchTransform.b ||
+           a.batchTransform.c != b.batchTransform.c ||
+           a.batchTransform.d != b.batchTransform.d ||
+           a.batchTransform.tx != b.batchTransform.tx ||
+           a.batchTransform.ty != b.batchTransform.ty ||
+           a.vertexZ != b.vertexZ;
 }
 
 bool ResolvedStateLayer::spriteUVChanged(const SpriteState& a, const SpriteState& b) {
@@ -443,12 +511,46 @@ bool ResolvedStateLayer::init(PlayLayer* playLayer) {
     ));
     initSpriteRetains.reserve(MAX_RESOLVED_SPRITE_RECORDS);
 
+    // Whole-level state is a persistent ownership pool, not per-frame work.
+    // Filling that pool in m_objects order can accidentally spend the complete
+    // budget on the opening section of a long level. Interleave 128 spatial
+    // lanes so a bounded pool still represents the entire X span; stock GD keeps
+    // everything that is not selected here.
+    std::vector<GameObject*> renderableObjects;
+    renderableObjects.reserve(static_cast<usize>(layer->m_objects->count()));
     for (auto object : CCArrayExt<GameObject*>(layer->m_objects)) {
         if (!object || object == layer->m_anticheatSpike || object->isTrigger() || object->m_isHide)
             continue;
+        renderableObjects.push_back(object);
+    }
+    stats.renderableObjects = renderableObjects.size();
 
-        ++stats.renderableObjects;
+    const auto spatialX = [](GameObject* object) {
+        if (!object)
+            return 0.f;
+        const float x = object->getPositionX();
+        return std::isfinite(x) ? x : 0.f;
+    };
+    std::stable_sort(renderableObjects.begin(), renderableObjects.end(),
+        [&](GameObject* a, GameObject* b) {
+            return spatialX(a) < spatialX(b);
+        });
 
+    constexpr usize SPATIAL_BUDGET_LANES = 256;
+    const usize laneCount = std::min<usize>(SPATIAL_BUDGET_LANES, renderableObjects.size());
+    std::vector<GameObject*> spatialBudgetOrder;
+    spatialBudgetOrder.reserve(renderableObjects.size());
+    for (usize offset = 0; spatialBudgetOrder.size() < renderableObjects.size(); ++offset) {
+        for (usize lane = 0; lane < laneCount; ++lane) {
+            const usize begin = lane * renderableObjects.size() / laneCount;
+            const usize end = (lane + 1) * renderableObjects.size() / laneCount;
+            const usize index = begin + offset;
+            if (index < end)
+                spatialBudgetOrder.push_back(renderableObjects[index]);
+        }
+    }
+
+    for (auto object : spatialBudgetOrder) {
         // Once the persistent state budget is saturated, leave additional
         // objects entirely to Cocos instead of even constructing GPU records.
         if (objects.size() >= MAX_RESOLVED_OBJECT_RECORDS ||
@@ -663,11 +765,15 @@ bool ResolvedStateLayer::canDrawSprite(cocos2d::CCSprite* sprite) {
         // still keep their own normal Cocos draw lifecycle.
         if (object && sprite && sprite->getTexture() &&
             objectRecord.safety != SafetyClass::StockOnly) {
-            if (object->m_objectType == GameObjectType::Decoration) {
+            if (object->m_objectType == GameObjectType::Decoration ||
+                object->m_objectType == GameObjectType::Solid) {
+                // Every sprite recorded for a proven visual tree is eligible.
+                // LiveGeometry still validates texture/crop/local transform at
+                // draw time, and runtime-attached sprites that were never part of
+                // this record simply remain on stock Cocos.
                 result = true;
             } else if (object == sprite &&
-                (object->m_objectType == GameObjectType::Solid ||
-                 object->m_objectType == GameObjectType::Hazard)) {
+                object->m_objectType == GameObjectType::Hazard) {
                 result = true;
             }
         }

@@ -74,6 +74,7 @@ public:
     void update(bool detailedProbe);
     void beginFrameValidation();
     bool canDrawSprite(cocos2d::CCSprite* sprite);
+    bool isSpriteActive(cocos2d::CCSprite* sprite) const;
 
     // Called once after renderer ownership is resolved. RendererIOS still builds
     // the complete ownership list; reseedActiveFromStock() then compiles the much
@@ -190,6 +191,13 @@ private:
         bool rotated = false;
         bool flipX = false;
         bool flipY = false;
+
+        // Stock Cocos is authoritative for atlas transforms. For a sprite that
+        // currently belongs to a CCSpriteBatchNode, m_transformToBatch is the
+        // exact matrix Cocos would use to expand its quad on the CPU.
+        cocos2d::CCAffineTransform batchTransform = cocos2d::CCAffineTransformMakeIdentity();
+        float vertexZ = 0.f;
+        bool hasBatchTransform = false;
     };
 
     struct ObjectRecord {

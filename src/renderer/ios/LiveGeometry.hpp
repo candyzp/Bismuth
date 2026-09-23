@@ -61,7 +61,10 @@ public:
         if (!sprite || !object || !sprite->getTexture())
             return false;
         auto transform = cocos2d::CCAffineTransformMakeIdentity();
-        if (sprite != object) {
+        // Once GD has inserted the sprite into a stock atlas, Cocos'
+        // m_transformToBatch is authoritative. Keep the VBO in sprite-local
+        // space and let the shader consume that exact matrix.
+        if (!sprite->getBatchNode() && sprite != object) {
             auto node = static_cast<cocos2d::CCNode*>(sprite);
             while (node && node != object) {
                 transform = cocos2d::CCAffineTransformConcat(transform, node->nodeToParentTransform());

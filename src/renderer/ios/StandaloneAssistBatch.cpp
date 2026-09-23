@@ -11,7 +11,7 @@
 using namespace geode::prelude;
 
 namespace {
-constexpr usize MAX_BATCH_SPRITES = 16383;
+constexpr usize MAX_BATCH_SPRITES = 65536;
 
 static glm::vec2 quadUV(const cocos2d::ccV3F_C4B_T2F& vertex) {
     return { vertex.texCoords.u, vertex.texCoords.v };
@@ -136,7 +136,7 @@ bool StandaloneAssistBatch::buildGeometry(
         return false;
 
     std::vector<Vertex> vertices;
-    std::vector<u16> indices;
+    std::vector<u32> indices;
     vertices.reserve(candidates.size() * 4);
     indices.reserve(candidates.size() * 6);
     ownedSprites.clear();
@@ -163,7 +163,13 @@ bool StandaloneAssistBatch::buildGeometry(
     for (const auto& candidate : candidates) {
         auto object = candidate.object;
         auto sprite = candidate.sprite;
-        if (!object || !sprite || sprite->getBatchNode())
+        if (!object || !sprite)
+            return false;
+        // Root-addressable standalone buffers still require genuinely standalone
+        // sprites. Registry-only buffers may also own sprites already living in
+        // stock atlases; AtlasInterleave submits their vertices from the exact
+        // live batch and preserves stock ordering.
+        if (rootAddressable && sprite->getBatchNode())
             return false;
 
         // Root-addressable buffers need a range boundary per object so a stock
@@ -233,7 +239,7 @@ bool StandaloneAssistBatch::buildGeometry(
             activeBlendDst = blendDst;
         }
 
-        const u16 baseVertex = (u16)vertices.size();
+        const u32 baseVertex = (u32)vertices.size();
         const float objectIndex = (float)candidate.objectStateIndex;
         const float spriteIndex = (float)candidate.spriteStateIndex;
 
@@ -262,14 +268,14 @@ bool StandaloneAssistBatch::buildGeometry(
         return false;
 
     vertexBuffer = Buffer::createStaticDraw(
-        rootAddressable ? "Standalone resolved GPU vertices" : "Deferred atlas GPU vertices",
+        rootAddressable ? "Standalone resolved GPU vertices" : "Unified atlas registry GPU vertices",
         vertices.data(),
         vertices.size() * sizeof(Vertex)
     );
     indexBuffer = Buffer::createStaticDraw(
-        rootAddressable ? "Standalone resolved GPU indices" : "Deferred atlas GPU indices",
+        rootAddressable ? "Standalone resolved GPU indices" : "Unified atlas registry GPU indices",
         indices.data(),
-        indices.size() * sizeof(u16)
+        indices.size() * sizeof(u32)
     );
     if (!vertexBuffer || !indexBuffer) {
         destroyGL();
@@ -447,8 +453,8 @@ bool StandaloneAssistBatch::drawRangeSpan(usize firstRange, usize rangeCount) {
         glDrawElements(
             GL_TRIANGLES,
             (GLsizei)range.indexCount,
-            GL_UNSIGNED_SHORT,
-            (void*)((usize)range.startIndex * sizeof(u16))
+            GL_UNSIGNED_INT,
+            (void*)((usize)range.startIndex * sizeof(u32))
         );
         ++stats.drawCallsLastFrame;
         stats.indicesLastFrame += range.indexCount;

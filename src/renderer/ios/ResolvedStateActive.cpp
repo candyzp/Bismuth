@@ -43,6 +43,25 @@ void ResolvedStateLayer::setCurrent(bool active) {
         g_currentResolvedState = nullptr;
 }
 
+bool ResolvedStateLayer::isSpriteActive(cocos2d::CCSprite* sprite) const {
+    if (!sprite)
+        return false;
+
+    const auto it = spriteIndexByPointer.find(sprite);
+    if (it == spriteIndexByPointer.end() || it->second >= sprites.size())
+        return false;
+
+    // Before the stock lifecycle seed has been compiled, preserve the old safe
+    // behavior instead of suppressing a registered owner during level setup.
+    // RendererIOS seeds immediately after ownership is finalized, so normal
+    // gameplay takes the authoritative activeSpriteMask path below.
+    if (!eventOwnershipReady)
+        return true;
+
+    const usize spriteIndex = it->second;
+    return spriteIndex < activeSpriteMask.size() && activeSpriteMask[spriteIndex];
+}
+
 void ResolvedStateLayer::ensureEventOwnership() {
     if (eventOwnershipReady)
         return;
@@ -226,9 +245,19 @@ void ResolvedStateLayer::onObjectDeactivated(GameObject* object) {
     if (objectIndex >= pendingDeactivateMask.size() || pendingDeactivateMask[objectIndex])
         return;
 
-    // Keep the record in the hot path through Renderer::update(). Because stock
-    // deactivateObject() already ran, that update captures visible=false and
-    // uploads the final hide state before we stop polling it.
+    // Stock deactivateObject() already ran, so the only state a hidden
+    // bridge must commit immediately is root visibility. Preserve its resident
+    // transform/Z, force the visibility texel to zero, and queue that tiny dirty
+    // span for the next GPU submission.
+    auto& record = objects[objectIndex];
+    if (record.state.visible) {
+        record.state.visible = false;
+        const usize base = objectIndex * 2;
+        if (base + 1 < objectTexels.size())
+            objectTexels[base + 1].w = 0.f;
+        dirtyObjectRecords.push_back(objectIndex);
+    }
+
     pendingDeactivateMask[objectIndex] = true;
     pendingDeactivateIndices.push_back(objectIndex);
 }
