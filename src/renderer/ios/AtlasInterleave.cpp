@@ -912,7 +912,9 @@ bool AtlasInterleaveRegistry::drawBatch(
     }
     state.activeBatch = nullptr;
     state.activeRenderer = nullptr;
-    stockTransformsSuppressed = true;
+    // No stock transforms were suppressed in correctness-first no-skip mode.
+    // Keep failure recovery from redundantly rebuilding the hierarchy.
+    stockTransformsSuppressed = false;
 
     // Cocos has now produced current m_transformToBatch / hidden state for every
     // GPU-selected sprite. Capture those exact values into the state textures
