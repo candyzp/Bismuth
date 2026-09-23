@@ -9,6 +9,7 @@ struct Scene {
     StandaloneAssistBatch owner;
     explicit Scene(int count) : sprites(count) {
         Renderer::current=&renderer;
+        renderer.preparedState=&resolved;
         batches.nodes={&batch}; renderer.layer.m_batchNodes=&batches;
         owner.resolvedState=&resolved; owner.shader=&shader; owner.indexBuffer=&buffer; owner.vao=40;
         fixture::elements[owner.vao]=123;
@@ -64,6 +65,30 @@ int main() {
         assert((fixture::pixels==std::vector<int>{0,1,2,3,4}));
         assert(fixture::gpuDraws==0);
     }
+    {
+        // Readiness regression: selection must not require uploadsCurrent before
+        // Cocos has produced this frame's authoritative transforms. Production
+        // prepareGPUFrame() refreshes the state after selection and before draw.
+        Scene s(4);
+        s.claim({0,1,2,3});
+        s.resolved.ready=false;
+        s.draw();
+        assert(s.resolved.ready);
+        assert(fixture::gpuDraws==1);
+    }
+    {
+        // 32-bit deferred registry regression. Sprite 16,385 begins at vertex
+        // 65,536, one vertex beyond the old u16-addressable range.
+        Scene s(16385);
+        std::vector<int> all(16385);
+        std::iota(all.begin(), all.end(), 0);
+        s.claim(all);
+        auto it=registry().spriteOwners.find(&s.sprites[16384]);
+        assert(it!=registry().spriteOwners.end());
+        assert(it->second.baseVertex==65536u);
+        assert(!registry().invalidRenderers.contains(&s.renderer));
+    }
+
     {
         // Custom-level fragmentation regression: ten useful 6-sprite islands
         // separated by stock-only slots. No run reaches the historical 48-sprite
