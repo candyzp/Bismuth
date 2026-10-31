@@ -35,7 +35,7 @@ u32 checkedIndex(usize value, const char* field) {
 
 } // namespace
 
-bool validatePulseSegments(const SceneData& scene) {
+static bool validatePulseSegments(const SceneData& scene) {
     const auto states = scene.getGroupManager().getGroupStates();
     const auto pulses = scene.getGroupManager().getPulseEntries();
 
@@ -224,15 +224,9 @@ bool GPUStateTables::initialize(const SceneData& scene) {
     if (!scene.isReady())
         return false;
 
-    buildObjectTexels(scene);
-    buildGroupTexels(scene);
-    buildByteTexels(scene);
-
-    if (!upload(scene))
-        return false;
-
-    ready = true;
-    return true;
+    // upload() owns serialization, validation, allocation and transfer.
+    // Avoid building all three CPU tables twice during level initialization.
+    return upload(scene);
 }
 
 bool GPUStateTables::upload(const SceneData& scene) {
