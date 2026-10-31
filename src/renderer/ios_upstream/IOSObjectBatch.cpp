@@ -80,8 +80,16 @@ SpriteAppearance captureSpriteAppearance(
 
 } // namespace
 
+ObjectBatch::~ObjectBatch() {
+    clear();
+}
+
 void ObjectBatch::clear() {
     workGroupScheduler.clear();
+    for (const auto& source : sourceSpritePointers) {
+        if (source.sprite)
+            source.sprite->release();
+    }
     objectInfos.clear();
     objectIndices.clear();
     sourceVertices.clear();
@@ -318,6 +326,7 @@ bool ObjectBatch::addSprite(
     const bool directTint =
         (colorChannelFlags & IOS_COLOR_CHANNEL_DIRECT_FLAG) != 0;
     sourceSpriteAppearances.push_back(captureSpriteAppearance(sprite, directTint));
+    sprite->retain();
     sourceSpritePointers.push_back({object, sprite, type});
 
     workGroupScheduler.addSprite(
