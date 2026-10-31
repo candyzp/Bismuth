@@ -49,7 +49,7 @@ if (NOT OPENGLES_FRAMEWORK)
 endif()
 target_link_libraries(${PROJECT_NAME} ${OPENGLES_FRAMEWORK})
 
-target_include_directories(${PROJECT_NAME} PRIVATE src)
+target_include_directories(${PROJECT_NAME} PRIVATE src src/renderer)
 
 if (NOT DEFINED ENV{GEODE_SDK})
     message(FATAL_ERROR "Unable to find Geode SDK! Please define GEODE_SDK environment variable to point to Geode")
