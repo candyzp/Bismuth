@@ -539,7 +539,7 @@ void GroupManager::removeCheckpoint(CheckpointObject* checkpoint) {
 }
 
 void GroupManager::addGroupCombination(
-    GroupCombination& combination,
+    const GroupCombination& combination,
     GroupCombinationIndex index
 ) {
     if (index >= groupCombinations.size())
