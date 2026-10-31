@@ -139,6 +139,20 @@ class $modify(RendererPlayLayer, PlayLayer) {
             // advancing while omitting the expensive per-object stock
             // visibility walk; the GPU renderer owns final sprite visibility.
             ((decomp_PlayLayer*)this)->optimized_updateVisibility(dt);
+
+            // Upstream refreshes channel blend flags and requests its sorted
+            // batch variant once in the renderer pre-draw, before any layer is
+            // submitted. Do this once here so every GPU layer node in this
+            // frame uses the same draw-range map.
+            if (auto gpuRenderer = IOSUpstream::IOSGPURenderer::getCurrent();
+                gpuRenderer && gpuRenderer->getPlayLayer() == this) {
+                if (!scene->refreshBlendOrder())
+                    gpuRenderer->reportFailure(
+                        "could not refresh the live blend-state draw schedule"
+                    );
+            } else {
+                log::error("Bismuth iOS GPU-only beta FAILED: scene data has no matching renderer during blend-order refresh");
+            }
             return;
         }
         PlayLayer::updateVisibility(dt);
