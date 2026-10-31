@@ -185,6 +185,11 @@ static_assert(sizeof(RGBA8) == 4, "RGBA8 must serialize as exactly four bytes");
 using ColorChannelTable = std::array<RGBA8, IOS_COLOR_CHANNEL_COUNT>;
 
 inline u32 colorChannelForSortKey(u32 colorChannelFlags) {
+    // Direct-tint sprites use channel 0 in the owner's blend-order model.
+    // WHITE is only a safe shader placeholder for their unused color lookup.
+    if ((colorChannelFlags & IOS_COLOR_CHANNEL_DIRECT_FLAG) != 0)
+        return 0;
+
     const u32 channel = colorChannelFlags & IOS_COLOR_CHANNEL_INDEX_MASK;
     return channel < IOS_COLOR_CHANNEL_COUNT ? channel : IOS_COLOR_CHANNEL_COUNT - 1;
 }
