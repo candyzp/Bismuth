@@ -112,11 +112,8 @@ void ObjectBatch::clear() {
     usedLayerKeys.clear();
     sortedBatch = {};
     currentSpriteIndex = 0;
-    hasCurrentBlendStates = false;
-    currentBlendStates.fill(false);
     orderRevision = 0;
     built = false;
-    sortValidationFailed = false;
 }
 
 u32 ObjectBatch::getObjectIndex(GameObject* object) const {
@@ -518,30 +515,9 @@ bool ObjectBatch::finalizeSortedGeometry(const ColorChannelBlendStates& blendSta
 
     if (!applySortedBatch(*generated))
         return false;
-    currentBlendStates = blendStates;
-    hasCurrentBlendStates = true;
     return true;
 }
 
-bool ObjectBatch::updateBlendStates(const ColorChannelBlendStates& blendStates) {
-    if (!built || (hasCurrentBlendStates && currentBlendStates == blendStates))
-        return true;
-
-    const SortedObjectBatch* generated =
-        workGroupScheduler.fetchSortedBatchForBlendStates(blendStates);
-    if (!generated)
-        return false; // Owner-style async generation; keep prior sort until ready.
-
-    if (!applySortedBatch(*generated)) {
-        sortValidationFailed = true;
-        log::error("Bismuth iOS: completed scheduler batch failed validation");
-        return false;
-    }
-
-    currentBlendStates = blendStates;
-    hasCurrentBlendStates = true;
-    return true;
-}
 
 bool ObjectBatch::build(
     const std::vector<GameObject*>& objects,
