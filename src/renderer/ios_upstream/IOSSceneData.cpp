@@ -4,6 +4,8 @@
 
 #include <Geode/Enums.hpp>
 #include <Geode/binding/GJEffectManager.hpp>
+#include <Geode/cocos/CCDirector.h>
+#include <Geode/cocos/kazmath/include/kazmath/mat4.h>
 #include <Geode/cocos/sprite_nodes/CCTextureCache.h>
 #include <Geode/utils/cocos.hpp>
 #include <ObjectSorter.hpp>
@@ -109,13 +111,13 @@ bool SceneData::init(PlayLayer* playLayer) {
         return false;
     }
 
-    ColorChannelBlendStates blendStates {};
     fetchBlendingStates(blendStates);
+    this->blendStates = blendStates;
 
     const bool batchOK = objectBatch.build(
         objects,
         groupManager,
-        blendStates,
+        this->blendStates,
         [this](SpriteSheet sheet) { return getSpriteSheetTexture(sheet); }
     );
     if (!batchOK) {
@@ -125,6 +127,10 @@ bool SceneData::init(PlayLayer* playLayer) {
         );
         return false;
     }
+
+    gameTimer = 0.f;
+    updateColorChannelTable();
+    updateGameState();
 
     log::info(
         "Bismuth iOS upstream scene data prepared: {} objects, {} sprites, {} group combinations, {} work groups, {} render layers",
@@ -139,27 +145,132 @@ bool SceneData::init(PlayLayer* playLayer) {
     return true;
 }
 
+void SceneData::updateColorChannelTable() {
+    colorChannels.fill(RGBA8{});
+
+    if (!layer || !layer->m_effectManager)
+        return;
+
+    // Match the owner's prepareColorChannelBuffer(): use m_copyColor, which
+    // includes the final resolved channel color, not the older m_color value.
+    const auto& channelSprites = layer->m_effectManager->m_colorActionSpriteVector;
+    for (auto sprite : channelSprites) {
+        if (!sprite)
+            continue;
+
+        const i32 channelId = sprite->m_colorID;
+        if (channelId < 0 || channelId >= static_cast<i32>(colorChannels.size()))
+            continue;
+
+        auto& output = colorChannels[static_cast<usize>(channelId)];
+        output.r = sprite->m_copyColor.r;
+        output.g = sprite->m_copyColor.g;
+        output.b = sprite->m_copyColor.b;
+        output.a = static_cast<u8>(sprite->m_opacity);
+    }
+
+    colorChannels[IOS_COLOR_CHANNEL_BLACK] = {0, 0, 0, 255};
+}
+
+void SceneData::updateGameState() {
+    if (!layer || !layer->m_objectLayer)
+        return;
+
+    kmMat4 projection;
+    kmMat4 modelView;
+    kmMat4 modelViewProjection;
+    kmGLGetMatrix(KM_GL_PROJECTION, &projection);
+    kmGLGetMatrix(KM_GL_MODELVIEW, &modelView);
+    kmMat4Multiply(&modelViewProjection, &projection, &modelView);
+    reinterpret_cast<kmMat4&>(gameState.mvp) = modelViewProjection;
+
+    gameState.timer = gameTimer;
+    gameState.cameraViewSize = glm::vec2(
+        layer->m_cameraWidth,
+        layer->m_cameraHeight
+    );
+
+    const auto windowSize = CCDirector::get()->getWinSize();
+    gameState.windowSize = glm::vec2(windowSize.width, windowSize.height);
+    gameState.screenRight = CCDirector::get()->getScreenRight();
+    gameState.cameraUnzoomedX = layer->m_cameraUnzoomedX;
+
+    const cocos2d::ccColor3B specialLightBackground =
+        GameToolbox::transformColor(
+            layer->m_effectManager->activeColorForIndex(IOS_COLOR_CHANNEL_BG),
+            0.0,
+            -0.2,
+            0.2
+        );
+    gameState.specialLightBGColor = ccColor3BToGLM(specialLightBackground);
+
+    const glm::vec2 cameraBottomLeft = ccPointToGLM(
+        layer->m_objectLayer->convertToNodeSpace({0.f, 0.f})
+    );
+    const glm::vec2 cameraBottomRight = ccPointToGLM(
+        layer->m_objectLayer->convertToNodeSpace({windowSize.width, 0.f})
+    );
+    const glm::vec2 cameraTopLeft = ccPointToGLM(
+        layer->m_objectLayer->convertToNodeSpace({0.f, windowSize.height})
+    );
+
+    const glm::vec2 cameraRight = cameraBottomRight - cameraBottomLeft;
+    const glm::vec2 cameraUp = cameraTopLeft - cameraBottomLeft;
+    gameState.cameraPosition = cameraBottomLeft;
+
+    const float rightLength = glm::length(cameraRight);
+    const float upLength = glm::length(cameraUp);
+    gameState.cameraRight = rightLength > 0.f
+        ? cameraRight / rightLength : glm::vec2(1.f, 0.f);
+    gameState.cameraUp = upLength > 0.f
+        ? cameraUp / upLength : glm::vec2(0.f, 1.f);
+    gameState.cameraSize = glm::vec2(rightLength, upLength);
+
+    gameState.gameStateFlags = 0;
+    if (layer->m_player1 && layer->m_player1->m_isDead)
+        gameState.gameStateFlags |= IOS_GAME_STATE_IS_PLAYER_DEAD;
+
+    if (layer->m_skipAudioStep)
+        gameState.audioScale = FMODAudioEngine::sharedEngine()->getMeteringValue();
+    else if (layer->m_audioEffectsLayer)
+        gameState.audioScale = layer->m_audioEffectsLayer->m_audioScale;
+    else
+        gameState.audioScale = 0.5f;
+
+    if (layer->m_isSilent ||
+        (layer->m_isPracticeMode && !layer->m_practiceMusicSync)) {
+        gameState.audioScale = 0.5f;
+    }
+}
+
 void SceneData::reset() {
     if (!ready)
         return;
+
     groupManager.resetGroupStates();
-    ColorChannelBlendStates blendStates {};
     fetchBlendingStates(blendStates);
     objectBatch.updateBlendStates(blendStates);
+    updateColorChannelTable();
+    updateGameState();
     objectBatch.refreshSpriteAppearances();
 }
 
-void SceneData::update() {
+void SceneData::update(float dt) {
     if (!ready)
         return;
-    groupManager.updateGroupStateBuffer();
+
+    gameTimer += dt;
+    updateGameState();
+
+    if (!layer->m_isPaused) {
+        updateColorChannelTable();
+        groupManager.updateGroupStateBuffer();
+    }
 
     // The owner re-evaluates color-channel blending every frame. The scheduler
     // generates a new layer ordering asynchronously when any channel changes.
-    ColorChannelBlendStates blendStates {};
     fetchBlendingStates(blendStates);
     objectBatch.updateBlendStates(blendStates);
-
     objectBatch.refreshSpriteAppearances();
 }
 
