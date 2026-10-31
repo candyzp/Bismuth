@@ -84,7 +84,7 @@ public:
     void removeCheckpoint(CheckpointObject* checkpoint);
 
 private:
-    void addGroupCombination(GroupCombination& combination, GroupCombinationIndex index);
+    void addGroupCombination(const GroupCombination& combination, GroupCombinationIndex index);
     void fetchVanillaRotateGroups();
     void updateAlphaValues();
     void updatePulseEntries();
