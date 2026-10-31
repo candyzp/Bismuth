@@ -25,6 +25,14 @@ constexpr GLint GROUP_DATA_TEXTURE_UNIT = 1;
 constexpr GLint BYTE_DATA_TEXTURE_UNIT = 2;
 constexpr GLint SPRITE_SHEET_TEXTURE_UNIT = 3;
 
+static_assert(sizeof(ObjectVertex) == sizeof(float) * 10,
+    "ES2 object vertex must contain exactly five vec2 attributes");
+static_assert(offsetof(ObjectVertex, positionOffset) == 0);
+static_assert(offsetof(ObjectVertex, texCoord) == sizeof(float) * 2);
+static_assert(offsetof(ObjectVertex, objectAndGroupIndex) == sizeof(float) * 4);
+static_assert(offsetof(ObjectVertex, spriteAndMeta) == sizeof(float) * 6);
+static_assert(offsetof(ObjectVertex, objectStartPosition) == sizeof(float) * 8);
+
 class IOSGLStateSnapshot {
 public:
     static constexpr GLint ATTRIB_COUNT = 5;
