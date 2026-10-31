@@ -9,6 +9,8 @@
 #include <sstream>
 #include <utility>
 
+using namespace geode::prelude;
+
 namespace IOSGPU {
 namespace {
 
