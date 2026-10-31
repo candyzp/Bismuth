@@ -8,7 +8,6 @@
 #include "AtlasInterleave.hpp"
 #include "BackgroundGPU.hpp"
 #include "GPUTruth.hpp"
-#include "GPUSelfTest.hpp"
 
 #include "Geode/cocos/CCDirector.h"
 #include "Geode/cocos/sprite_nodes/CCSpriteBatchNode.h"
@@ -41,7 +40,6 @@ struct StandaloneChunkDesc {
 
 struct IOSRendererState {
     BackgroundGPU background;
-    IOSGPUSelfTest::Result gpuProbe;
     std::unique_ptr<ColorChannelBuffer> colorChannels = std::make_unique<ColorChannelBuffer>();
     std::unique_ptr<ResolvedStateLayer> resolvedState;
     Shader* assistShader = nullptr;
@@ -201,34 +199,13 @@ bool Renderer::init(PlayLayer* playLayer) {
 
     g_iosStates[this] = std::make_unique<IOSRendererState>();
     auto state = iosState(this);
-
-    // Validate the actual iOS path used by the assist renderer: two vertex
-    // texture samplers, float state textures, ES shader compilation/linking,
-    // and a completed offscreen draw. A failed test leaves stock rendering on.
-    state->gpuProbe = IOSGPUSelfTest::run();
-    if (!state->gpuProbe.ok) {
-        log::warn(
-            "Bismuth iOS GPU self-test failed at '{}' (vertex texture units {}, GL code 0x{:X}); stock rendering remains active",
-            state->gpuProbe.stage,
-            state->gpuProbe.vertexTextureUnits,
-            state->gpuProbe.glError
-        );
-    } else {
-        log::info(
-            "Bismuth iOS GPU self-test passed ({} vertex texture units)",
-            state->gpuProbe.vertexTextureUnits
-        );
-        state->background.prepare(); // Compile during level setup, not the first draw.
-    }
-
+    state->background.prepare(); // Compile during level setup, not the first draw.
     colorChannelBuffer = state->colorChannels.get();
     std::memset(colorChannelBuffer, 0, sizeof(ColorChannelBuffer));
 
-    if (state->gpuProbe.ok) {
-        state->resolvedState = std::make_unique<ResolvedStateLayer>();
-        if (!state->resolvedState->init(layer)) {
-            log::warn("Bismuth iOS resolved-state layer unavailable; GPU assist cannot initialize");
-        }
+    state->resolvedState = std::make_unique<ResolvedStateLayer>();
+    if (!state->resolvedState->init(layer)) {
+        log::warn("Bismuth iOS resolved-state layer unavailable; GPU assist cannot initialize");
     }
 
     if (state->resolvedState && state->resolvedState->isGPUStateReady()) {
@@ -670,11 +647,7 @@ bool Renderer::init(PlayLayer* playLayer) {
     setVisible(false);
     rendererStartTime = getTime();
 
-    if (state->gpuProbe.ok) {
-        log::info("Bismuth iOS initialized: GPU assist enabled with stock CPU ownership for unsupported/over-budget visuals");
-    } else {
-        log::warn("Bismuth iOS initialized in stock-rendering mode because the GPU self-test failed");
-    }
+    log::info("Bismuth iOS initialized: profitable atlas GPU assist with stock CPU ownership for fragmented/standalone/over-budget visuals");
     return true;
 }
 
@@ -764,16 +737,10 @@ void Renderer::updateDebugText() {
         }
         const bool ready = state->assistShader && state->resolvedState &&
             state->resolvedState->isGPUStateReady();
-        const char* status = !enabled ? "OFF" :
-            !state->gpuProbe.ok ? "PROBE FAILED" :
-            !ready ? "UNAVAILABLE" : calls ? "ACTIVE" : "IDLE";
+        const char* status = !enabled ? "OFF" : !ready ? "UNAVAILABLE" : calls ? "ACTIVE" : "IDLE";
         text = fmt::format(
-            "Bismuth GPU [{}]\nGPU Check: {} | Vertex texture units: {}\nGPU Draw: {} sprites/frame\nCalls: {} | Transforms skipped: {}",
-            status,
-            state->gpuProbe.stage,
-            state->gpuProbe.vertexTextureUnits,
-            indices / 6,
-            calls,
+            "Bismuth GPU [{}]\nGPU Draw: {} sprites/frame\nCalls: {} | Transforms skipped: {}",
+            status, indices / 6, calls,
             state->batchTransformSkipsLastFrame + state->standaloneRootVisitsLastFrame
         );
     }
@@ -796,16 +763,11 @@ bool Renderer::drawGPUBackground(cocos2d::CCSprite* sprite) {
     if (!enabled || !layer || !layer->m_background || !sprite ||
         !isDescendantOf(sprite, layer->m_background))
         return false;
-
     auto state = iosState(this);
-    if (!state || !state->gpuProbe.ok)
-        return false;
-
-    const bool submitted = state->background.draw(sprite);
+    const bool submitted = state && state->background.draw(sprite);
     GPUTruth::recordBackground(this, submitted);
-
-    // The stock CCSprite path is retained unless the GPU draw really completed.
-    return submitted;
+    // Ownership, not success: a failed background draw never calls stock draw.
+    return true;
 }
 
 void Renderer::beginGPUFrame() {
