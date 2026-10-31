@@ -93,7 +93,7 @@ struct PulseEntry {
     u32 flags = 0;
     union {
         u32 hsv;
-        cocos2d::ccColor4B color;
+        u32 color;
     };
 
     PulseEntry() : hsv(0) {}
@@ -138,7 +138,13 @@ struct SortedObjectBatch {
 };
 
 using ColorChannelBlendStates = std::array<bool, IOS_COLOR_CHANNEL_COUNT>;
-using ColorChannelTable = std::array<cocos2d::ccColor4B, IOS_COLOR_CHANNEL_COUNT>;
+struct RGBA8 {
+    u8 r = 255;
+    u8 g = 255;
+    u8 b = 255;
+    u8 a = 255;
+};
+using ColorChannelTable = std::array<RGBA8, IOS_COLOR_CHANNEL_COUNT>;
 
 inline u32 colorChannelForSortKey(u32 colorChannel) {
     return colorChannel < IOS_COLOR_CHANNEL_COUNT ? colorChannel : IOS_COLOR_CHANNEL_COUNT - 1;
