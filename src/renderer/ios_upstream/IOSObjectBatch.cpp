@@ -111,6 +111,8 @@ void ObjectBatch::clear() {
     orderedVertices.clear();
     usedLayerKeys.clear();
     sortedBatch = {};
+    appliedBlendStates = {};
+    hasAppliedBlendStates = false;
     currentSpriteIndex = 0;
     orderRevision = 0;
     built = false;
@@ -565,6 +567,33 @@ bool ObjectBatch::finalizeSortedGeometry(const ColorChannelBlendStates& blendSta
 
     if (!applySortedBatch(*generated))
         return false;
+
+    appliedBlendStates = blendStates;
+    hasAppliedBlendStates = true;
+    return true;
+}
+
+bool ObjectBatch::refreshBlendOrder(const ColorChannelBlendStates& blendStates) {
+    if (!built || !hasAppliedBlendStates)
+        return false;
+
+    // The owner requests the current blend-state variant every frame. The
+    // scheduler builds unseen variants asynchronously; keep the last valid
+    // draw order until the requested variant is ready, then swap atomically.
+    if (blendStates == appliedBlendStates)
+        return true;
+
+    const SortedObjectBatch* generated =
+        workGroupScheduler.fetchSortedBatchForBlendStates(blendStates);
+    if (!generated)
+        return true;
+
+    if (!applySortedBatch(*generated)) {
+        log::error("Bismuth iOS upstream batch rejected a refreshed blend-state schedule");
+        return false;
+    }
+
+    appliedBlendStates = blendStates;
     return true;
 }
 
