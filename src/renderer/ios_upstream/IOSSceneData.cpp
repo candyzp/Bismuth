@@ -38,7 +38,7 @@ bool SceneData::buildSortedObjectList(std::vector<GameObject*>& objects) const {
         if (object == layer->m_anticheatSpike)
             continue;
         if (object->isTrigger() || object->m_isHide ||
-            object->m_objectID == GUIDE_OBJECT_ID)
+            object->m_objectID == IOS_GUIDE_OBJECT_ID)
             continue;
 
         sorter.addGameObject(object);
