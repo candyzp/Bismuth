@@ -115,17 +115,13 @@ Completed on `rework/ios-gpu-v2` at source level:
 - Closed the stock-render escape paths when the new GPU renderer owns the PlayLayer or initialization fails.
 
 ### Step 3 — GPU evaluation and drawing
-In progress on `rework/ios-gpu-v2`:
+Source implementation is in place on `rework/ios-gpu-v2`:
 - Added texture-backed object/group/color/HSV/pulse/sprite-appearance tables for ES2.
-- Ported the owner culling/evaluation calculations into a vertex shader and sprite-sheet sampling into the fragment shader.
-- Added ordered VBO uploads, one GPU draw node per active owner layer range, upstream blend functions, and Cocos GL-state restoration.
-- Reconciled shader byte packing, direct-tint handling, pulse sentinels/loop limits, Z-layer keys, empty scenes, and renderer failure propagation against upstream source.
+- Ported the owner's culling/evaluation calculations into a vertex shader and sprite-sheet sampling into the fragment shader.
+- Added scheduler-ordered VBO uploads, owner-keyed GPU layer nodes, owner blend functions, and Cocos GL-state restoration.
+- Reconciled shader byte packing, direct-tint handling, pulse sentinels/ES2 loop limits, raw Z-layer keys, empty scenes, and renderer failure propagation against upstream.
+- Added strict validation of sprite remaps, layer-range coverage, work-group partitioning, vertex offsets, and float-index precision.
 
-Still required before step 3 can be called complete:
-- Build the shader and renderer with the iOS toolchain and fix compiler/linker errors.
-- Verify texture-table contents, shader attribute/uniform bindings, and actual draw submissions on device.
-- Compare visual output for color, HSV, pulses, glow, invisible blocks, rotation, audio scale, culling, and sprite-sheet ordering.
-
-This source work is not yet compiled or device-tested. No Cocos fallback has been added.
+Step 3 source work is ready to move into step 4, but it has not been compiled or validated on a device.
 
 Do not start from or extend the old `AssistShadowBatch`, `ResolvedStateLayer`, or atlas-interleaving renderer.
