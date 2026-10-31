@@ -427,8 +427,13 @@ void main() {
     }
 
     float externalOpacity = group2.z * object1.y;
-    float spriteOpacity = appearance.a / 255.0;
-    color.a *= spriteOpacity * externalOpacity;
+    // Normal owner color-channel entries already carry channel opacity.
+    // The per-sprite displayed alpha is used only for direct-tint mode, where
+    // no valid channel entry exists (legacy/default color channel zero).
+    float directSpriteOpacity = directTint > 0.5
+        ? appearance.a / 255.0
+        : 1.0;
+    color.a *= directSpriteOpacity * externalOpacity;
 
     // Direct sprite colors from legacy/default channel 0 are already displayed
     // tints. Respect Cocos' premultiplied-alpha flag instead of multiplying the
