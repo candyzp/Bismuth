@@ -288,19 +288,20 @@ void SceneData::update(float dt) {
 
     gameTimer += dt;
 
-    if (!layer->m_isPaused) {
-        updateColorChannelTable();
-        groupManager.updateGroupStateBuffer();
-    }
-
-    // The owner re-evaluates color-channel blending every frame. The scheduler
-    // generates a new layer ordering asynchronously when any channel changes.
+    // Match Renderer::draw(): blending state is observed every frame, but
+    // mutable color/group data and the scheduler prepass are not regenerated
+    // while Geometry Dash is paused.
     fetchBlendingStates(blendStates);
-    if (!objectBatch.updateBlendStates(blendStates)) {
-        // A newly generated blend order may not be ready until the next frame.
-        // Continue using the previous completed scheduler product; it is still
-        // a valid GPU order and never routes draws to Cocos.
-    }
+    if (layer->m_isPaused)
+        return;
+
+    updateColorChannelTable();
+    groupManager.updateGroupStateBuffer();
+
+    // The owner schedules a new layer ordering asynchronously whenever a
+    // channel's blend state changes. Until it is ready, keep the last complete
+    // GPU order rather than routing any content through stock Cocos.
+    objectBatch.updateBlendStates(blendStates);
     objectBatch.refreshSpriteAppearances();
 
     if (!gpuStateTables.upload(*this))
