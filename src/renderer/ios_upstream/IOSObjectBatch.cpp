@@ -489,7 +489,8 @@ bool ObjectBatch::applySortedBatch(const SortedObjectBatch& newSortedBatch) {
         const u64 endWorkGroup =
             static_cast<u64>(range.firstWorkGroup) + range.workGroupCount;
 
-        if (range.spriteCount == 0 || range.vertexCount == 0 ||
+        if (range.key != key ||
+            range.spriteCount == 0 || range.vertexCount == 0 ||
             range.workGroupCount == 0 || range.vertexCount % 3 != 0 ||
             range.firstInputSprite != expectedFirstSprite ||
             range.firstVertex != expectedFirstVertex ||
