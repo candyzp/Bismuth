@@ -118,7 +118,9 @@ GroupCombination::GroupCombination(GameObject* object) {
         return;
     }
     auto groups = object->m_groups;
-    count = std::clamp<i32>(object->m_groupCount, 0, IOS_GROUP_IDS_PER_OBJECT);
+    count = groups
+        ? std::clamp<i32>(object->m_groupCount, 0, IOS_GROUP_IDS_PER_OBJECT)
+        : 0;
     for (i32 i = 0; i < count; ++i)
         ids[static_cast<usize>(i)] = groups->at(static_cast<usize>(i));
     std::fill(ids.begin() + count, ids.end(), 0);
