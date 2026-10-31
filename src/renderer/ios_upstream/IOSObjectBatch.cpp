@@ -122,7 +122,7 @@ bool ObjectBatch::buildObjectInfo(const std::vector<GameObject*>& objects) {
 
     for (auto object : objects) {
         if (!object || object->isTrigger() || object->m_isHide ||
-            object->m_objectID == GUIDE_OBJECT_ID)
+            object->m_objectID == IOS_GUIDE_OBJECT_ID)
             continue;
 
         ObjectInfo info;
@@ -498,7 +498,7 @@ bool ObjectBatch::build(
 
     for (auto object : objects) {
         if (!object || object->isTrigger() || object->m_isHide ||
-            object->m_objectID == GUIDE_OBJECT_ID)
+            object->m_objectID == IOS_GUIDE_OBJECT_ID)
             continue;
         if (!writeGameObject(object, groupManager)) {
             clear();
