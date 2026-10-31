@@ -55,9 +55,11 @@ Port the owner's algorithms and semantics. Do not copy Windows-only API glue, Op
 
 ## iOS graphics API constraint
 
-Apple documents the iOS OpenGLES framework as implementing OpenGL ES 1.1, 2.0, and 3.0. The upstream renderer requires desktop OpenGL 4.3 features including compute shaders, shader-storage buffers, and indirect multi-draw. Those APIs are not available in Apple's documented OpenGLES 3.0 interface.
+Apple documents the iOS OpenGLES framework as implementing OpenGL ES 1.1, 2.0, and 3.0. The fork's own iOS shim explicitly includes `OpenGLES/ES2/gl.h` / `glext.h` and documents Geometry Dash as using a Cocos OpenGL ES 2 context. Treat ES2 as the actual target until the runtime capability report proves otherwise.
 
-This is a backend-porting constraint, not permission to return to the old renderer design. Preserve the upstream data flow and GPU responsibilities while implementing the equivalent iOS GPU path with APIs actually available in the game's iOS GL context. Before implementation, verify the live context version, GLSL ES version, texture limits, vertex texture units, extensions, and framebuffer formats on-device. Do not assume the context is ES 3.0 merely because the framework can provide it.
+The upstream renderer requires desktop OpenGL 4.3 features including compute shaders, shader-storage buffers, and indirect multi-draw. Those APIs are not available in the game's documented/current ES2 path. Preserve the owner's data preparation, work-group scheduling, ordering, and per-sprite calculations; translate the culling/transform/color evaluation into the ES2 GPU vertex path, using GPU-readable state tables only after confirming the context's vertex-texture support. CPU scheduling can issue the corresponding precomputed `glDrawElements` ranges. This is an API translation of the owner's renderer, not a continuation of the old hybrid assist design.
+
+Before implementation, use the new runtime capability report to verify the live context version, GLSL ES version, texture limits, vertex texture units, extensions, and supported formats. Do not assume ES 3.0 merely because the framework can provide it.
 
 ## Build sequence
 
