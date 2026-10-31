@@ -22,9 +22,9 @@ static std::optional<GroupID> getTargetGroupIdOfTransformingTrigger(GameObject* 
         return std::nullopt;
 
     switch (object->m_objectID) {
-        case MOVE_TRIGGER_ID:
-        case ROTATE_TRIGGER_ID:
-        case FOLLOW_TRIGGER_ID:
+        case IOS_MOVE_TRIGGER_ID:
+        case IOS_ROTATE_TRIGGER_ID:
+        case IOS_FOLLOW_TRIGGER_ID:
             return static_cast<EffectGameObject*>(object)->m_targetGroupID;
         default:
             return std::nullopt;
@@ -204,8 +204,8 @@ bool GroupManager::initWithObjects(PlayLayer* playLayer, cocos2d::CCArray* objec
         const auto targetGroupId = getTargetGroupIdOfTransformingTrigger(object);
         if (targetGroupId.has_value())
             transformGroupIds.insert(targetGroupId.value());
-        else if (object->m_objectID == ALPHA_TRIGGER_ID ||
-                 object->m_objectID == TOGGLE_TRIGGER_ID) {
+        else if (object->m_objectID == IOS_ALPHA_TRIGGER_ID ||
+                 object->m_objectID == IOS_TOGGLE_TRIGGER_ID) {
             alphaGroupIds.insert(
                 static_cast<EffectGameObject*>(object)->m_targetGroupID
             );
