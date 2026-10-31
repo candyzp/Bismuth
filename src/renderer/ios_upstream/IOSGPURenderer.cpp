@@ -284,10 +284,19 @@ bool IOSGPURenderer::createShaderProgram() {
 }
 
 bool IOSGPURenderer::createVertexBuffer() {
-    if (vertexBuffer)
+    if (vertexBuffer) {
         glDeleteBuffers(1, &vertexBuffer);
+        vertexBuffer = 0;
+    }
 
-    vertexBuffer = 0;
+    // A valid level may contain no renderable sprites (for example, a blank
+    // level or one containing only gameplay triggers). The GPU renderer still
+    // owns that scene; it simply has no vertex buffer or layer submissions.
+    if (sceneData.getObjectBatch().getOrderedVertices().empty()) {
+        uploadedOrderRevision = sceneData.getObjectBatch().getOrderRevision();
+        return true;
+    }
+
     glGenBuffers(1, &vertexBuffer);
     if (!vertexBuffer) {
         fail("glGenBuffers returned zero for ordered object vertex stream");
@@ -303,8 +312,8 @@ bool IOSGPURenderer::uploadOrderedVertices() {
 
     const auto& vertices = sceneData.getObjectBatch().getOrderedVertices();
     if (vertices.empty()) {
-        fail("ordered object vertex stream is empty");
-        return false;
+        uploadedOrderRevision = sceneData.getObjectBatch().getOrderRevision();
+        return true;
     }
 
     if (vertices.size() >
@@ -392,11 +401,8 @@ bool IOSGPURenderer::syncLayerNodes() {
         layerNodeKeys.insert(key);
     }
 
-    if (layerNodes.empty()) {
-        fail("no active GPU layer nodes could be attached to stock Z-order slots");
-        return false;
-    }
-
+    // No active ranges means there is nothing to submit. This is a valid
+    // GPU-owned empty scene, not a renderer initialization failure.
     return true;
 }
 
