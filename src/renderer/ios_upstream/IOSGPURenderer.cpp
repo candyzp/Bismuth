@@ -244,8 +244,16 @@ void IOSGPURenderer::createDebugOverlay() {
 }
 
 void IOSGPURenderer::updateDebugOverlay() {
-    if (!debugOverlay)
+    if (!debugOverlay || !layer)
         return;
+
+    // PlayLayer::resetLevel may rebuild its child list. Keep the status label
+    // attached to the active PlayLayer instead of silently losing the debugger.
+    if (debugOverlay->getParent() != layer)
+        layer->addChild(debugOverlay, 1000000);
+
+    const auto winSize = CCDirector::get()->getWinSize();
+    debugOverlay->setPosition(CCPoint(8.f, winSize.height - 8.f));
 
     std::string status = failed
         ? "BISMUTH iOS GPU: FAILED"
@@ -329,21 +337,30 @@ void IOSGPURenderer::hideStockBatches() {
     if (!layer || !layer->m_batchNodes)
         return;
 
+    if (!ownsStockBatches) {
+        stockBatchVisibility.clear();
+        for (auto batch : CCArrayExt<cocos2d::CCNode*>(layer->m_batchNodes)) {
+            if (!batch)
+                continue;
+            stockBatchVisibility.emplace_back(batch, batch->isVisible());
+            batch->setVisible(false);
+        }
+        ownsStockBatches = true;
+        return;
+    }
+
     for (auto batch : CCArrayExt<cocos2d::CCNode*>(layer->m_batchNodes)) {
         if (batch)
             batch->setVisible(false);
     }
-    ownsStockBatches = true;
 }
 
 void IOSGPURenderer::showStockBatches() {
-    if (!layer || !layer->m_batchNodes)
-        return;
-
-    for (auto batch : CCArrayExt<cocos2d::CCNode*>(layer->m_batchNodes)) {
+    for (const auto& [batch, wasVisible] : stockBatchVisibility) {
         if (batch)
-            batch->setVisible(true);
+            batch->setVisible(wasVisible);
     }
+    stockBatchVisibility.clear();
     ownsStockBatches = false;
 }
 
