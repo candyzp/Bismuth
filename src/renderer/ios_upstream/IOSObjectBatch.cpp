@@ -477,26 +477,75 @@ bool ObjectBatch::applySortedBatch(const SortedObjectBatch& newSortedBatch) {
     if (newOrderedVertices.size() != sourceVertices.size())
         return false;
 
+    u64 expectedFirstSprite = 0;
+    u64 expectedFirstVertex = 0;
+    u64 expectedFirstWorkGroup = 0;
+
     for (const auto& [key, range] : newSortedBatch.layerRanges) {
-        const u64 endVertex =
-            static_cast<u64>(range.firstVertex) + range.vertexCount;
         const u64 endSprite =
             static_cast<u64>(range.firstInputSprite) + range.spriteCount;
+        const u64 endVertex =
+            static_cast<u64>(range.firstVertex) + range.vertexCount;
         const u64 endWorkGroup =
             static_cast<u64>(range.firstWorkGroup) + range.workGroupCount;
 
-        if (endVertex > static_cast<u64>(newOrderedVertices.size()) ||
-            endSprite > static_cast<u64>(newSortedBatch.inputSpriteIndices.size()) ||
-            endWorkGroup > static_cast<u64>(newSortedBatch.workGroups.size()) ||
-            range.vertexCount % 3 != 0)
+        if (range.spriteCount == 0 || range.vertexCount == 0 ||
+            range.workGroupCount == 0 || range.vertexCount % 3 != 0 ||
+            range.firstInputSprite != expectedFirstSprite ||
+            range.firstVertex != expectedFirstVertex ||
+            range.firstWorkGroup != expectedFirstWorkGroup ||
+            endSprite > newSortedBatch.inputSpriteIndices.size() ||
+            endVertex > newOrderedVertices.size() ||
+            endWorkGroup > newSortedBatch.workGroups.size())
             return false;
+
+        u64 expectedRangeVertexCount = 0;
+        for (u64 spriteOffset = 0; spriteOffset < range.spriteCount; ++spriteOffset) {
+            const u32 sourceIndex =
+                newSortedBatch.inputSpriteIndices[range.firstInputSprite + spriteOffset];
+            expectedRangeVertexCount +=
+                static_cast<u64>(sourceInputSprites[sourceIndex].indexCount) * 3;
+        }
+        if (expectedRangeVertexCount != range.vertexCount)
+            return false;
+
+        u64 spriteCursor = range.firstInputSprite;
+        u64 vertexCursor = range.firstVertex;
+        for (u64 workGroupIndex = range.firstWorkGroup;
+             workGroupIndex < endWorkGroup;
+             ++workGroupIndex) {
+            const auto& workGroup =
+                newSortedBatch.workGroups[static_cast<usize>(workGroupIndex)];
+            if (workGroup.inputSpriteStart != spriteCursor ||
+                workGroup.inputSpriteEnd <= workGroup.inputSpriteStart ||
+                workGroup.inputSpriteEnd > endSprite ||
+                static_cast<u64>(workGroup.culledIndexBufferOutputIndex) * 3 != vertexCursor)
+                return false;
+
+            for (u64 spriteIndex = workGroup.inputSpriteStart;
+                 spriteIndex < workGroup.inputSpriteEnd;
+                 ++spriteIndex) {
+                const u32 sourceIndex =
+                    newSortedBatch.inputSpriteIndices[static_cast<usize>(spriteIndex)];
+                vertexCursor +=
+                    static_cast<u64>(sourceInputSprites[sourceIndex].indexCount) * 3;
+            }
+            spriteCursor = workGroup.inputSpriteEnd;
+        }
+
+        if (spriteCursor != endSprite ||
+            vertexCursor != endVertex)
+            return false;
+
+        expectedFirstSprite = endSprite;
+        expectedFirstVertex = endVertex;
+        expectedFirstWorkGroup = endWorkGroup;
     }
 
-    for (const auto& workGroup : newSortedBatch.workGroups) {
-        if (workGroup.inputSpriteStart > workGroup.inputSpriteEnd ||
-            workGroup.inputSpriteEnd > newSortedBatch.inputSpriteIndices.size())
-            return false;
-    }
+    if (expectedFirstSprite != newSortedBatch.inputSpriteIndices.size() ||
+        expectedFirstVertex != newOrderedVertices.size() ||
+        expectedFirstWorkGroup != newSortedBatch.workGroups.size())
+        return false;
 
     // Commit atomically only after every range and source index has passed.
     // A malformed newly-generated blend order must not destroy the last valid
