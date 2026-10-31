@@ -58,7 +58,7 @@ void decomp_GJBaseGameLayer::processMoveActions() {
 void decomp_GJBaseGameLayer::optimized_processRotationActions(
     IOSUpstream::GroupManager& groupManager
 ) {
-    PROFILER_PUSH("optimized_processRotationActions");
+    profiler::functionPush("optimized_processRotationActions");
 
     const float objectLayerScaleX = m_objectLayer->getScaleX();
     const float objectLayerScaleY = m_objectLayer->getScaleY();
@@ -101,7 +101,7 @@ void decomp_GJBaseGameLayer::optimized_processRotationActions(
         if (rotation == 0.f && !command->m_finishRelated)
             continue;
 
-        const float localRotation =
+        float localRotation =
             command->m_lockObjectRotation ? 0.f : rotation;
 
         command->m_someInterpValue1RelatedFalse = true;
@@ -233,7 +233,7 @@ void decomp_GJBaseGameLayer::optimized_processRotationActions(
     m_objectLayer->setScaleY(objectLayerScaleY);
     m_objectLayer->setPosition(objectLayerPosition);
 
-    PROFILER_POP();
+    profiler::functionPop();
 }
 
 #endif
