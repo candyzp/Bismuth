@@ -497,13 +497,9 @@ void IOSGPURenderer::drawLayer(const LayerKey& key) {
     if (failed || !sceneData.isReady() || !shader || !vertexBuffer)
         return;
 
-    // Apply the live blend-state variant before reading its draw range or
-    // uploading its ordered vertices, matching the owner's renderer pre-draw.
-    if (!sceneData.refreshBlendOrder()) {
-        fail("could not refresh the live blend-state draw schedule");
-        return;
-    }
-
+    // Blend-state selection is refreshed once in PlayLayer::updateVisibility,
+    // before Cocos visits the per-layer GPU nodes. Every node in this frame
+    // therefore consumes one stable sorted batch and matching draw ranges.
     const auto& batch = sceneData.getObjectBatch();
     const auto rangeIt = batch.getSortedBatch().layerRanges.find(key);
     if (rangeIt == batch.getSortedBatch().layerRanges.end())
