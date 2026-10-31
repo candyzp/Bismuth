@@ -21,7 +21,6 @@ uniform float u_colorChannelsOffset;
 uniform float u_objectHSVOffset;
 uniform float u_pulseEntriesOffset;
 uniform float u_spriteAppearanceOffset;
-uniform float u_pulseEntryCount;
 
 uniform mat4 u_mvp;
 uniform float u_timer;
@@ -168,8 +167,10 @@ vec4 applyPulseEntries(
 ) {
     vec4 color = initialColor;
 
-    for (float i = 0.0; i < u_pulseEntryCount; i += 1.0) {
-        float pulseIndex = pulseStartIndex + i;
+    // GLSL ES 1.00 requires statically bounded loops. The CPU validates
+    // each combination's pulse list against this bound before uploading.
+    for (int i = 0; i < 128; ++i) {
+        float pulseIndex = pulseStartIndex + float(i);
         vec4 flags = getPulseFlags(pulseIndex);
 
         if (dot(flags, vec4(1.0)) < 0.5)
