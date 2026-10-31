@@ -44,7 +44,7 @@ This is a source audit and step-2 port record, not a successful build report. Th
 - Ported in `IOSObjectBatch.hpp/.cpp`: owner-style object metadata, sprite-tree expansion, rotated/flipped texture-rect mapping, convex mesh triangulation, six-vertex quads, per-sprite input records, source-sprite lifetime pins, and scheduler-produced layer ranges.
 - Source vertex/input arrays remain in their original owner order. The scheduler's remap/pre-culled arrays express draw order; they are not also physically reordered. The port validates that the remap is a complete permutation before step 3.
 - iOS-specific direct displayed-tint metadata is retained as a sidecar record; encoded color flags are masked only for blend-channel lookup.
-- Per-frame blend-state changes schedule a new owner-style layer ordering asynchronously.
+- The owner's blend-state map is fetched during renderer initialization and remains the scheduler key for that level; the iOS port follows that fixed per-level schedule.
 - GPU-produced raw-sprite state, culling-index generation, and final draw submission remain step 3.
 - The fork's old `VisibilityManager`, section culling and live-VBO-refresh implementation are not the base of this port.
 
@@ -54,7 +54,7 @@ This is a source audit and step-2 port record, not a successful build report. Th
 - The iOS direct-tint metadata for legacy/default channel 0 is kept in the high color-channel bits and carried into the new per-sprite record. The scheduler strips those flags only when indexing the blend-state table.
 
 **Renderer / draw nodes**
-- `IOSSceneData` ports the owner's CPU initialization/data-refresh sequence: sprite-sheet/mesh setup, full-level GroupManager initialization, ObjectSorter traversal, ObjectBatch build, color-channel table refresh using `m_copyColor`, game/camera/audio state, per-frame blend changes, and draw-time MVP/camera refresh.
+- `IOSSceneData` ports the owner's CPU initialization/data-refresh sequence: sprite-sheet/mesh setup, full-level GroupManager initialization, ObjectSorter traversal, ObjectBatch build, persistent color-channel table refresh using `m_copyColor`, game/camera/audio state, and draw-time MVP/camera refresh.
 - Gameplay hooks mirror move, optimized rotation, follow, toggle and checkpoint state into the active SceneData; Geometry Dash continues to update non-decoration object positions, sections, collision and oriented boxes.
 - The CPU scene-data module is now owned by the iOS GPU renderer. The current `IOSGPURenderer`, `IOSGPUStateTables`, and ES2 shaders are step-3 work-in-progress; their presence does not mean the GPU path is validated.
 - The legacy `RendererIOS.cpp`, `ResolvedStateLayer`, `AssistShadowBatch`, `StandaloneAssistBatch`, and `AtlasInterleave` are not dependencies of the new renderer path. When the new GPU renderer exists, the iOS batch hook explicitly blocks legacy Cocos batch draws. Initialization and draw failures keep stock batches hidden; they do not route to stock rendering.
@@ -131,14 +131,14 @@ If vertex texture fetch or the required data formats are unavailable in the live
 - [x] Inspect the fork's OpenGLES ES2 shim, DataTexture, iOS shader compiler and buffer implementation.
 - [x] Add live GL capability reporting, including vertex texture units, texture formats, color-target formats, MRT and timer-query support.
 - [x] Port owner record meanings into ES-compatible iOS CPU records.
-- [x] Port owner-style layer sorting, sprite remapping, blend-state scheduling and work-group range generation.
+- [x] Port owner-style layer sorting, sprite remapping using the initialization-time blend-state map, and work-group range generation.
 - [x] Port GroupManager combinations, movement/rotation/toggle state, alpha and pulse data, vanilla-rotation groups and checkpoints.
 - [x] Port ObjectBatch object/sprite metadata, mesh construction, texture-rect transforms/flips, source-order buffers, scheduler remapping and lifetime management.
 - [x] Port SceneData initialization plus live color-channel/game/camera/audio state capture.
 - [x] Port move/optimized-rotation/follow/toggle/checkpoint gameplay-state hooks.
 - [x] Match upstream's renderer creation point inside `setupHasCompleted()` / `resetLevel()`.
 - [x] Close the stock-render escape paths when GPU-renderer initialization or owner-node creation fails.
-- [x] Re-audit blend-flag masking, normalized Z-layer keys, dynamic blend variants, sprite-remap bounds, and optimized-group movement.
+- [x] Re-audit blend-flag masking, raw scheduler Z-layer keys, direct-tint channel-0 sorting, sprite-remap bounds, and optimized-group movement.
 - [ ] Step 3: finish/audit GPU texture-table serialization, ES shader parity, and ordered layer draw submission. Draft code exists, but is not verified.
 - [ ] Step 4: verify visual parity, effect coverage, lifecycle stability, and performance instrumentation on device.
 - [ ] Step 5: run the iOS build and address compile/link failures.
