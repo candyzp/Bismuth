@@ -126,7 +126,7 @@ Step 3 source work has been reviewed against the current upstream implementation
 
 ### Step 4 — source parity and compatibility review
 Source-level review complete on `rework/ios-gpu-v2`:
-- Compared the upstream renderer's per-frame blend-state refresh and scheduler selection. Fixed the iOS port so it fetches the live channel blend map, requests the matching asynchronous sorted variant, preserves the last valid draw order until ready, and increments the ordered-geometry revision when the new schedule is applied.
+- Compared the upstream renderer's per-frame blend-state refresh and scheduler selection. The iOS port now fetches the live channel blend map once in `PlayLayer::updateVisibility`, before Cocos visits any GPU layer nodes; it requests the matching asynchronous sorted variant, preserves the last valid draw order until ready, and increments the ordered-geometry revision when the new schedule is applied. This keeps all layer nodes in one frame on one consistent range map.
 - Compared object/sprite traversal, Z-layer/sheet/blend ordering, triangle remaps, sprite offsets, rotated texture rectangles, flips, alpha handling, group transforms, rotation actions, camera culling, audio/orb scale, HSV, pulses, special glow and invisible-block calculations.
 - Restored upstream root-versus-child black-sprite channel semantics while keeping the iOS direct-tint adaptation for legacy/default color channel 0.
 - Fixed ES2 GL-state restoration so prior client-memory vertex attribute descriptors are restored as well as VBO-backed descriptors.
