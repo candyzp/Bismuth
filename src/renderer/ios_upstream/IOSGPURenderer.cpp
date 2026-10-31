@@ -4,6 +4,7 @@
 
 #include "../Shader.hpp"
 #include <Geode/cocos/CCDirector.h>
+#include <Geode/cocos/label_nodes/CCLabelBMFont.h>
 #include <Geode/cocos/sprite_nodes/CCSpriteBatchNode.h>
 #include <Geode/utils/cocos.hpp>
 #include <glm/gtc/type_ptr.hpp>
@@ -187,6 +188,13 @@ static bool isValidDrawRange(const LayerDrawRange& range, usize vertexCount) {
 } // namespace
 
 IOSGPURenderer::~IOSGPURenderer() {
+    if (debugOverlay) {
+        if (debugOverlay->getParent())
+            debugOverlay->removeFromParentAndCleanup(true);
+        debugOverlay->release();
+        debugOverlay = nullptr;
+    }
+
     // Layer nodes are siblings under PlayLayer::m_objectLayer. They resolve
     // their owner through getCurrent(), so they become inert as soon as this
     // renderer is destroyed and are released with their owning PlayLayer.
@@ -206,6 +214,71 @@ IOSGPURenderer::~IOSGPURenderer() {
 
 IOSGPURenderer* IOSGPURenderer::getCurrent() {
     return currentRenderer;
+}
+
+void IOSGPURenderer::createDebugOverlay() {
+    if (!layer || debugOverlay)
+        return;
+
+    auto label = cocos2d::CCLabelBMFont::create(
+        "BISMUTH iOS GPU: STARTING",
+        "chatFont.fnt"
+    );
+    if (!label) {
+        log::error("Bismuth iOS GPU: failed to create the debug status label");
+        return;
+    }
+
+    debugOverlay = label;
+    debugOverlay->retain();
+    debugOverlay->setAnchorPoint(CCPoint(0.f, 1.f));
+    debugOverlay->setPosition(CCPoint(
+        8.f,
+        CCDirector::get()->getWinSize().height - 8.f
+    ));
+    debugOverlay->setScale(0.42f);
+    debugOverlay->setColor({255, 235, 90});
+    debugOverlay->setOpacity(240);
+    layer->addChild(debugOverlay, 1000000);
+    updateDebugOverlay();
+}
+
+void IOSGPURenderer::updateDebugOverlay() {
+    if (!debugOverlay)
+        return;
+
+    std::string status = failed
+        ? "BISMUTH iOS GPU: FAILED"
+        : initialized
+            ? "BISMUTH iOS GPU: ACTIVE"
+            : "BISMUTH iOS GPU: STARTING";
+
+    std::string detail;
+    if (failed) {
+        detail = failureReason;
+        debugOverlay->setColor({255, 105, 105});
+    } else {
+        const auto& batch = sceneData.getObjectBatch();
+        detail = "Sprites " + std::to_string(batch.getSpriteCount()) +
+            " | Vertices " + std::to_string(batch.getOrderedVertices().size()) +
+            " | Layers " + std::to_string(layerNodes.size()) +
+            " | Draws/frame " + std::to_string(lastFrameDraws);
+        debugOverlay->setColor(initialized
+            ? ccColor3B{105, 255, 150}
+            : ccColor3B{255, 235, 90});
+    }
+
+    const std::string message = status + "\n" + detail;
+    debugOverlay->setString(message.c_str());
+}
+
+void IOSGPURenderer::beginFrame() {
+    drawsThisFrame = 0;
+}
+
+void IOSGPURenderer::finishFrame() {
+    lastFrameDraws = drawsThisFrame;
+    updateDebugOverlay();
 }
 
 IOSGPURenderer* IOSGPURenderer::create(PlayLayer* playLayer) {
@@ -236,15 +309,20 @@ void IOSGPURenderer::fail(const std::string& reason) {
         return;
 
     failed = true;
+    initialized = false;
     failureReason = reason;
     log::error("Bismuth iOS GPU-only beta FAILED: {}", failureReason);
 
-    // No CPU renderer fallback. Stop any remaining layer submissions after the
-    // first error in this frame; stock Cocos batches remain hidden.
     for (auto node : layerNodes) {
         if (node)
             node->setVisible(false);
     }
+
+    // If ownership had already transferred, return the scene to Geometry Dash
+    // rather than leave a black level after a late GPU submission/state failure.
+    if (ownsStockBatches)
+        showStockBatches();
+    updateDebugOverlay();
 }
 
 void IOSGPURenderer::hideStockBatches() {
@@ -255,6 +333,18 @@ void IOSGPURenderer::hideStockBatches() {
         if (batch)
             batch->setVisible(false);
     }
+    ownsStockBatches = true;
+}
+
+void IOSGPURenderer::showStockBatches() {
+    if (!layer || !layer->m_batchNodes)
+        return;
+
+    for (auto batch : CCArrayExt<cocos2d::CCNode*>(layer->m_batchNodes)) {
+        if (batch)
+            batch->setVisible(true);
+    }
+    ownsStockBatches = false;
 }
 
 bool IOSGPURenderer::queryAndValidateCapabilities() {
@@ -446,10 +536,11 @@ bool IOSGPURenderer::initForPlayLayer(PlayLayer* playLayer) {
         return false;
     }
 
-    // This is deliberately the first rendering-ownership operation. There is no
-    // fallback, including during shader/table initialization failure.
-    hideStockBatches();
+    createDebugOverlay();
+    updateDebugOverlay();
 
+    // Prepare the complete GPU path before transferring visual ownership.
+    // A failed initialization must not strand the level with hidden stock batches.
     if (!queryAndValidateCapabilities())
         return false;
 
@@ -467,12 +558,16 @@ bool IOSGPURenderer::initForPlayLayer(PlayLayer* playLayer) {
     if (!createLayerNodes())
         return false;
 
+    initialized = true;
+    hideStockBatches();
+
     log::info(
         "Bismuth iOS GPU-only renderer initialized: {} sprites, {} layer nodes, {} group combinations",
         sceneData.getObjectBatch().getSpriteCount(),
         layerNodes.size(),
         sceneData.getGroupManager().getGroupCombinationCount()
     );
+    updateDebugOverlay();
     return true;
 }
 
@@ -626,6 +721,7 @@ void IOSGPURenderer::drawLayer(const LayerKey& key) {
         return;
     }
 
+    ++drawsThisFrame;
 }
 
 } // namespace IOSUpstream
