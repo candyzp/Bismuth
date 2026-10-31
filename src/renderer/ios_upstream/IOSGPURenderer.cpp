@@ -73,7 +73,10 @@ public:
         restore();
     }
 
-    void restore() const {
+    void restore() {
+        if (didRestore)
+            return;
+
         glUseProgram(static_cast<GLuint>(program));
         glBindBuffer(GL_ARRAY_BUFFER, static_cast<GLuint>(arrayBuffer));
 
@@ -122,6 +125,8 @@ public:
             static_cast<GLenum>(blendSrcAlpha),
             static_cast<GLenum>(blendDstAlpha)
         );
+
+        didRestore = true;
     }
 
 private:
@@ -147,6 +152,7 @@ private:
     GLboolean blendEnabled = GL_FALSE;
     GLint textureBindings[TEXTURE_UNIT_COUNT] = {};
     AttribState attributes[ATTRIB_COUNT] {};
+    bool didRestore = false;
 };
 
 class IOSGPULayerNode final : public cocos2d::CCNode {
@@ -597,9 +603,12 @@ void IOSGPURenderer::drawLayer(const LayerKey& key) {
         static_cast<GLsizei>(range.vertexCount)
     );
 
+    // Restore Cocos' GL state before checking the submission result so
+    // failures in either drawing or restoration are reported consistently.
+    savedGLState.restore();
     const GLenum drawError = glGetError();
     if (drawError != GL_NO_ERROR) {
-        fail(fmt::format("GPU layer draw failed (GL error 0x{:X})", drawError));
+        fail(fmt::format("GPU layer draw/state restore failed (GL error 0x{:X})", drawError));
         return;
     }
 
