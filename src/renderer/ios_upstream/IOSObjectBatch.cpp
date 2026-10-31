@@ -116,6 +116,7 @@ void ObjectBatch::clear() {
     currentBlendStates.fill(false);
     orderRevision = 0;
     built = false;
+    sortValidationFailed = false;
 }
 
 u32 ObjectBatch::getObjectIndex(GameObject* object) const {
@@ -531,8 +532,11 @@ bool ObjectBatch::updateBlendStates(const ColorChannelBlendStates& blendStates) 
     if (!generated)
         return false; // Owner-style async generation; keep prior sort until ready.
 
-    if (!applySortedBatch(*generated))
+    if (!applySortedBatch(*generated)) {
+        sortValidationFailed = true;
+        log::error("Bismuth iOS: completed scheduler batch failed validation");
         return false;
+    }
 
     currentBlendStates = blendStates;
     hasCurrentBlendStates = true;
