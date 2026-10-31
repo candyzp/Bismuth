@@ -118,7 +118,11 @@ class $modify(RendererPlayLayer, PlayLayer) {
     void updateVisibility(float dt) {
 #ifdef GEODE_IS_IOS
         auto scene = IOSUpstream::SceneData::getCurrent();
-        if (scene && scene->isReady() && scene->getPlayLayer() == this) {
+        auto gpuRenderer = IOSUpstream::IOSGPURenderer::getCurrent();
+        if (scene && scene->isReady() && gpuRenderer &&
+            gpuRenderer->isReadyForDrawing() &&
+            gpuRenderer->getPlayLayer() == this &&
+            scene->getPlayLayer() == this) {
             // Owner-style GPU visibility path. The iOS decomp keeps 2.2 Area
             // visual updates, enter effects, audio scale, colors and particles
             // advancing while omitting the expensive per-object stock
@@ -178,8 +182,11 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
             static_cast<GJBaseGameLayer*>(this))
             return;
 
-        if (auto scene = IOSUpstream::SceneData::getCurrent();
-            scene && scene->isReady() &&
+        auto scene = IOSUpstream::SceneData::getCurrent();
+        auto gpuRenderer = IOSUpstream::IOSGPURenderer::getCurrent();
+        if (scene && scene->isReady() && gpuRenderer &&
+            gpuRenderer->isReadyForDrawing() &&
+            gpuRenderer->getPlayLayer() == scene->getPlayLayer() &&
             static_cast<GJBaseGameLayer*>(scene->getPlayLayer()) == this) {
             if (auto gpuRenderer = IOSUpstream::IOSGPURenderer::getCurrent();
                 gpuRenderer && gpuRenderer->getPlayLayer() == scene->getPlayLayer()) {
@@ -203,7 +210,10 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
     void processMoveActions() {
 #ifdef GEODE_IS_IOS
         auto scene = IOSUpstream::SceneData::getCurrent();
-        if (!scene || !scene->isReady() ||
+        auto gpuRenderer = IOSUpstream::IOSGPURenderer::getCurrent();
+        if (!scene || !scene->isReady() || !gpuRenderer ||
+            !gpuRenderer->isReadyForDrawing() ||
+            gpuRenderer->getPlayLayer() != scene->getPlayLayer() ||
             static_cast<GJBaseGameLayer*>(scene->getPlayLayer()) != this) {
             GJBaseGameLayer::processMoveActions();
             return;
@@ -272,7 +282,10 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
     void processRotationActions() {
 #ifdef GEODE_IS_IOS
         auto scene = IOSUpstream::SceneData::getCurrent();
-        if (!scene || !scene->isReady() ||
+        auto gpuRenderer = IOSUpstream::IOSGPURenderer::getCurrent();
+        if (!scene || !scene->isReady() || !gpuRenderer ||
+            !gpuRenderer->isReadyForDrawing() ||
+            gpuRenderer->getPlayLayer() != scene->getPlayLayer() ||
             static_cast<GJBaseGameLayer*>(scene->getPlayLayer()) != this) {
             GJBaseGameLayer::processRotationActions();
             return;
@@ -336,7 +349,10 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
     void processFollowActions() {
 #ifdef GEODE_IS_IOS
         auto scene = IOSUpstream::SceneData::getCurrent();
-        if (!scene || !scene->isReady() ||
+        auto gpuRenderer = IOSUpstream::IOSGPURenderer::getCurrent();
+        if (!scene || !scene->isReady() || !gpuRenderer ||
+            !gpuRenderer->isReadyForDrawing() ||
+            gpuRenderer->getPlayLayer() != scene->getPlayLayer() ||
             static_cast<GJBaseGameLayer*>(scene->getPlayLayer()) != this) {
             GJBaseGameLayer::processFollowActions();
             return;
@@ -419,7 +435,10 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
 
 #ifdef GEODE_IS_IOS
         auto scene = IOSUpstream::SceneData::getCurrent();
-        if (!scene || !scene->isReady() ||
+        auto gpuRenderer = IOSUpstream::IOSGPURenderer::getCurrent();
+        if (!scene || !scene->isReady() || !gpuRenderer ||
+            !gpuRenderer->isReadyForDrawing() ||
+            gpuRenderer->getPlayLayer() != scene->getPlayLayer() ||
             static_cast<GJBaseGameLayer*>(scene->getPlayLayer()) != this)
             return;
 
