@@ -29,7 +29,10 @@ void WorkGroupScheduler::addSprite(
 
     SpriteEntry entry;
     entry.zOrder = object->getObjectZOrder();
-    entry.zLayer = object->getObjectZLayer();
+    // ObjectSorter places even-numbered object layers into the preceding
+    // odd-numbered Cocos batch layer. The scheduler must use the same key or
+    // IOSGPURenderer cannot attach the GPU node to the matching stock Z slot.
+    entry.zLayer = LayerKey::getNormalObjectZLayer(object);
     entry.spriteSheet = ObjectUtils::getSpritesheetOfObject(object, type);
     const u32 colorChannelFlags = ObjectUtils::getSpriteColorChannel(type, object, sprite);
     entry.colorChannelId = static_cast<u16>(std::min<u32>(colorChannelFlags, 0xffffu));
