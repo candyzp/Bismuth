@@ -1,4 +1,5 @@
 #include "GJBaseGameLayer.hpp"
+#include "../profiler.hpp"
 
 #ifdef GEODE_IS_IOS
 #include "../renderer/ios_upstream/IOSGroupManager.hpp"
