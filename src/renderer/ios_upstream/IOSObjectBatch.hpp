@@ -42,6 +42,7 @@ public:
 
     u32 getObjectIndex(GameObject* object) const;
     bool isBuilt() const { return built; }
+    bool hasSortValidationFailed() const { return sortValidationFailed; }
     u64 getOrderRevision() const { return orderRevision; }
 
 private:
@@ -117,6 +118,7 @@ private:
     bool hasCurrentBlendStates = false;
     u64 orderRevision = 0;
     bool built = false;
+    bool sortValidationFailed = false;
 };
 
 } // namespace IOSUpstream
