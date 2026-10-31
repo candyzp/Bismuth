@@ -1,103 +1,108 @@
 # Bismuth iOS GPU Rework
 
-## Baseline
+## Direction
 
-- Rework branch: `rework/ios-gpu-v2`
-- Baseline: `candyzp/Bismuth` `master` at `d31115ee3851655c6671233bc13b1a42e0d7e157`
-- Target: Geometry Dash 2.2081 on iOS / arm64
-- The existing renderer remains intact as a reference until the replacement is proven.
+This is a GPU-only beta port of the current upstream Bismuth renderer. The implementation must follow the upstream renderer's data flow and rendering model, not extend the previous iOS `ResolvedStateLayer` / `AssistShadowBatch` experiment.
 
-## Keep
+- Upstream reference: `iliasHDZ/Bismuth` master at `12536eb964022e16985b428228ba3f36923ba3de` (October 31, 2026)
+- iOS repository: `candyzp/Bismuth`
+- Work branch: `rework/ios-gpu-v2`
+- Fork baseline: `d31115ee3851655c6671233bc13b1a42e0d7e157`
+- Target game: Geometry Dash 2.2081, iOS arm64
 
-- iOS build and Geode integration
-- Existing debugger / GPU diagnostics and BProfiler
-- Sprite metadata and mesh data that remain valid
-- PlayLayer lifecycle and stock-renderer integration hooks
-- Existing CPU rendering fallback and the old implementation for comparison
+## GPU-only beta rule
 
-The diagnostics should be updated to report confirmed GPU submissions, not merely registered ownership or attempted draws.
+There is no stock-render fallback in the new renderer.
 
-## Rebuild boundary
+If the GPU backend, shaders, buffers, work scheduling, or a draw fails, the beta reports the failure and the affected render does not get silently handed back to Cocos. A broken GPU build is a failed beta build; it is not disguised as a successful hybrid renderer.
 
-Rework the GPU rendering implementation in isolation. Do not rewrite gameplay, triggers, collision, object activation, physics, or simulation timing. Geometry Dash remains authoritative for the final resolved visual state; Bismuth may move render-only work to the GPU.
+Do not preserve the old hybrid ownership/fallback design in the new path. Keep the old code only as an archived reference until the upstream port replaces it. Do not allow both old and new renderers to claim the same draw.
 
-The upstream renderer is the algorithmic reference, not a source tree to copy wholesale. Its current desktop path uses OpenGL 4.3-era compute / storage-buffer infrastructure and desktop GL loading. The iOS target uses Apple's OpenGLES framework and its own shader / data-upload path. Port algorithms and rendering semantics to the supported iOS API; do not import WGL, desktop-only entry points, compute dispatch, or SSBO assumptions into the iOS backend.
+## Preserve from the iOS fork
 
-## Milestones
+- Geode/iOS build plumbing and device target
+- BProfiler and profiler diagnostics
+- Existing debug UI/settings that are independent of the old renderer
+- Sprite-sheet resources and valid mesh/object metadata
+- Required game-version bindings and iOS lifecycle integration
 
-### 0. Preserve and establish a known baseline
+Debugger counters must describe actual GPU work and completed submissions, not registered ownership or intended draws.
 
-- Keep this branch separate from `master`.
-- Record the current iOS build result and existing debug counters before changing ownership.
-- Do not delete the previous renderer files.
+## Port the upstream architecture
 
-### 1. Prove the GPU path independently
+Follow the owner's current source structure and concepts:
 
-Build a tiny iOS-only render self-test that verifies:
-- required vertex texture units are available;
-- the state-texture format can be allocated and sampled from a vertex shader;
-- the iOS vertex / fragment shaders compile and link;
-- a small offscreen draw completes and returns the expected pixel;
-- GL state touched by the test is restored.
+1. `ObjectSorter`: enumerate and organize supported GameObjects and their visual sprites.
+2. `GroupManager`: build group-combination state for move/rotate/alpha/toggle/pulse behavior.
+3. `ObjectBatch`: construct ordered sprite geometry and input sprite records.
+4. `WorkGroupScheduler`: sort by Z layer, sprite sheet, and blending state; partition work into work groups; prepare sprite remaps and draw ranges.
+5. GPU culling/evaluation pass: process group transforms, camera culling, audio scale, color channels, HSV, pulse entries, opacity, and raw sprite output.
+6. GPU drawing pass: use the prebuilt vertex/index data and the GPU-produced sprite state to render in the exact layer order.
 
-A failed probe must leave Geometry Dash's stock renderer untouched.
+The upstream sources to use as the reference are:
+- `src/renderer/ObjectSorter.cpp`
+- `src/renderer/ObjectBatch.cpp`
+- `src/renderer/GroupManager.cpp`
+- `src/renderer/WorkGroupScheduler.cpp`
+- `src/renderer/SAOBuffer.hpp`
+- `src/renderer/Renderer.cpp`
+- `resources/shaders/objectCulling.comp`
+- `resources/shaders/objectDrawing.vert`
+- `resources/shaders/objectDrawing.frag`
+- `resources/shaders/headers/shared.h` and its buffer headers
 
-### 2. Rebuild the smallest renderer primitive
+Port the owner's algorithms and semantics. Do not copy Windows-only API glue, OpenCL core-count discovery, WGL function loading, or desktop-only shader directives as if they were iOS-compatible.
 
-- One known sprite, one texture, one draw range.
-- Use a known-good sprite quad / UV mapping from Cocos.
-- Feed only final resolved transform, visibility, and color state.
-- Verify output against the stock sprite before claiming ownership.
+## iOS graphics API constraint
 
-### 3. Add batching without changing visual order
+Apple documents the iOS OpenGLES framework as implementing OpenGL ES 1.1, 2.0, and 3.0. The upstream renderer requires desktop OpenGL 4.3 features including compute shaders, shader-storage buffers, and indirect multi-draw. Those APIs are not available in Apple's documented OpenGLES 3.0 interface.
 
-- Add multiple sprites sharing one texture and blend state.
-- Preserve stock atlas / z-order semantics.
-- Add texture and blend transitions only after the single-range path is verified.
-- Keep unsupported sprites on stock rendering.
+This is a backend-porting constraint, not permission to return to the old renderer design. Preserve the upstream data flow and GPU responsibilities while implementing the equivalent iOS GPU path with APIs actually available in the game's iOS GL context. Before implementation, verify the live context version, GLSL ES version, texture limits, vertex texture units, extensions, and framebuffer formats on-device. Do not assume the context is ES 3.0 merely because the framework can provide it.
 
-### 4. Add visual features incrementally
+## Build sequence
 
-Test each separately before combining:
-- transforms and camera movement;
-- texture crop, rotated frames, and flips;
-- opacity and premultiplied-alpha behavior;
-- normal and additive blending;
-- base/detail colors and HSV;
-- glow and pulse effects;
-- animated and nested visual trees (remain stock until explicitly supported).
+### 0. Isolate the new implementation
+- Keep all work on `rework/ios-gpu-v2`.
+- Retain the existing profiler/debug UI.
+- Stop modifying the legacy `RendererIOS.cpp` pipeline.
+- Build the new renderer in a separate iOS backend area and wire it in only when its first milestone is ready.
 
-### 5. Reintroduce hybrid ownership and optimization
+### 1. Establish the actual iOS GPU contract
+- Query and log the current GL and GLSL ES versions.
+- Query required limits and extensions.
+- Verify shader compilation, required texture/buffer formats, framebuffer support, and draw submission.
+- Fail the GPU beta initialization on unsupported requirements; do not switch to stock rendering.
 
-- Add bounded per-frame GPU work only after measurements justify it.
-- Separate candidate eligibility, draw readiness, successful submission, and ownership.
-- Preflight all resources and ranges before issuing a mixed GPU pass.
-- Never suppress the matching stock draw merely because a sprite was registered as GPU-owned.
-- Keep CPU fallback for all unverified or failed candidates.
+### 2. Port upstream data structures and CPU preparation
+- Port ObjectInfo, InputSprite, GroupCombinationState, WorkGroup, and draw-range concepts.
+- Port ObjectSorter, GroupManager, ObjectBatch, and WorkGroupScheduler in upstream order.
+- Keep CPU work to scene enumeration, sorting, scheduling, and game-state capture that upstream already performs on the CPU.
 
-## Correctness gates
+### 3. Port GPU evaluation and drawing
+- Port the logic of `objectCulling.comp` without changing game semantics.
+- Port the logic of `objectDrawing.vert` / `objectDrawing.frag`.
+- Replace unsupported desktop API mechanisms only where the iOS graphics API requires it; keep the upstream record layouts, indexing, ordering, and shader calculations aligned.
+- No CPU rasterization or stock Cocos draw substitution.
 
-1. **No visual regression:** the GPU result must match the stock result for the tested case.
-2. **No false ownership:** attempted or failed GPU draws do not count as successful GPU rendering.
-3. **No double rendering:** stock and GPU must not both submit the same sprite.
-4. **No missing rendering:** any candidate that cannot be submitted remains on the stock path.
-5. **No gameplay changes:** no trigger, collision, physics, or simulation behavior is moved or altered.
-6. **Measured performance only:** report CPU time, GPU time, draw calls, upload bytes, and frame pacing on the same level segment. Do not infer FPS gains from sprite counts alone.
+### 4. Validate visual and gameplay parity
+- Compare against upstream behavior for movement, rotation, blending, color, HSV, pulse, glow, audio scale, and camera culling.
+- Geometry Dash remains authoritative for gameplay, triggers, physics, collision, and simulation timing.
+- The GPU renderer owns rendering in this beta.
 
-## Initial regression matrix
+### 5. Optimize after parity
+- Measure CPU preparation time, GPU evaluation time, GPU drawing time, upload volume, draw calls, and frame pacing.
+- Tune work-group size using real iOS measurements rather than desktop GPU core-count heuristics.
+- Preserve the owner's work-group scheduling and batching intent.
 
-- One static block, one texture
-- Several blocks sharing a texture
-- Two textures in one stock layer
-- Overlapping sprites and z-order
-- Moving and rotating groups
-- Transparency and additive glow
-- Color / HSV and pulse triggers
-- Rotated or flipped sprite frames
-- Particles, portals, UI, and unsupported objects staying stock
-- Restart, checkpoint, pause/resume, and level exit
-- Dense level with sustained GPU coverage
+## Beta correctness gates
+
+1. GPU rendering is the only renderer in the new beta path.
+2. A failed GPU draw is reported as a failure; it is never silently replaced by a stock draw.
+3. No duplicate GPU submissions for the same sprite.
+4. Z order, sprite-sheet selection, blend state, transforms, visibility, and color must match the supported upstream behavior.
+5. No changes to gameplay, collision, physics, trigger execution, or simulation timing.
+6. Performance claims must come from measured frame and GPU timings, not sprite counts alone.
 
 ## First implementation target
 
-Milestone 1: an isolated iOS GPU render self-test. It provides a trustworthy baseline before the new renderer starts claiming sprites.
+Complete the iOS graphics capability report and then port the upstream data model / scheduler. Do not start by modifying old `AssistShadowBatch`, `ResolvedStateLayer`, or atlas-interleaving code.
