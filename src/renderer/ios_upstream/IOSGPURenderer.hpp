@@ -6,6 +6,7 @@
 #include "IOSGPUCapabilities.hpp"
 #include <Geode/cocos/base_nodes/CCNode.h>
 #include <set>
+#include <string>
 #include <vector>
 
 class Shader;
