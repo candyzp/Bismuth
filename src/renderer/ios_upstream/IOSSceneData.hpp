@@ -17,6 +17,7 @@ public:
     bool init(PlayLayer* layer);
     void reset();
     void update(float dt);
+    void prepareForDraw();
 
     GroupManager& getGroupManager() { return groupManager; }
     ObjectBatch& getObjectBatch() { return objectBatch; }
