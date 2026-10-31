@@ -186,11 +186,10 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
                 gpuRenderer && gpuRenderer->getPlayLayer() == scene->getPlayLayer()) {
                 if (!scene->update(dt)) {
                     gpuRenderer->reportFailure(
-                        "scene update, blend-order validation, or GPU state upload failed"
+                        "scene update or GPU state upload failed"
                     );
                     return;
                 }
-                gpuRenderer->syncLayerNodes();
             } else if (!scene->update(dt)) {
                 log::error("Bismuth iOS GPU-only beta FAILED: scene update failed without an active renderer");
                 return;
