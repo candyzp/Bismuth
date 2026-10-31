@@ -7,6 +7,7 @@
 #include "ios/ResolvedStateLayer.hpp"
 #include "ios/GPUTruth.hpp"
 #include "ios/AtlasInterleave.hpp"
+#include "ios_upstream/IOSGPUCapabilities.hpp"
 #endif
 
 using namespace geode::prelude;
@@ -18,6 +19,17 @@ class $modify(RendererPlayLayer, PlayLayer) {
     void setupHasCompleted() {
         newPlayLayer = true;
         PlayLayer::setupHasCompleted();
+#ifdef GEODE_IS_IOS
+        static bool loggedGPUCapabilities = false;
+        if (!loggedGPUCapabilities) {
+            IOSGPU::Capabilities capabilities;
+            if (IOSGPU::queryCapabilities(capabilities))
+                IOSGPU::logCapabilities(capabilities);
+            else
+                log::error("Bismuth iOS could not query the active OpenGL ES context");
+            loggedGPUCapabilities = true;
+        }
+#endif
         newPlayLayer = false;
     }
 
