@@ -28,16 +28,16 @@ public:
     bool updateBlendStates(const ColorChannelBlendStates& blendStates);
 
     const std::vector<ObjectInfo>& getObjectInfos() const { return objectInfos; }
-    const std::vector<ObjectVertex>& getVertices() const { return vertices; }
+    const std::vector<ObjectVertex>& getVertices() const { return sourceVertices; }
     // ES2 draw stream arranged by the owner's scheduler remap. The source
     // vertex array and InputSprite indices remain untouched.
     const std::vector<ObjectVertex>& getOrderedVertices() const { return orderedVertices; }
-    const std::vector<InputSprite>& getInputSprites() const { return inputSprites; }
-    const std::vector<SpriteAppearance>& getSpriteAppearances() const { return spriteAppearances; }
+    const std::vector<InputSprite>& getInputSprites() const { return sourceInputSprites; }
+    const std::vector<SpriteAppearance>& getSpriteAppearances() const { return sourceSpriteAppearances; }
     const std::vector<PreCulledSprite>& getPreCulledSprites() const { return sortedBatch.preCulledSprites; }
     const SortedObjectBatch& getSortedBatch() const { return sortedBatch; }
     const std::set<LayerKey>& getUsedLayerKeys() const { return usedLayerKeys; }
-    usize getSpriteCount() const { return inputSprites.size(); }
+    usize getSpriteCount() const { return sourceInputSprites.size(); }
 
     u32 getObjectIndex(GameObject* object) const;
     bool isBuilt() const { return built; }
@@ -96,13 +96,10 @@ private:
     std::vector<SpriteAppearance> sourceSpriteAppearances;
     std::vector<SpriteSource> sourceSpritePointers;
 
-    // Final owner-style draw order. Vertex spriteIndex values index the
-    // correspondingly ordered InputSprite / SpriteAppearance arrays.
-    std::vector<ObjectVertex> vertices;
+    // Only geometry is duplicated into scheduler draw order. Its per-vertex
+    // sprite/object/group indices continue to address the source-order metadata
+    // tables above, avoiding copies of the InputSprite/appearance/pointer arrays.
     std::vector<ObjectVertex> orderedVertices;
-    std::vector<InputSprite> inputSprites;
-    std::vector<SpriteAppearance> spriteAppearances;
-    std::vector<SpriteSource> spritePointers;
 
     std::set<LayerKey> usedLayerKeys;
     SortedObjectBatch sortedBatch;
