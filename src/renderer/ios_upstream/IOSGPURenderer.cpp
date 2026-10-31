@@ -343,13 +343,25 @@ bool IOSGPURenderer::uploadOrderedVertices() {
 }
 
 bool IOSGPURenderer::createLayerNodes() {
+    return syncLayerNodes();
+}
+
+bool IOSGPURenderer::syncLayerNodes() {
+    if (failed)
+        return false;
     if (!layer || !layer->m_objectLayer || !layer->m_batchNodes) {
         fail("PlayLayer object layer or stock batch-node array is missing");
         return false;
     }
 
-    const auto& keys = sceneData.getObjectBatch().getUsedLayerKeys();
-    for (const auto& key : keys) {
+    // The owner tracks both potential blend variants, but only currently
+    // scheduled ranges need nodes. A color action may activate the other
+    // variant later, so synchronize this set again after each state update.
+    const auto& ranges = sceneData.getObjectBatch().getSortedBatch().layerRanges;
+    for (const auto& [key, range] : ranges) {
+        if (range.vertexCount == 0 || layerNodeKeys.contains(key))
+            continue;
+
         cocos2d::CCNode* stockNode = layer->parentForZLayer(
             static_cast<i32>(key.zlayer),
             key.blending,
@@ -359,7 +371,7 @@ bool IOSGPURenderer::createLayerNodes() {
 
         if (!stockNode || layer->m_batchNodes->indexOfObject(stockNode) == UINT_MAX) {
             fail(fmt::format(
-                "no stock Z-order container for layer key Z={}, sheet={}, blend={}",
+                "active GPU layer has no stock Z-order container (Z={}, sheet={}, blend={})",
                 static_cast<i32>(key.zlayer),
                 static_cast<i32>(key.spriteSheet),
                 key.blending
@@ -377,10 +389,11 @@ bool IOSGPURenderer::createLayerNodes() {
         node->autorelease();
         layer->m_objectLayer->addChild(node, stockNode->getZOrder());
         layerNodes.push_back(node);
+        layerNodeKeys.insert(key);
     }
 
     if (layerNodes.empty()) {
-        fail("no GPU layer nodes could be attached to stock Z-order slots");
+        fail("no active GPU layer nodes could be attached to stock Z-order slots");
         return false;
     }
 
@@ -438,6 +451,7 @@ void IOSGPURenderer::reset() {
 
     if (sceneData.getObjectBatch().getOrderRevision() != uploadedOrderRevision)
         uploadOrderedVertices();
+    syncLayerNodes();
 }
 
 void IOSGPURenderer::drawLayer(const LayerKey& key) {
