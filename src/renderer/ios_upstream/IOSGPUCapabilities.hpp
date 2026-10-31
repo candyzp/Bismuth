@@ -22,6 +22,7 @@ struct Capabilities {
     int maxFragmentTextureUnits = 0;
     int maxCombinedTextureUnits = 0;
     int maxTextureSize = 0;
+    int maxRenderbufferSize = 0;
 
     bool isOpenGLES = false;
     bool hasVertexTextureSampling = false;
@@ -29,6 +30,10 @@ struct Capabilities {
     bool hasUIntElementIndices = false;
     bool hasFloatTexture = false;
     bool hasHalfFloatTexture = false;
+    bool hasFloatColorBuffer = false;
+    bool hasHalfFloatColorBuffer = false;
+    bool hasDrawBuffers = false;
+    bool hasDisjointTimerQuery = false;
     bool hasComputeShaders = false;
     bool hasShaderStorageBuffers = false;
     bool hasIndirectMultiDraw = false;
