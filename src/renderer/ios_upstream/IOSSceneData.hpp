@@ -23,6 +23,7 @@ public:
     GroupManager& getGroupManager() { return groupManager; }
     ObjectBatch& getObjectBatch() { return objectBatch; }
     PlayLayer* getPlayLayer() const { return layer; }
+    cocos2d::CCTexture2D* getSpriteSheetTexture(SpriteSheet sheet) const;
     const GameState& getGameState() const { return gameState; }
     const ColorChannelTable& getColorChannels() const { return colorChannels; }
     const ColorChannelBlendStates& getBlendStates() const { return blendStates; }
