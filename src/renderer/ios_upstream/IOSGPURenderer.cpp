@@ -282,6 +282,10 @@ bool IOSGPURenderer::queryAndValidateCapabilities() {
         fail("requires five vertex attributes");
         return false;
     }
+    if (!capabilities.hasFragmentHighpPrecision) {
+        fail("requires fragment highp precision for sprite atlas coordinates");
+        return false;
+    }
     if (!capabilities.hasFloatTexture) {
         fail("floating-point RGBA vertex data textures are unavailable");
         return false;
