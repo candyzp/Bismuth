@@ -2,6 +2,8 @@
 
 #include "IOSWorkGroupScheduler.hpp"
 
+#include <Geode/utils/cocos.hpp>
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
