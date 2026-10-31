@@ -98,10 +98,19 @@ class $modify(RendererPlayLayer, PlayLayer) {
         CheckpointObject* checkpoint = PlayLayer::createCheckpoint();
 #ifdef GEODE_IS_IOS
         if (auto scene = IOSUpstream::SceneData::getCurrent();
-            scene && scene->getPlayLayer() == this) {
-            scene->getGroupManager().storeCheckpoint(checkpoint);
-        }
-#endif
+            scene && scene->isReady() &&
+            static_cast<GJBaseGameLayer*>(scene->getPlayLayer()) == this) {
+            if (auto gpuRenderer = IOSUpstream::IOSGPURenderer::getCurrent();
+                gpuRenderer && gpuRenderer->isReadyForDrawing() &&
+                gpuRenderer->getPlayLayer() == scene->getPlayLayer()) {
+                if (!scene->update(dt)) {
+                    gpuRenderer->reportFailure(
+                        "scene update or GPU state upload failed"
+                    );
+                    return;
+                }
+            }
+        }#endif
         return checkpoint;
     }
 
