@@ -8,6 +8,9 @@
 #include "ios/GPUTruth.hpp"
 #include "ios/AtlasInterleave.hpp"
 #include "ios_upstream/IOSGPUCapabilities.hpp"
+#include "ios_upstream/IOSSceneData.hpp"
+#include <decomp/GJBaseGameLayer.hpp>
+#include <Geode/binding/CheckpointObject.hpp>
 #endif
 
 using namespace geode::prelude;
@@ -68,6 +71,11 @@ class $modify(RendererPlayLayer, PlayLayer) {
         PlayLayer::resetLevel();
 
 #ifdef GEODE_IS_IOS
+        if (auto scene = IOSUpstream::SceneData::getCurrent();
+            scene && scene->getPlayLayer() == this) {
+            scene->reset();
+        }
+
         // Menu restart may reuse this layer without another enter-transition
         // callback. The active singleton is null while its renderer is suspended.
         auto renderer = Renderer::forPlayLayer(this);
@@ -83,6 +91,27 @@ class $modify(RendererPlayLayer, PlayLayer) {
                 resolved->reseedActiveFromStock();
 #endif
         }
+    }
+
+    CheckpointObject* createCheckpoint() {
+        CheckpointObject* checkpoint = PlayLayer::createCheckpoint();
+#ifdef GEODE_IS_IOS
+        if (auto scene = IOSUpstream::SceneData::getCurrent();
+            scene && scene->getPlayLayer() == this) {
+            scene->getGroupManager().storeCheckpoint(checkpoint);
+        }
+#endif
+        return checkpoint;
+    }
+
+    void loadFromCheckpoint(CheckpointObject* checkpoint) {
+        PlayLayer::loadFromCheckpoint(checkpoint);
+#ifdef GEODE_IS_IOS
+        if (auto scene = IOSUpstream::SceneData::getCurrent();
+            scene && scene->getPlayLayer() == this) {
+            scene->getGroupManager().restoreCheckpoint(checkpoint);
+        }
+#endif
     }
 
     void updateVisibility(float dt) {
@@ -132,7 +161,42 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
 
     void processMoveActions() {
 #ifdef GEODE_IS_IOS
-        GJBaseGameLayer::processMoveActions();
+        auto scene = IOSUpstream::SceneData::getCurrent();
+        if (!scene || !scene->isReady() ||
+            static_cast<GJBaseGameLayer*>(scene->getPlayLayer()) != this) {
+            GJBaseGameLayer::processMoveActions();
+            return;
+        }
+
+        // Port the owner's move-action split: Geometry Dash still advances its
+        // move command nodes and physical object data, while GroupManager mirrors
+        // the same deltas into the render-state table consumed by the GPU.
+        m_effectManager->processMoveCalculations();
+        for (auto node : m_effectManager->m_unkVector6c0) {
+            if (!node || node->m_unk0d0)
+                continue;
+
+            const i32 groupId = node->getTag();
+            scene->getGroupManager().moveGroup(
+                static_cast<IOSUpstream::GroupID>(groupId),
+                static_cast<float>(node->m_unk038),
+                static_cast<float>(node->m_unk040)
+            );
+
+            CCArray* objects = getStaticGroup(groupId);
+            if (objects) {
+                ((decomp_GJBaseGameLayer*)this)->moveObjects(
+                    objects, node->m_unk038, node->m_unk040, 0
+                );
+            }
+
+            objects = getOptimizedGroup(groupId);
+            if (objects) {
+                ((decomp_GJBaseGameLayer*)this)->moveObjects(
+                    objects, node->m_unk090, node->m_unk098, 0
+                );
+            }
+        }
         return;
 #else
         auto renderer = Renderer::get();
@@ -162,7 +226,74 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
 
     void processRotationActions() {
 #ifdef GEODE_IS_IOS
-        GJBaseGameLayer::processRotationActions();
+        auto scene = IOSUpstream::SceneData::getCurrent();
+        if (!scene || !scene->isReady() ||
+            static_cast<GJBaseGameLayer*>(scene->getPlayLayer()) != this) {
+            GJBaseGameLayer::processRotationActions();
+            return;
+        }
+
+        // Mirror the owner's per-command rotation delta before Geometry Dash
+        // runs its existing object/section/oriented-box updates.
+        auto effectManager = m_effectManager;
+        for (auto command : effectManager->m_unkVector5b0) {
+            if (!command || command->m_someInterpValue1RelatedFalse)
+                continue;
+
+            const i32 targetId = command->m_targetGroupID;
+            const i32 centerId = command->m_centerGroupID;
+            auto staticGroup = getStaticGroup(targetId);
+            const bool hasStaticGroup = staticGroup && staticGroup->count() != 0;
+
+            float rotation = hasStaticGroup
+                ? command->m_someInterpValue1RelatedOne - command->m_someInterpValue1RelatedZero
+                : command->m_someInterpValue2RelatedOne - command->m_someInterpValue2RelatedZero;
+
+            if (rotation == 0.f && !command->m_finishRelated)
+                continue;
+
+            auto combined = effectManager->m_unkMap770.find({targetId, centerId});
+            if (combined != effectManager->m_unkMap770.end()) {
+                for (auto extra : combined->second) {
+                    if (!extra || extra->m_someInterpValue1RelatedFalse)
+                        continue;
+                    rotation += hasStaticGroup
+                        ? extra->m_someInterpValue1RelatedOne - extra->m_someInterpValue1RelatedZero
+                        : extra->m_someInterpValue2RelatedOne - extra->m_someInterpValue2RelatedZero;
+                }
+            }
+
+            std::optional<glm::vec2> center;
+            if (auto mainObject = tryGetMainObject(centerId))
+                center = ccPointToGLM(mainObject->getUnmodifiedPosition());
+
+            scene->getGroupManager().rotateGroup(
+                static_cast<IOSUpstream::GroupID>(targetId),
+                rotation,
+                command->m_lockObjectRotation,
+                center
+            );
+
+            // Preserve the owner's extra translation associated with a
+            // centered rotation command.
+            if (center.has_value()) {
+                auto moveIt = effectManager->m_unkMap618.find(targetId);
+                if (moveIt != effectManager->m_unkMap618.end()) {
+                    const CCPoint extraMove = hasStaticGroup
+                        ? ccp(moveIt->second->m_unk090, moveIt->second->m_unk098)
+                        : ccp(moveIt->second->m_unk038, moveIt->second->m_unk040);
+                    if (extraMove != CCPointZero) {
+                        scene->getGroupManager().moveGroup(
+                            static_cast<IOSUpstream::GroupID>(targetId),
+                            extraMove.x,
+                            extraMove.y
+                        );
+                    }
+                }
+            }
+        }
+
+        ((decomp_GJBaseGameLayer*)this)->processRotationActions();
         return;
 #else
         auto renderer = Renderer::get();
@@ -217,6 +348,37 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
 
     void processFollowActions() {
 #ifdef GEODE_IS_IOS
+        auto scene = IOSUpstream::SceneData::getCurrent();
+        if (!scene || !scene->isReady() ||
+            static_cast<GJBaseGameLayer*>(scene->getPlayLayer()) != this) {
+            GJBaseGameLayer::processFollowActions();
+            return;
+        }
+
+        auto effectManager = m_effectManager;
+        for (auto node : effectManager->m_unkVector6d8) {
+            if (!node)
+                continue;
+            const i32 targetGroupId = node->getTag();
+            const i32 followGroupId = node->m_unk074;
+            auto mainObject = tryGetMainObject(followGroupId);
+            if (!mainObject)
+                continue;
+
+            double moveX = 0.0;
+            double moveY = 0.0;
+            if (mainObject->m_unk4C4 == m_gameState.m_commandIndex) {
+                moveX = (mainObject->m_positionX - mainObject->m_lastPosition.x) * node->m_unk080;
+                moveY = (mainObject->m_positionY - mainObject->m_lastPosition.y) * node->m_unk088;
+            }
+
+            scene->getGroupManager().moveGroup(
+                static_cast<IOSUpstream::GroupID>(targetGroupId),
+                static_cast<float>(moveX),
+                static_cast<float>(moveY)
+            );
+        }
+
         GJBaseGameLayer::processFollowActions();
         return;
 #else
@@ -250,7 +412,15 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
 
     void toggleGroup(int id, bool activate) {
         GJBaseGameLayer::toggleGroup(id, activate);
-#ifndef GEODE_IS_IOS
+#ifdef GEODE_IS_IOS
+        if (auto scene = IOSUpstream::SceneData::getCurrent();
+            scene && scene->isReady() &&
+            static_cast<GJBaseGameLayer*>(scene->getPlayLayer()) == this) {
+            scene->getGroupManager().toggleGroup(
+                static_cast<IOSUpstream::GroupID>(id), activate
+            );
+        }
+#else
         auto renderer = Renderer::get();
         if (renderer)
             renderer->getGroupManager().toggleGroup(id, activate);
@@ -276,6 +446,25 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
 };
 
 #ifdef GEODE_IS_IOS
+#ifdef GEODE_IS_IOS
+#include <Geode/modify/CheckpointObject.hpp>
+class $modify(RendererCheckpointObject, CheckpointObject) {
+    struct Fields {
+        CheckpointObject* checkpoint = nullptr;
+        ~Fields() {
+            if (auto scene = IOSUpstream::SceneData::getCurrent())
+                scene->getGroupManager().removeCheckpoint(checkpoint);
+        }
+    };
+
+    bool init() {
+        if (!CheckpointObject::init())
+            return false;
+        m_fields.self()->checkpoint = this;
+        return true;
+    }
+};
+
 #include <Geode/modify/GameObject.hpp>
 class $modify(RendererTrackedGameObject, GameObject) {
     void activateObject() {
