@@ -42,10 +42,8 @@ bool SceneData::buildSortedObjectList(std::vector<GameObject*>& objects) const {
         sorter.addGameObject(object);
     }
 
-    // The owner has an explicit final sort pass. Call it here so object Z
-    // ordering is deterministic before ObjectBatch builds its source mesh.
-    sorter.finalizeSorting();
-
+    // Match the owner's Renderer::init iteration: consume the ObjectSorter
+    // iterator after populating the level's layer lists.
     objects.clear();
     for (auto iterator = sorter.iterator(); !iterator.isEnd(); iterator.next())
         objects.push_back(iterator.get());
