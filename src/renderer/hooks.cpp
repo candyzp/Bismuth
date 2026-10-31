@@ -19,6 +19,18 @@ using namespace geode::prelude;
 
 static bool newPlayLayer = false;
 
+#ifdef GEODE_IS_IOS
+static void hideStockPlayLayerBatches(PlayLayer* layer) {
+    if (!layer || !layer->m_batchNodes)
+        return;
+
+    for (auto batch : CCArrayExt<cocos2d::CCNode*>(layer->m_batchNodes)) {
+        if (batch)
+            batch->setVisible(false);
+    }
+}
+#endif
+
 #include <Geode/modify/PlayLayer.hpp>
 class $modify(RendererPlayLayer, PlayLayer) {
     void setupHasCompleted() {
@@ -43,7 +55,8 @@ class $modify(RendererPlayLayer, PlayLayer) {
         if (newPlayLayer) {
             auto batchLayer = this->m_objectLayer;
             if (!batchLayer) {
-                log::error("failed to attach Bismuth GPU renderer: object layer not found");
+                log::error("Bismuth GPU-only beta FAILED: object layer not found");
+                hideStockPlayLayerBatches(this);
                 PlayLayer::resetLevel();
                 return;
             }
@@ -51,8 +64,14 @@ class $modify(RendererPlayLayer, PlayLayer) {
             // Match the owner's lifecycle: create the renderer after level
             // objects are prepared but before the final PlayLayer reset.
             auto gpuRenderer = IOSUpstream::IOSGPURenderer::create(this);
-            if (gpuRenderer)
+            if (gpuRenderer) {
                 batchLayer->addChild(gpuRenderer, -100000);
+            } else {
+                // Even CCNode allocation/init failure is a hard beta failure.
+                // Keep Cocos batches hidden rather than silently rendering stock.
+                log::error("Bismuth GPU-only beta FAILED: renderer owner creation failed");
+                hideStockPlayLayerBatches(this);
+            }
 
             PlayLayer::resetLevel();
             return;
