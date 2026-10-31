@@ -133,8 +133,23 @@ bool ObjectUtils::unpackSpriteRecursively(
 
     transform = CCAffineTransformConcat(sprite->nodeToParentTransform(), transform);
 
-    if (sprite == object->m_colorSprite) type = SpriteType::DETAIL;
-    if (sprite == object->m_glowSprite)  type = SpriteType::GLOW;
+    if (sprite == object->m_colorSprite)
+        type = SpriteType::DETAIL;
+    if (sprite == object->m_glowSprite)
+        type = SpriteType::GLOW;
+
+    // Preserve the owner's black-sprite classification. The shader uses the
+    // BLACK sprite type to bypass HSV and pulse processing, not just the black
+    // color-channel lookup. Tag 997 is Geometry Dash's explicit non-black case.
+    bool isSpriteBlack = false;
+    if (sprite == object)
+        isSpriteBlack = object->m_isObjectBlack;
+    else if (type != SpriteType::GLOW)
+        isSpriteBlack = object->m_isColorSpriteBlack;
+    if (sprite->getTag() == 997)
+        isSpriteBlack = false;
+    if (isSpriteBlack)
+        type = SpriteType::BLACK;
 
     // CCNode::getChildren() is heterogeneous. Never reinterpret every child as
     // CCSprite: decoration-heavy objects can contain other CCNode subclasses.
