@@ -65,7 +65,7 @@ private:
     SpriteVertexTransforms getSpriteVertexTransform(
         cocos2d::CCSprite* sprite,
         const cocos2d::CCAffineTransform& transform,
-        SpriteSheet spriteSheet
+        cocos2d::CCTexture2D* texture
     ) const;
     void writeSpriteVertex(
         glm::vec2 point,
@@ -96,13 +96,11 @@ private:
     std::vector<SpriteAppearance> spriteAppearances;
     std::vector<SpriteSource> spritePointers;
 
-    std::vector<LayerKey> usedLayerKeyStorage;
     std::set<LayerKey> usedLayerKeys;
     SortedObjectBatch sortedBatch;
 
     SpriteVertexTransforms currentTransforms;
     glm::vec2 currentObjectStartPosition {};
-    u32 currentObjectIndex = 0;
     u32 currentSpriteIndex = 0;
 
     bool built = false;
