@@ -372,7 +372,9 @@ void main() {
 
     vec4 color;
     if (directTint > 0.5) {
-        color = appearance / 255.0;
+        // texture2D returns normalized RGBA; the packed CPU bytes are already
+        // converted to 0..1 by the GL sampler.
+        color = appearance;
     } else {
         color = getColorChannel(colorChannel);
     }
@@ -442,7 +444,7 @@ void main() {
     // The per-sprite displayed alpha is used only for direct-tint mode, where
     // no valid channel entry exists (legacy/default color channel zero).
     float directSpriteOpacity = directTint > 0.5
-        ? appearance.a / 255.0
+        ? appearance.a
         : 1.0;
     color.a *= directSpriteOpacity * externalOpacity;
 
