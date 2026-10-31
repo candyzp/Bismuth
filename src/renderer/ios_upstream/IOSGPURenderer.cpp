@@ -329,10 +329,9 @@ void IOSGPURenderer::fail(const std::string& reason) {
             node->setVisible(false);
     }
 
-    // If ownership had already transferred, return the scene to Geometry Dash
-    // rather than leave a black level after a late GPU submission/state failure.
-    if (ownsStockBatches)
-        showStockBatches();
+    // GPU-only means stock Cocos batches stay suppressed even on failure.
+    // The on-screen status label reports why the GPU path stopped drawing.
+    hideStockBatches();
     updateDebugOverlay();
 }
 
@@ -340,31 +339,19 @@ void IOSGPURenderer::hideStockBatches() {
     if (!layer || !layer->m_batchNodes)
         return;
 
-    if (!ownsStockBatches) {
-        stockBatchVisibility.clear();
-        for (auto batch : CCArrayExt<cocos2d::CCNode*>(layer->m_batchNodes)) {
-            if (!batch)
-                continue;
-            stockBatchVisibility.emplace_back(batch, batch->isVisible());
-            batch->setVisible(false);
-        }
-        ownsStockBatches = true;
-        return;
-    }
-
     for (auto batch : CCArrayExt<cocos2d::CCNode*>(layer->m_batchNodes)) {
         if (batch)
             batch->setVisible(false);
     }
 }
 
-void IOSGPURenderer::showStockBatches() {
-    for (const auto& [batch, wasVisible] : stockBatchVisibility) {
-        if (batch)
-            batch->setVisible(wasVisible);
-    }
-    stockBatchVisibility.clear();
-    ownsStockBatches = false;
+void IOSGPURenderer::enforceGPUOwnership() {
+    // Re-assert exclusive GPU ownership after Geometry Dash performs its level
+    // reset, including the failure case. There is never a stock draw fallback.
+    hideStockBatches();
+    if (isReadyForDrawing())
+        syncLayerNodes();
+    updateDebugOverlay();
 }
 
 bool IOSGPURenderer::queryAndValidateCapabilities() {
@@ -515,19 +502,12 @@ bool IOSGPURenderer::syncLayerNodes() {
             false
         );
 
-        if (!stockNode || layer->m_batchNodes->indexOfObject(stockNode) == UINT_MAX) {
-            const auto activeRange = ranges.find(key);
-            if (activeRange != ranges.end() && activeRange->second.vertexCount != 0) {
-                fail(fmt::format(
-                    "active GPU layer has no stock Z-order container (Z={}, sheet={}, blend={})",
-                    static_cast<i32>(key.zlayer),
-                    static_cast<i32>(key.spriteSheet),
-                    key.blending
-                ));
-                return false;
-            }
+        // Match the owner's generateBatchNodes(): if Geometry Dash has no
+        // corresponding Z-order container for this key, skip only that key.
+        // Do not abort the entire level's GPU scene because one optional layer
+        // has no stock batch container.
+        if (!stockNode || layer->m_batchNodes->indexOfObject(stockNode) == UINT_MAX)
             continue;
-        }
 
         auto node = new IOSGPULayerNode(layer, key);
         if (!node->init()) {
@@ -559,8 +539,10 @@ bool IOSGPURenderer::initForPlayLayer(PlayLayer* playLayer) {
     createDebugOverlay();
     updateDebugOverlay();
 
-    // Prepare the complete GPU path before transferring visual ownership.
-    // A failed initialization must not strand the level with hidden stock batches.
+    // This is a strict GPU-only build: disable stock batch submission before
+    // any GPU initialization so no frame can silently use the Cocos renderer.
+    hideStockBatches();
+
     if (!queryAndValidateCapabilities())
         return false;
 
@@ -579,7 +561,6 @@ bool IOSGPURenderer::initForPlayLayer(PlayLayer* playLayer) {
         return false;
 
     initialized = true;
-    hideStockBatches();
 
     log::info(
         "Bismuth iOS GPU-only renderer initialized: {} sprites, {} layer nodes, {} group combinations",
