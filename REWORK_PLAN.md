@@ -105,6 +105,21 @@ Before implementation, use the new runtime capability report to verify the live 
 5. No changes to gameplay, collision, physics, trigger execution, or simulation timing.
 6. Performance claims must come from measured frame and GPU timings, not sprite counts alone.
 
-## First implementation target
+## Current execution status
 
-Complete the iOS graphics capability report and then port the upstream data model / scheduler. Do not start by modifying old `AssistShadowBatch`, `ResolvedStateLayer`, or atlas-interleaving code.
+### Step 2 — upstream audit and CPU-side iOS port
+Completed on `rework/ios-gpu-v2` at source level:
+- Audited the current upstream renderer, data records, shaders, ObjectSorter, ObjectBatch, GroupManager, WorkGroupScheduler, and draw-layer ordering.
+- Audited the fork's ES2 context shim plus DataTexture, ShaderIOS, BufferIOS, and runtime capability reporting.
+- Ported owner-style CPU records, group/pulse/checkpoint state, object/sprite mesh construction, scheduler remaps, SceneData initialization, color/game/camera/audio capture, and gameplay-state hooks.
+- Closed the stock-render escape paths when the new GPU renderer owns the PlayLayer or initialization fails.
+
+### Step 3 — GPU evaluation and drawing
+Next:
+- Audit and finish the ES2 texture-table serialization and owner-derived shader calculations.
+- Verify object/group/sprite indices, blend variants, Z-layer ranges, texture units, and all uniform bindings.
+- Complete the GPU-only draw path without any Cocos fallback.
+
+The branch already contains initial `IOSGPURenderer`, `IOSGPUStateTables`, and ES2 shader files, but those are draft work and are not considered complete or tested yet.
+
+Do not start from or extend the old `AssistShadowBatch`, `ResolvedStateLayer`, or atlas-interleaving renderer.
