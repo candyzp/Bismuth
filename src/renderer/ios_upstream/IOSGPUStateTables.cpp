@@ -35,6 +35,54 @@ u32 checkedIndex(usize value, const char* field) {
 
 } // namespace
 
+bool validatePulseSegments(const SceneData& scene) {
+    const auto states = scene.getGroupManager().getGroupStates();
+    const auto pulses = scene.getGroupManager().getPulseEntries();
+
+    for (usize combinationIndex = 0; combinationIndex < states.size(); ++combinationIndex) {
+        const u32 firstPulse = states[combinationIndex].pulseIndex;
+        if (firstPulse == 0)
+            continue;
+        if (firstPulse >= pulses.size()) {
+            log::error(
+                "Bismuth iOS GPU table: group combination {} has an invalid pulse index {}",
+                combinationIndex,
+                firstPulse
+            );
+            return false;
+        }
+
+        u32 count = 0;
+        bool foundTerminator = false;
+        for (usize pulseIndex = firstPulse; pulseIndex < pulses.size(); ++pulseIndex) {
+            if (pulses[pulseIndex].flags == 0) {
+                foundTerminator = true;
+                break;
+            }
+            ++count;
+            if (count > IOS_MAX_PULSE_ENTRIES_PER_COMBINATION) {
+                log::error(
+                    "Bismuth iOS GPU table: group combination {} has {} pulse entries; ES2 shader limit is {}",
+                    combinationIndex,
+                    count,
+                    IOS_MAX_PULSE_ENTRIES_PER_COMBINATION
+                );
+                return false;
+            }
+        }
+
+        if (!foundTerminator) {
+            log::error(
+                "Bismuth iOS GPU table: group combination {} pulse list has no terminator",
+                combinationIndex
+            );
+            return false;
+        }
+    }
+
+    return true;
+}
+
 bool GPUStateTables::ensureFloatTexture(
     std::unique_ptr<DataTexture>& texture,
     const char* name,
@@ -190,6 +238,9 @@ bool GPUStateTables::initialize(const SceneData& scene) {
 bool GPUStateTables::upload(const SceneData& scene) {
     ready = false;
     if (!scene.isReady())
+        return false;
+
+    if (!validatePulseSegments(scene))
         return false;
 
     buildObjectTexels(scene);
