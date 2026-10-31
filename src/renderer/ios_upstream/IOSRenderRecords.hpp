@@ -16,7 +16,9 @@ namespace IOSUpstream {
 
 constexpr u32 IOS_COLOR_CHANNEL_COUNT = 1101;
 constexpr u32 IOS_GROUP_IDS_PER_OBJECT = 10;
-constexpr u32 IOS_COLOR_CHANNEL_INDEX_MASK = 0x0fffu;
+// Color channel IDs occupy bits 0..10 (0..1100). Bit 12 and bit 13
+// are iOS fork metadata for detail sprites and direct-tint sprites.
+constexpr u32 IOS_COLOR_CHANNEL_INDEX_MASK = 0x07ffu;
 constexpr u32 IOS_COLOR_CHANNEL_DIRECT_FLAG = 0x2000u;
 constexpr u32 IOS_COLOR_CHANNEL_DETAIL_FLAG = 0x1000u;
 constexpr u32 IOS_COLOR_CHANNEL_BG = 1000u;
