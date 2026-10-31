@@ -68,10 +68,15 @@ SpriteAppearance captureSpriteAppearance(
 
     bool visible = sprite && sprite->isVisible() && !sprite->getDontDraw();
     for (auto parent = sprite ? sprite->getParent() : nullptr;
-         visible && parent && parent != objectRoot;
+         visible && parent;
          parent = parent->getParent()) {
-        visible = parent->isVisible();
+        if (!parent->isVisible() || parent->getDontDraw())
+            visible = false;
+        if (parent == objectRoot)
+            break;
     }
+    if (objectRoot && objectRoot->getDontDraw())
+        visible = false;
     if (visible)
         result.flags |= IOS_SPRITE_APPEARANCE_VISIBLE;
     else
