@@ -217,7 +217,7 @@ public:
 private:
     static bool unpackSpriteRecursively(
         GameObject* object,
-        cocos2d::CCSprite* sprite,
+        cocos2d::CCNode* node,
         cocos2d::CCAffineTransform transform,
         ReceiveUnpackedSpriteFunc func,
         SpriteUnpackStats* stats,
