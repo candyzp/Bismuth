@@ -21,7 +21,9 @@ public:
     void prepareForDraw();
 
     GroupManager& getGroupManager() { return groupManager; }
+    const GroupManager& getGroupManager() const { return groupManager; }
     ObjectBatch& getObjectBatch() { return objectBatch; }
+    const ObjectBatch& getObjectBatch() const { return objectBatch; }
     PlayLayer* getPlayLayer() const { return layer; }
     cocos2d::CCTexture2D* getSpriteSheetTexture(SpriteSheet sheet) const;
     const GameState& getGameState() const { return gameState; }
