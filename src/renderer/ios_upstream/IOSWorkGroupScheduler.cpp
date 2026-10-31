@@ -35,7 +35,10 @@ void WorkGroupScheduler::addSprite(
     entry.zLayer = LayerKey::getNormalObjectZLayer(object);
     entry.spriteSheet = ObjectUtils::getSpritesheetOfObject(object, type);
     const u32 colorChannelFlags = ObjectUtils::getSpriteColorChannel(type, object, sprite);
-    entry.colorChannelId = static_cast<u16>(std::min<u32>(colorChannelFlags, 0xffffu));
+    // Detail/direct-tint metadata shares the high bits of the fork's encoded
+    // channel field. The upstream scheduler's blend-state lookup uses only
+    // the actual color channel ID, never those metadata bits.
+    entry.colorChannelId = static_cast<u16>(colorChannelForSortKey(colorChannelFlags));
     entry.inputSpriteIndex = inputSpriteIndex;
     entry.triangleCount = triangleCount;
     entry.groupCombinationIndex = groupCombinationIndex;
