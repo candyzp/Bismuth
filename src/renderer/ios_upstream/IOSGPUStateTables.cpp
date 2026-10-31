@@ -11,6 +11,9 @@
 using namespace geode::prelude;
 
 namespace IOSUpstream {
+
+GPUStateTables::~GPUStateTables() = default;
+
 namespace {
 
 RGBA8 unpackU32(u32 value) {
@@ -234,6 +237,7 @@ bool GPUStateTables::upload(const SceneData& scene) {
     layout.objectTextureSize = objectTexture->getSize();
     layout.groupTextureSize = groupTexture->getSize();
     layout.byteTextureSize = byteTexture->getSize();
+    ready = true;
     return true;
 }
 
