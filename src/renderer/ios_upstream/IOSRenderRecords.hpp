@@ -54,9 +54,14 @@ constexpr u32 IOS_PULSE_FLAG_IS_ACTIVE      = 1u << 30;
 struct ObjectVertex {
     glm::vec2 positionOffset {};
     glm::vec2 texCoord {};
-    // ES2 has no integer vertex attributes. Keep this index exactly
-    // representable as a float and validate it before uploading.
-    float spriteIndex = 0.f;
+
+    // ES2-compatible per-vertex metadata. The owner keeps the input sprite,
+    // object and group records in separate GPU buffers; on ES2 these indices
+    // are carried as exact float attributes so only a small set of texture
+    // units is needed for the state tables.
+    glm::vec2 objectAndGroupIndex {};
+    glm::vec2 spriteAndMeta {};
+    glm::vec2 objectStartPosition {};
 };
 
 struct InputSprite {
@@ -70,6 +75,10 @@ struct InputSprite {
     // bits of the color channel. Keep it intact for the vertex/shader stage.
     u32 colorChannelFlags = 0;
 };
+
+constexpr u32 IOS_SPRITE_APPEARANCE_VISIBLE = 1u << 0;
+constexpr u32 IOS_SPRITE_APPEARANCE_OPACITY_MODIFY_RGB = 1u << 1;
+constexpr u32 IOS_SPRITE_APPEARANCE_DIRECT_TINT = 1u << 2;
 
 struct SpriteAppearance {
     u32 packedDisplayedColor = 0xffffffffu;
