@@ -18,6 +18,7 @@ public:
     bool init(PlayLayer* layer);
     void reset();
     bool update(float dt);
+    bool refreshBlendOrder();
     void prepareForDraw();
 
     GroupManager& getGroupManager() { return groupManager; }
