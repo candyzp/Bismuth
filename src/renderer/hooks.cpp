@@ -182,10 +182,18 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
         if (auto scene = IOSUpstream::SceneData::getCurrent();
             scene && scene->isReady() &&
             static_cast<GJBaseGameLayer*>(scene->getPlayLayer()) == this) {
-            scene->update(dt);
             if (auto gpuRenderer = IOSUpstream::IOSGPURenderer::getCurrent();
                 gpuRenderer && gpuRenderer->getPlayLayer() == scene->getPlayLayer()) {
+                if (!scene->update(dt)) {
+                    gpuRenderer->reportFailure(
+                        "scene update, blend-order validation, or GPU state upload failed"
+                    );
+                    return;
+                }
                 gpuRenderer->syncLayerNodes();
+            } else if (!scene->update(dt)) {
+                log::error("Bismuth iOS GPU-only beta FAILED: scene update failed without an active renderer");
+                return;
             }
         }
 #endif
