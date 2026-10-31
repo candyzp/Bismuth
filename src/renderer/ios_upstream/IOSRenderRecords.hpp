@@ -6,6 +6,7 @@
 #include <ObjectUtils.hpp>
 #include <array>
 #include <map>
+#include <span>
 #include <vector>
 
 // These records retain the owner's meaning and field order. They are not
@@ -14,25 +15,25 @@
 namespace IOSUpstream {
 
 constexpr u32 IOS_COLOR_CHANNEL_COUNT = 1101;
-constexpr u32 GROUP_IDS_PER_OBJECT = 10;
+constexpr u32 IOS_GROUP_IDS_PER_OBJECT = 10;
 
-constexpr u32 OBJECT_FLAG_USES_AUDIO_SCALE   = 1u << 0;
-constexpr u32 OBJECT_FLAG_CUSTOM_AUDIO_SCALE = 1u << 1;
-constexpr u32 OBJECT_FLAG_IS_ORB             = 1u << 2;
-constexpr u32 OBJECT_FLAG_IS_INVISIBLE_BLOCK = 1u << 3;
-constexpr u32 OBJECT_FLAG_SPECIAL_GLOW_COLOR = 1u << 4;
-constexpr u32 OBJECT_FLAG_IS_GLOW_COLOR_LBG  = 1u << 5;
-constexpr u32 OBJECT_FLAG_HAS_BASE_HSV       = 1u << 6;
-constexpr u32 OBJECT_FLAG_HAS_DETAIL_HSV     = 1u << 7;
-constexpr u32 OBJECT_FLAG_IS_STATIC_OBJECT   = 1u << 8;
+constexpr u32 IOS_OBJECT_FLAG_USES_AUDIO_SCALE   = 1u << 0;
+constexpr u32 IOS_OBJECT_FLAG_CUSTOM_AUDIO_SCALE = 1u << 1;
+constexpr u32 IOS_OBJECT_FLAG_IS_ORB             = 1u << 2;
+constexpr u32 IOS_OBJECT_FLAG_IS_INVISIBLE_BLOCK = 1u << 3;
+constexpr u32 IOS_OBJECT_FLAG_SPECIAL_GLOW_COLOR = 1u << 4;
+constexpr u32 IOS_OBJECT_FLAG_IS_GLOW_COLOR_LBG  = 1u << 5;
+constexpr u32 IOS_OBJECT_FLAG_HAS_BASE_HSV       = 1u << 6;
+constexpr u32 IOS_OBJECT_FLAG_HAS_DETAIL_HSV     = 1u << 7;
+constexpr u32 IOS_OBJECT_FLAG_IS_STATIC_OBJECT   = 1u << 8;
 
-constexpr u32 GAME_STATE_IS_PLAYER_DEAD = 1u << 0;
+constexpr u32 IOS_GAME_STATE_IS_PLAYER_DEAD = 1u << 0;
 
-constexpr u32 PULSE_FLAG_IS_BASE_ONLY   = 1u << 26;
-constexpr u32 PULSE_FLAG_IS_DETAIL_ONLY = 1u << 27;
-constexpr u32 PULSE_FLAG_IS_HSV         = 1u << 28;
-constexpr u32 PULSE_FLAG_IS_DYNAMIC_HSV = 1u << 29;
-constexpr u32 PULSE_FLAG_IS_ACTIVE      = 1u << 30;
+constexpr u32 IOS_PULSE_FLAG_IS_BASE_ONLY   = 1u << 26;
+constexpr u32 IOS_PULSE_FLAG_IS_DETAIL_ONLY = 1u << 27;
+constexpr u32 IOS_PULSE_FLAG_IS_HSV         = 1u << 28;
+constexpr u32 IOS_PULSE_FLAG_IS_DYNAMIC_HSV = 1u << 29;
+constexpr u32 IOS_PULSE_FLAG_IS_ACTIVE      = 1u << 30;
 
 struct ObjectVertex {
     glm::vec2 positionOffset {};
