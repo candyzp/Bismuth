@@ -2,6 +2,11 @@ name: Build iOS Geode Mod
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - rework/ios-gpu-v2
+    paths:
+      - '.github/ios-build-trigger.once'
   pull_request:
     paths:
       - 'src/**'
