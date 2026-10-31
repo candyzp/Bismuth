@@ -26,7 +26,6 @@ public:
     );
 
     void refreshSpriteAppearances();
-    bool updateBlendStates(const ColorChannelBlendStates& blendStates);
 
     const std::vector<ObjectInfo>& getObjectInfos() const { return objectInfos; }
     const std::vector<ObjectVertex>& getVertices() const { return sourceVertices; }
