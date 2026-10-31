@@ -178,6 +178,10 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
             scene && scene->isReady() &&
             static_cast<GJBaseGameLayer*>(scene->getPlayLayer()) == this) {
             scene->update(dt);
+            if (auto gpuRenderer = IOSUpstream::IOSGPURenderer::getCurrent();
+                gpuRenderer && gpuRenderer->getPlayLayer() == scene->getPlayLayer()) {
+                gpuRenderer->syncLayerNodes();
+            }
         }
 #endif
         if (renderer) {
