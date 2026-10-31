@@ -72,6 +72,7 @@ bool queryCapabilities(Capabilities& out) {
     out.maxFragmentTextureUnits = queryInteger(GL_MAX_TEXTURE_IMAGE_UNITS);
     out.maxCombinedTextureUnits = queryInteger(GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS);
     out.maxTextureSize = queryInteger(GL_MAX_TEXTURE_SIZE);
+    out.maxRenderbufferSize = queryInteger(GL_MAX_RENDERBUFFER_SIZE);
 
     const std::string extensionString = glString(GL_EXTENSIONS);
     std::istringstream stream(extensionString);
@@ -92,6 +93,15 @@ bool queryCapabilities(Capabilities& out) {
     out.hasHalfFloatTexture =
         (out.apiMajor >= 3) ||
         hasExtension(out, "GL_OES_texture_half_float");
+    out.hasFloatColorBuffer =
+        hasExtension(out, "GL_EXT_color_buffer_float");
+    out.hasHalfFloatColorBuffer =
+        hasExtension(out, "GL_EXT_color_buffer_half_float");
+    out.hasDrawBuffers =
+        (out.apiMajor >= 3) ||
+        hasExtension(out, "GL_EXT_draw_buffers");
+    out.hasDisjointTimerQuery =
+        hasExtension(out, "GL_EXT_disjoint_timer_query");
 
     // The upstream renderer requires desktop GL 4.3 mechanisms. ES 3.0 does
     // not provide compute shaders, SSBOs, or indirect multi-draw. Do not report
@@ -115,21 +125,26 @@ void logCapabilities(const Capabilities& caps) {
         caps.renderer
     );
     log::info(
-        "Bismuth iOS GL limits: attribs {}, vertex uniforms {}, vertex texture units {}, fragment texture units {}, combined texture units {}, max texture size {}",
+        "Bismuth iOS GL limits: attribs {}, vertex uniforms {}, vertex texture units {}, fragment texture units {}, combined texture units {}, max texture size {}, max renderbuffer size {}",
         caps.maxVertexAttribs,
         caps.maxVertexUniformVectors,
         caps.maxVertexTextureUnits,
         caps.maxFragmentTextureUnits,
         caps.maxCombinedTextureUnits,
-        caps.maxTextureSize
+        caps.maxTextureSize,
+        caps.maxRenderbufferSize
     );
     log::info(
-        "Bismuth iOS GL features: vertex textures {}, VAO {}, uint indices {}, float textures {}, half-float textures {}, compute {}, SSBO {}, indirect multi-draw {}",
+        "Bismuth iOS GL features: vertex textures {}, VAO {}, uint indices {}, float textures {}, half-float textures {}, float color targets {}, half-float color targets {}, MRT {}, disjoint timer queries {}, compute {}, SSBO {}, indirect multi-draw {}",
         caps.hasVertexTextureSampling,
         caps.hasVertexArrayObject,
         caps.hasUIntElementIndices,
         caps.hasFloatTexture,
         caps.hasHalfFloatTexture,
+        caps.hasFloatColorBuffer,
+        caps.hasHalfFloatColorBuffer,
+        caps.hasDrawBuffers,
+        caps.hasDisjointTimerQuery,
         caps.hasComputeShaders,
         caps.hasShaderStorageBuffers,
         caps.hasIndirectMultiDraw
