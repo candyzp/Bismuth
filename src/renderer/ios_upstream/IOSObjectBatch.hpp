@@ -6,6 +6,7 @@
 #include "IOSRenderRecords.hpp"
 #include "IOSWorkGroupScheduler.hpp"
 #include <functional>
+#include <set>
 #include <unordered_map>
 
 class ConvexList;
