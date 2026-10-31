@@ -7,7 +7,7 @@ Repositories compared:
 - iOS fork: https://github.com/candyzp/Bismuth, master at `d31115ee3851655c6671233bc13b1a42e0d7e157`
 - Port branch: `rework/ios-gpu-v2`
 
-This is a source audit, not a successful build report. The new port modules are separate from the old renderer until the new path is ready to replace it.
+This is a source audit and CPU-side port record, not a successful build report. The new owner-style CPU modules live under `src/renderer/ios_upstream/`; they are separate from the old renderer until step 3 connects them to the new GPU renderer.
 
 ## Findings
 
@@ -22,36 +22,41 @@ This is a source audit, not a successful build report. The new port modules are 
 
 | Upstream component | Fork state | Required iOS work |
 |---|---|---|
-| `WorkGroupScheduler.hpp/.cpp` | Missing | Port CPU sorting, layer grouping, sprite remapping and draw-range generation. Remove the desktop OpenCL GPU-core-count dependency. |
-| `SAOBuffer.hpp` | Missing | Port the owner data model, but serialize the records into ES-compatible texture/attribute tables rather than SSBOs. |
-| `resources/shaders/headers/*` | Missing | Port the record definitions, flags, HSV and pulse semantics into an ES shader data layout. |
-| `objectCulling.comp` | Missing | Translate the per-sprite visibility, transform, audio-scale and color calculations into the iOS GPU pipeline. |
-| `objectDrawing.vert/.frag` | Missing | Port the final per-vertex transform and sprite-sheet sampling to GLSL ES. |
-| `Renderer.cpp` | Missing | Replace the legacy `RendererIOS.cpp` architecture with the owner-style object/group/batch lifecycle. |
-| `DifferenceMode`, `OverdrawView` | Missing | Optional debug facilities; not a blocker for the core renderer. |
-| `GJEffectManager` decomp helpers | Missing | Needed for the owner's pulse/color parity helpers where direct bindings don't expose the required methods. |
-| `GPUTimer` | Missing | Use an iOS-supported timer extension only when advertised; retain the existing CPU profiler independently. |
+| `WorkGroupScheduler.hpp/.cpp` | Ported in `IOSWorkGroupScheduler` | CPU sorting, per-layer ordering, sprite remapping, pre-culled records, and work-group ranges. The desktop OpenCL GPU-core-count heuristic is replaced by a fixed provisional batch size pending iOS measurements. |
+| `SAOBuffer.hpp` | Data model ported | Owner record meanings are represented in `IOSRenderRecords.hpp`; step 3 serializes them into ES-compatible texture/attribute tables rather than SSBOs. |
+| `resources/shaders/headers/*` | CPU record semantics ported | Flags, group state, pulse entries, HSV encoding, game state, color channels, and input-sprite records are represented. The GLSL ES lookup helpers and texture layouts remain step 3. |
+| `objectCulling.comp` | Not yet ported | Step 3 translates the per-sprite visibility, transform, audio-scale, group, color, HSV, and pulse calculations into the iOS GPU vertex-processing path. |
+| `objectDrawing.vert/.frag` | Not yet ported | Step 3 ports final vertex transform and sprite-sheet sampling to GLSL ES. |
+| `Renderer.cpp` | CPU initialization flow ported to `IOSSceneData` | Step 3 adds the iOS renderer owner, state-table uploads, layer draw nodes, and GPU submission. |
+| `DifferenceMode`, `OverdrawView` | Not ported | Optional diagnostics; keep BProfiler and the fork's existing debugger. Not required for the core renderer. |
+| `GJEffectManager` decomp helpers | Not required by current CPU port | The iOS GroupManager reads the same live pulse/color action data directly. Revisit only if shader parity reveals a binding gap. |
+| `GPUTimer` | Capability reporting added | The live context report checks timer-query support; step 4 can add an extension-backed timer without importing desktop-only query assumptions. |
 
 ### Shared files that have diverged
 
 **GroupManager**
-- Upstream adds explicit empty group-combination index 0, per-group toggle state, vanilla-rotation group identification, and a pulse-entry table.
-- Upstream updates group alpha and pulse state every frame and stores/restores group state at checkpoints.
-- The fork has an older disabled-group / scaled-state implementation with different rotation handling. This must not be used as the new renderer's source of truth.
+- Ported in `IOSGroupManager.hpp/.cpp`: explicit empty combination index 0, per-group toggle state, vanilla-rotation group identification, alpha grouping, pulse-entry generation, movement/rotation state, and checkpoint store/restore.
+- The iOS port deliberately fixes the upstream alpha-combination filtering typo by filtering the `alphaCombination` copy rather than the unfiltered transform combination.
+- Runtime move, optimized rotation, follow, toggle and checkpoint hooks now mirror the owner's state into the active iOS SceneData. The owner-style optimized rotation routine keeps non-decoration physics/oriented-box updates in Geometry Dash while decoration transforms are GPU state.
+- The fork's older disabled-group / scaled-state implementation is not used as the new renderer's source of truth.
 
 **ObjectBatch**
-- Upstream builds static vertices plus per-sprite `InputSprite` records, and uses the work-group scheduler to order sprite processing by Z layer, sprite sheet and blending state.
-- It adds GPU-produced `RawSprite` state and culling indices.
-- The fork's implementation adds `VisibilityManager`, section culling and per-frame live-sprite VBO refresh for the former hybrid renderer. Those additions are not the owner's current architecture and are not the base of this port.
+- Ported in `IOSObjectBatch.hpp/.cpp`: owner-style object metadata, sprite-tree expansion, rotated/flipped texture-rect mapping, convex mesh triangulation, six-vertex quads, per-sprite input records, source-sprite lifetime pins, and reordering into scheduler-produced layer ranges.
+- iOS-specific direct displayed-tint metadata is retained as a sidecar record; encoded color flags are masked only for blend-channel lookup.
+- Per-frame blend-state changes schedule a new owner-style layer ordering asynchronously.
+- GPU-produced raw-sprite state, culling-index generation, and final draw submission remain step 3.
+- The fork's old `VisibilityManager`, section culling and live-VBO-refresh implementation are not the base of this port.
 
 **ObjectUtils**
-- The fork contains extra transactional sprite-tree validation added for hybrid ownership and CPU fallback.
-- The owner uses a simpler unpacking path consistent with its static object/sprite input model. Port the owner's current object/sprite semantics; keep any proven iOS safety checks only where they do not change ownership or silently demote a GPU draw to stock.
+- The transactional visual-tree validation remains because it prevents invalid Cocos child casts and duplicate sprite records; an unsupported tree rejects the GPU beta build rather than being routed to stock rendering.
+- Owner-style sprite order, base/detail/glow classification, black-sprite output type, tag-997 exception, and mesh lookup semantics are retained.
+- The iOS direct-tint metadata for legacy/default channel 0 is kept in the high color-channel bits and carried into the new per-sprite record. The scheduler strips those flags only when indexing the blend-state table.
 
 **Renderer / draw nodes**
-- The fork uses `RendererIOS.cpp`, `ResolvedStateLayer`, `AssistShadowBatch`, `StandaloneAssistBatch`, `AtlasInterleave`, and Cocos stock-batch hooks.
-- The owner uses a single renderer lifecycle: collect and sort objects; initialize group/object data; prepare per-layer batches; update uniforms and group state; evaluate GPU state; draw ordered layer ranges.
-- The old iOS system is retained only as historical reference. The new renderer must not depend on its ownership registry or hybrid fallback.
+- `IOSSceneData` now ports the owner's CPU initialization/data-refresh sequence: sprite-sheet/mesh setup, full-level GroupManager initialization, ObjectSorter traversal, ObjectBatch build, color-channel table refresh using `m_copyColor`, game/camera/audio state, per-frame blend changes, and draw-time MVP/camera refresh.
+- Runtime group-state hooks are installed but remain dormant until the new SceneData instance is created by the step-3 renderer owner.
+- The fork's `RendererIOS.cpp`, `ResolvedStateLayer`, `AssistShadowBatch`, `StandaloneAssistBatch`, and `AtlasInterleave` are not dependencies of the new path; they remain historical reference only.
+- The new iOS renderer owner, GPU state uploads, ordered layer draw nodes and actual GPU draw submission remain step 3.
 
 **Shader and buffer APIs**
 - The fork's `ShaderIOS.cpp` compiles simple vertex/fragment shaders only.
@@ -61,13 +66,14 @@ This is a source audit, not a successful build report. The new port modules are 
 
 ### Game lifecycle integration missing from the iOS hooks
 
-The current iOS hooks call Geometry Dash's original move, rotation and follow methods, but do not mirror the resulting owner-style group state into the GPU group-state table. The upstream integration also:
-- tracks move, rotate, follow and toggle group state;
-- stores/restores group state at checkpoints;
-- identifies groups whose objects must continue rotating under vanilla logic;
-- removes GPU-rendered decorations from vanilla movement arrays once the GPU renderer owns them.
+The iOS hooks now mirror the owner's state split when an `IOSSceneData` instance is active:
+- move deltas are accumulated into GroupManager while vanilla non-decoration object data is advanced;
+- optimized rotation uses the owner's `vanillaRotateGroups` set, `claimRotationAction` / `claimMoveAction`, object-section updates, and oriented-box maintenance;
+- follow deltas and group toggles are mirrored into GroupManager;
+- checkpoint group states are stored, restored and removed with checkpoint lifetime;
+- decorations are removed from vanilla move groups only after the new SceneData renderer is active.
 
-These hooks must be ported carefully so gameplay, collision and physics remain Geometry Dash-owned while the renderer receives the matching visual state.
+The hooks continue to call Geometry Dash's gameplay/physics routines for the non-decoration objects. SceneData update and draw-time uniform refresh are separate so the renderer can capture the correct camera/MVP state immediately before GPU submission.
 
 ## iOS GPU API research
 
@@ -109,12 +115,17 @@ If vertex texture fetch or the required data formats are unavailable in the live
 
 - [x] Compare both repository trees and shared renderer files.
 - [x] Identify upstream-only files and fork-only hybrid renderer systems.
-- [x] Inspect upstream GroupManager, ObjectBatch, WorkGroupScheduler, shader records and renderer flow.
-- [x] Inspect the fork's OpenGLES ES2 shim and iOS shader/buffer implementations.
+- [x] Inspect upstream GroupManager, ObjectBatch, WorkGroupScheduler, shader records, object-culling shader and renderer flow.
+- [x] Inspect the fork's OpenGLES ES2 shim, DataTexture, iOS shader compiler and buffer implementation.
 - [x] Add live GL capability reporting, including vertex texture units, texture formats, color-target formats, MRT and timer-query support.
-- [ ] Port owner data records to an ES-compatible iOS representation.
-- [ ] Port owner-style CPU layer sorting and work scheduling.
-- [ ] Port GroupManager state, checkpoint and pulse semantics.
-- [ ] Port ObjectBatch input/mesh construction.
-- [ ] Port group/move/rotation/follow/toggle/checkpoint hooks.
-- [ ] Build and verify the step-2 iOS target before starting step 3 shader translation.
+- [x] Port owner record meanings into ES-compatible iOS CPU records.
+- [x] Port owner-style layer sorting, sprite remapping, blend-state scheduling and work-group range generation.
+- [x] Port GroupManager combinations, movement/rotation/toggle state, alpha and pulse data, vanilla-rotation groups and checkpoints.
+- [x] Port ObjectBatch object/sprite metadata, mesh construction, texture-rect transforms/flips, sprite ordering and lifetime management.
+- [x] Port SceneData initialization plus live color-channel/game/camera/audio state capture.
+- [x] Port move/optimized-rotation/follow/toggle/checkpoint gameplay-state hooks.
+- [ ] Step 3: port GPU texture-table serialization, ES shader equivalents, and ordered layer draw submission.
+- [ ] Step 4: verify visual parity, effect coverage, lifecycle stability, and performance instrumentation on device.
+- [ ] Step 5: run the iOS build and address compile/link failures.
+
+**Build status:** No build has been run yet. The step-2 source port has not been compiled or device-tested; build verification is deliberately reserved for step 5.
