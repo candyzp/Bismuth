@@ -17,7 +17,7 @@ public:
 
     bool init(PlayLayer* layer);
     void reset();
-    void update(float dt);
+    bool update(float dt);
     void prepareForDraw();
 
     GroupManager& getGroupManager() { return groupManager; }
