@@ -373,8 +373,9 @@ void main() {
     vec4 color;
     if (directTint > 0.5) {
         // texture2D returns normalized RGBA; the packed CPU bytes are already
-        // converted to 0..1 by the GL sampler.
-        color = appearance;
+        // converted to 0..1 by the GL sampler. Alpha is applied below exactly
+        // once through directSpriteOpacity.
+        color = vec4(appearance.rgb, 1.0);
     } else {
         color = getColorChannel(colorChannel);
     }
