@@ -174,7 +174,6 @@ struct SortedObjectBatch {
     std::vector<PreCulledSprite> preCulledSprites;
     std::vector<WorkGroup> workGroups;
 };
-
 using ColorChannelBlendStates = std::array<bool, IOS_COLOR_CHANNEL_COUNT>;
 struct RGBA8 {
     u8 r = 255;
@@ -182,6 +181,7 @@ struct RGBA8 {
     u8 b = 255;
     u8 a = 255;
 };
+static_assert(sizeof(RGBA8) == 4, "RGBA8 must serialize as exactly four bytes");
 using ColorChannelTable = std::array<RGBA8, IOS_COLOR_CHANNEL_COUNT>;
 
 inline u32 colorChannelForSortKey(u32 colorChannelFlags) {
