@@ -41,7 +41,8 @@ This is a source audit and CPU-side port record, not a successful build report. 
 - The fork's older disabled-group / scaled-state implementation is not used as the new renderer's source of truth.
 
 **ObjectBatch**
-- Ported in `IOSObjectBatch.hpp/.cpp`: owner-style object metadata, sprite-tree expansion, rotated/flipped texture-rect mapping, convex mesh triangulation, six-vertex quads, per-sprite input records, source-sprite lifetime pins, and reordering into scheduler-produced layer ranges.
+- Ported in `IOSObjectBatch.hpp/.cpp`: owner-style object metadata, sprite-tree expansion, rotated/flipped texture-rect mapping, convex mesh triangulation, six-vertex quads, per-sprite input records, source-sprite lifetime pins, and scheduler-produced layer ranges.
+- Source vertex/input arrays remain in their original owner order. The scheduler's remap/pre-culled arrays express draw order; they are not also physically reordered. The port validates that the remap is a complete permutation before step 3.
 - iOS-specific direct displayed-tint metadata is retained as a sidecar record; encoded color flags are masked only for blend-channel lookup.
 - Per-frame blend-state changes schedule a new owner-style layer ordering asynchronously.
 - GPU-produced raw-sprite state, culling-index generation, and final draw submission remain step 3.
@@ -129,7 +130,7 @@ If vertex texture fetch or the required data formats are unavailable in the live
 - [x] Port owner record meanings into ES-compatible iOS CPU records.
 - [x] Port owner-style layer sorting, sprite remapping, blend-state scheduling and work-group range generation.
 - [x] Port GroupManager combinations, movement/rotation/toggle state, alpha and pulse data, vanilla-rotation groups and checkpoints.
-- [x] Port ObjectBatch object/sprite metadata, mesh construction, texture-rect transforms/flips, sprite ordering and lifetime management.
+- [x] Port ObjectBatch object/sprite metadata, mesh construction, texture-rect transforms/flips, source-order buffers, scheduler remapping and lifetime management.
 - [x] Port SceneData initialization plus live color-channel/game/camera/audio state capture.
 - [x] Port move/optimized-rotation/follow/toggle/checkpoint gameplay-state hooks.
 - [ ] Step 3: port GPU texture-table serialization, ES shader equivalents, and ordered layer draw submission.
