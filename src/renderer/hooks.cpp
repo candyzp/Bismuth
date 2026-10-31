@@ -511,7 +511,7 @@ class $modify(RendererInterleavedSpriteBatchNode, cocos2d::CCSpriteBatchNode) {
             auto owner = static_cast<cocos2d::CCNode*>(gpuRenderer->getPlayLayer());
             while (ancestor && ancestor != owner)
                 ancestor = ancestor->getParent();
-            if (ancestor == owner)
+            if (owner && ancestor == owner)
                 return;
         }
 
