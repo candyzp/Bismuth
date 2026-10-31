@@ -64,6 +64,8 @@ private:
     cocos2d::CCLabelBMFont* debugOverlay = nullptr;
     u32 drawsThisFrame = 0;
     u32 lastFrameDraws = 0;
+    u32 activeLayerCount = 0;
+    u32 missingLayerNodeCount = 0;
     bool initialized = false;
     bool failed = false;
     bool reportedDrawFailure = false;
