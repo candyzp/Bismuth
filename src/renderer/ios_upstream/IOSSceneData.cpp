@@ -281,6 +281,28 @@ void SceneData::reset() {
         log::error("Bismuth iOS upstream scene data: GPU state-table upload failed after reset");
 }
 
+bool SceneData::refreshBlendOrder() {
+    if (!ready || !layer)
+        return false;
+
+    // Match Renderer::draw(): refresh the live blend flags at render time,
+    // before selecting the layer range and uploading the sorted vertex stream.
+    ColorChannelBlendStates currentBlendStates = blendStates;
+    fetchBlendingStates(currentBlendStates);
+    blendStates = currentBlendStates;
+
+    // The owner refreshes the map while paused but does not run predraw until
+    // the next active frame.
+    if (layer->m_isPaused)
+        return true;
+
+    if (!objectBatch.refreshBlendOrder(blendStates)) {
+        log::error("Bismuth iOS upstream scene data: failed to apply a refreshed blend-state schedule");
+        return false;
+    }
+    return true;
+}
+
 void SceneData::prepareForDraw() {
     if (ready)
         updateGameState();
@@ -292,20 +314,8 @@ bool SceneData::update(float dt) {
 
     gameTimer += dt;
 
-    // Match Renderer::draw(): refresh channel blend flags every frame, even
-    // while paused. The owner only runs ObjectBatch::predraw() when unpaused,
-    // so a new sorted variant is requested on the first active frame.
-    ColorChannelBlendStates currentBlendStates = blendStates;
-    fetchBlendingStates(currentBlendStates);
-    blendStates = currentBlendStates;
-
     if (layer->m_isPaused)
         return true;
-
-    if (!objectBatch.refreshBlendOrder(blendStates)) {
-        log::error("Bismuth iOS upstream scene data: failed to apply a refreshed blend-state schedule");
-        return false;
-    }
 
     updateColorChannelTable();
     groupManager.updateGroupStateBuffer();
