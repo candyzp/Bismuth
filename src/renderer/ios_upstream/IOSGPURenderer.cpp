@@ -83,20 +83,19 @@ public:
         for (GLuint index = 0; index < ATTRIB_COUNT; ++index) {
             const auto& attrib = attributes[index];
 
-            // GLES2 attribute arrays are VBO-backed. A disabled attribute may
-            // have no buffer associated with it; do not attempt to restore a
-            // client-memory pointer in that case.
-            if (attrib.buffer != 0) {
-                glBindBuffer(GL_ARRAY_BUFFER, static_cast<GLuint>(attrib.buffer));
-                glVertexAttribPointer(
-                    index,
-                    attrib.size,
-                    static_cast<GLenum>(attrib.type),
-                    static_cast<GLboolean>(attrib.normalized),
-                    attrib.stride,
-                    attrib.pointer
-                );
-            }
+            // Restore the complete ES2 attribute-array descriptor. In
+            // particular, buffer 0 is a valid client-memory array binding; if
+            // it was enabled before this draw, leaving our VBO pointer installed
+            // would corrupt a later Cocos draw using the same attribute index.
+            glBindBuffer(GL_ARRAY_BUFFER, static_cast<GLuint>(attrib.buffer));
+            glVertexAttribPointer(
+                index,
+                attrib.size,
+                static_cast<GLenum>(attrib.type),
+                static_cast<GLboolean>(attrib.normalized),
+                attrib.stride,
+                attrib.pointer
+            );
             if (attrib.enabled)
                 glEnableVertexAttribArray(index);
             else
