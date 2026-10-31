@@ -292,11 +292,20 @@ bool SceneData::update(float dt) {
 
     gameTimer += dt;
 
-    // Match Renderer::draw(): the layer's blend-state schedule is fixed during
-    // renderer initialization. While paused, mutable color/group data and the
-    // scheduler prepass are not regenerated.
+    // Match Renderer::draw(): refresh channel blend flags every frame, even
+    // while paused. The owner only runs ObjectBatch::predraw() when unpaused,
+    // so a new sorted variant is requested on the first active frame.
+    ColorChannelBlendStates currentBlendStates = blendStates;
+    fetchBlendingStates(currentBlendStates);
+    blendStates = currentBlendStates;
+
     if (layer->m_isPaused)
         return true;
+
+    if (!objectBatch.refreshBlendOrder(blendStates)) {
+        log::error("Bismuth iOS upstream scene data: failed to apply a refreshed blend-state schedule");
+        return false;
+    }
 
     updateColorChannelTable();
     groupManager.updateGroupStateBuffer();
