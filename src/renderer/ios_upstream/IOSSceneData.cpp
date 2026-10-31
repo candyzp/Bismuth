@@ -145,6 +145,9 @@ void SceneData::reset() {
     if (!ready)
         return;
     groupManager.resetGroupStates();
+    ColorChannelBlendStates blendStates {};
+    fetchBlendingStates(blendStates);
+    objectBatch.updateBlendStates(blendStates);
     objectBatch.refreshSpriteAppearances();
 }
 
@@ -152,6 +155,13 @@ void SceneData::update() {
     if (!ready)
         return;
     groupManager.updateGroupStateBuffer();
+
+    // The owner re-evaluates color-channel blending every frame. The scheduler
+    // generates a new layer ordering asynchronously when any channel changes.
+    ColorChannelBlendStates blendStates {};
+    fetchBlendingStates(blendStates);
+    objectBatch.updateBlendStates(blendStates);
+
     objectBatch.refreshSpriteAppearances();
 }
 
