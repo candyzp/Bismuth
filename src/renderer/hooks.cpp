@@ -197,9 +197,16 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
                 );
             }
 
-            // In the owner's optimized path decorations have already been
-            // removed from the vanilla group arrays by optimizeMoveGroups().
-            // Their movement is represented exclusively in GroupManager.
+            // Decorations have been removed from both vanilla arrays. Remaining
+            // optimized-group solids still need GD's physical position, section,
+            // and collision bookkeeping even though their visual transform is
+            // mirrored in the GPU GroupManager state.
+            objects = getOptimizedGroup(groupId);
+            if (objects) {
+                ((decomp_GJBaseGameLayer*)this)->moveObjects(
+                    objects, node->m_unk090, node->m_unk098, 0
+                );
+            }
         }
         return;
 #else
