@@ -15,6 +15,7 @@ namespace IOSUpstream {
 static_assert(sizeof(glm::vec4) == sizeof(float) * 4,
     "GPU float texture records must serialize as four contiguous floats");
 
+GPUStateTables::GPUStateTables() = default;
 GPUStateTables::~GPUStateTables() = default;
 
 namespace {
