@@ -50,7 +50,6 @@ class $modify(RendererPlayLayer, PlayLayer) {
 
             // Match the owner's lifecycle: create the renderer after level
             // objects are prepared but before the final PlayLayer reset.
-            // IOSGPURenderer hides stock batches as the first ownership action.
             auto gpuRenderer = IOSUpstream::IOSGPURenderer::create(this);
             if (gpuRenderer)
                 batchLayer->addChild(gpuRenderer, -100000);
@@ -59,33 +58,30 @@ class $modify(RendererPlayLayer, PlayLayer) {
             return;
         }
 
-        PlayLayer::resetLevel();
-
         if (auto gpuRenderer = IOSUpstream::IOSGPURenderer::getCurrent();
             gpuRenderer && gpuRenderer->getPlayLayer() == this) {
             gpuRenderer->reset();
         }
+        PlayLayer::resetLevel();
 #else
         if (newPlayLayer && Renderer::get() == nullptr) {
-            PlayLayer::resetLevel();
-
             auto batchLayer = this->m_objectLayer;
             if (!batchLayer) {
                 log::error("failed to attach renderer: batch layer not found");
+                PlayLayer::resetLevel();
                 return;
             }
 
             auto renderer = Renderer::create(this);
             if (renderer)
                 batchLayer->addChild(renderer, -100000);
+            PlayLayer::resetLevel();
             return;
         }
 
-        PlayLayer::resetLevel();
-
-        auto renderer = Renderer::get();
-        if (renderer)
+        if (auto renderer = Renderer::get())
             renderer->reset();
+        PlayLayer::resetLevel();
 #endif
     }
 
