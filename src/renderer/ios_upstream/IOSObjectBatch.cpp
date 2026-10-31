@@ -95,7 +95,6 @@ void ObjectBatch::clear() {
     usedLayerKeyStorage.clear();
     usedLayerKeys.clear();
     sortedBatch = {};
-    currentObjectIndex = 0;
     currentSpriteIndex = 0;
     built = false;
 }
@@ -173,17 +172,12 @@ bool ObjectBatch::buildObjectInfo(const std::vector<GameObject*>& objects) {
 ObjectBatch::SpriteVertexTransforms ObjectBatch::getSpriteVertexTransform(
     cocos2d::CCSprite* sprite,
     const cocos2d::CCAffineTransform& transform,
-    SpriteSheet spriteSheet
+    cocos2d::CCTexture2D* texture
 ) const {
-    if (!sprite)
+    if (!sprite || !texture)
         return {};
 
     const CCRect crop = sprite->getTextureRect();
-    cocos2d::CCTexture2D* texture = resolveTexture
-        ? resolveTexture(spriteSheet)
-        : sprite->getTexture();
-    if (!texture)
-        return {};
 
     const glm::vec2 positionBottomLeft = ccPointToGLM(
         CCPointApplyAffineTransform(sprite->getOffsetPosition(), transform)
@@ -274,7 +268,6 @@ bool ObjectBatch::addSprite(
     const u32 groupCombinationIndex =
         groupManager.getGroupCombinationIndexForObject(object);
 
-    currentTransforms = getSpriteVertexTransform(sprite, transform, spriteSheet);
     const auto texture = resolveTexture
         ? resolveTexture(spriteSheet)
         : sprite->getTexture();
@@ -286,8 +279,8 @@ bool ObjectBatch::addSprite(
         return false;
     }
 
+    currentTransforms = getSpriteVertexTransform(sprite, transform, texture);
     currentObjectStartPosition = ccPointToGLM(object->m_startPosition);
-    currentObjectIndex = objectIndex;
     currentSpriteIndex = static_cast<u32>(sourceInputSprites.size());
 
     const usize firstTriangle = sourceVertices.size() / 3;
