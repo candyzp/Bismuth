@@ -34,7 +34,7 @@ public:
     };
 
     GPUStateTables() = default;
-    ~GPUStateTables() = default;
+    ~GPUStateTables();
 
     GPUStateTables(const GPUStateTables&) = delete;
     GPUStateTables& operator=(const GPUStateTables&) = delete;
