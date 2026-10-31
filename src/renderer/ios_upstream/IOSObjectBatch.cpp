@@ -104,6 +104,8 @@ void ObjectBatch::clear() {
     usedLayerKeys.clear();
     sortedBatch = {};
     currentSpriteIndex = 0;
+    hasCurrentBlendStates = false;
+    currentBlendStates.fill(false);
     built = false;
 }
 
@@ -390,13 +392,8 @@ bool ObjectBatch::writeGameObject(GameObject* object, GroupManager& groupManager
     return true;
 }
 
-bool ObjectBatch::finalizeSortedGeometry(const ColorChannelBlendStates& blendStates) {
-    const SortedObjectBatch* generated =
-        workGroupScheduler.waitForSortedBatch(blendStates);
-    if (!generated)
-        return false;
-
-    sortedBatch = *generated;
+bool ObjectBatch::applySortedBatch(const SortedObjectBatch& newSortedBatch) {
+    sortedBatch = newSortedBatch;
     vertices.clear();
     inputSprites.clear();
     spriteAppearances.clear();
@@ -439,10 +436,52 @@ bool ObjectBatch::finalizeSortedGeometry(const ColorChannelBlendStates& blendSta
             usedLayerKeys.insert(key);
     }
 
-    return vertices.size() == sourceVertices.size() &&
-        inputSprites.size() == sourceInputSprites.size() &&
-        spriteAppearances.size() == sourceSpriteAppearances.size() &&
-        spritePointers.size() == sourceSpritePointers.size();
+    if (vertices.size() != sourceVertices.size() ||
+        inputSprites.size() != sourceInputSprites.size() ||
+        spriteAppearances.size() != sourceSpriteAppearances.size() ||
+        spritePointers.size() != sourceSpritePointers.size())
+        return false;
+
+    // The scheduler's cumulative triangle offsets must match the reordered
+    // vertex stream exactly. This catches stale sprite indices before step 3
+    // uploads any geometry to the GPU.
+    for (const auto& [key, range] : sortedBatch.layerRanges) {
+        const u64 endVertex = static_cast<u64>(range.firstVertex) + range.vertexCount;
+        if (endVertex > vertices.size() || range.vertexCount % 3 != 0)
+            return false;
+    }
+
+    return true;
+}
+
+bool ObjectBatch::finalizeSortedGeometry(const ColorChannelBlendStates& blendStates) {
+    const SortedObjectBatch* generated =
+        workGroupScheduler.waitForSortedBatch(blendStates);
+    if (!generated)
+        return false;
+
+    if (!applySortedBatch(*generated))
+        return false;
+    currentBlendStates = blendStates;
+    hasCurrentBlendStates = true;
+    return true;
+}
+
+bool ObjectBatch::updateBlendStates(const ColorChannelBlendStates& blendStates) {
+    if (!built || (hasCurrentBlendStates && currentBlendStates == blendStates))
+        return true;
+
+    const SortedObjectBatch* generated =
+        workGroupScheduler.fetchSortedBatchForBlendStates(blendStates);
+    if (!generated)
+        return false; // Owner-style async generation; keep prior sort until ready.
+
+    if (!applySortedBatch(*generated))
+        return false;
+
+    currentBlendStates = blendStates;
+    hasCurrentBlendStates = true;
+    return true;
 }
 
 bool ObjectBatch::build(
