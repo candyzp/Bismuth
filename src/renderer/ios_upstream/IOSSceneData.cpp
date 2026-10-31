@@ -18,6 +18,19 @@ using namespace geode::prelude;
 
 namespace IOSUpstream {
 
+namespace {
+SceneData* g_currentSceneData = nullptr;
+}
+
+SceneData::~SceneData() {
+    if (g_currentSceneData == this)
+        g_currentSceneData = nullptr;
+}
+
+SceneData* SceneData::getCurrent() {
+    return g_currentSceneData;
+}
+
 cocos2d::CCTexture2D* SceneData::getSpriteSheetTexture(SpriteSheet sheet) const {
     const auto index = static_cast<i32>(sheet);
     if (index < 0 || index >= static_cast<i32>(spriteSheets.size()))
@@ -142,6 +155,7 @@ bool SceneData::init(PlayLayer* playLayer) {
     );
 
     ready = true;
+    g_currentSceneData = this;
     return true;
 }
 
