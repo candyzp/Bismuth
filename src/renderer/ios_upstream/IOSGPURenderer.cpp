@@ -568,7 +568,10 @@ bool IOSGPURenderer::initForPlayLayer(PlayLayer* playLayer) {
         return false;
 
     if (!sceneData.init(layer)) {
-        fail("owner-style CPU scene data or GPU state tables failed to initialize");
+        const auto& reason = sceneData.getFailureReason();
+        fail(reason.empty()
+            ? "scene extraction or GPU state-table initialization failed"
+            : reason);
         return false;
     }
 
