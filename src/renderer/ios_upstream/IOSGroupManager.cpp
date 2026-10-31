@@ -59,19 +59,19 @@ struct EncodedPulseEntry {
 
 static EncodedPulseEntry makePulseEntry(const PulseEffectAction& action) {
     EncodedPulseEntry entry;
-    entry.flags |= PULSE_FLAG_IS_ACTIVE;
+    entry.flags |= IOS_PULSE_FLAG_IS_ACTIVE;
     entry.flags |=
         (static_cast<u32>(action.m_currentValue * 65535.0f) & 0xffffu);
 
     if (action.m_mainOnly)
-        entry.flags |= PULSE_FLAG_IS_BASE_ONLY;
+        entry.flags |= IOS_PULSE_FLAG_IS_BASE_ONLY;
     if (action.m_detailOnly)
-        entry.flags |= PULSE_FLAG_IS_DETAIL_ONLY;
+        entry.flags |= IOS_PULSE_FLAG_IS_DETAIL_ONLY;
     if (action.m_isDynamicHsv)
-        entry.flags |= PULSE_FLAG_IS_DYNAMIC_HSV;
+        entry.flags |= IOS_PULSE_FLAG_IS_DYNAMIC_HSV;
 
     if (action.m_pulseEffectType == PulseEffectType::Hsv) {
-        entry.flags |= PULSE_FLAG_IS_HSV;
+        entry.flags |= IOS_PULSE_FLAG_IS_HSV;
         entry.flags |= (static_cast<u32>(action.m_colorIndex) & 0x3ffu) << 16;
         entry.colorOrHSV = convertToShaderHSV(action.m_hsv);
     } else {
