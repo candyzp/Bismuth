@@ -476,11 +476,6 @@ void IOSGPURenderer::reset() {
         fail("GPU state-table reset upload failed");
         return;
     }
-    if (sceneData.getObjectBatch().hasSortValidationFailed()) {
-        fail("completed scheduler batch failed validation during reset");
-        return;
-    }
-
     if (sceneData.getObjectBatch().getOrderRevision() != uploadedOrderRevision &&
         !uploadOrderedVertices()) {
         fail("ordered vertex upload failed during reset");
