@@ -22,6 +22,7 @@ public:
 
     bool initForPlayLayer(PlayLayer* layer);
     void reset();
+    void enforceGPUOwnership() { hideStockBatches(); }
     bool syncLayerNodes();
     void drawLayer(const LayerKey& key);
 
