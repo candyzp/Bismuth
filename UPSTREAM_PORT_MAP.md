@@ -9,7 +9,7 @@ Reference: `iliasHDZ/Bismuth` master at `12536eb964022e16985b428228ba3f36923ba3d
 | ObjectSorter | Enumerates and organizes the renderable GameObjects | Port the same object ordering and sprite classification |
 | GroupManager | Group combination, alpha, transform, pulse, and toggle state | Preserve the owner's state model and update semantics |
 | ObjectBatch | Static object/sprite/vertex input data | Preserve the input record and indexed geometry model |
-| WorkGroupScheduler | Sort by layer/blend/sheet and partition work for GPU execution | Port sorting, remaps, work-group ranges, and scheduler behavior |
+| WorkGroupScheduler | Sort by layer/blend/sheet and partition work for GPU execution | Port sorting, remaps, work-group ranges, and per-frame blend-state variant refresh |
 | SAOBuffer | Structure-of-arrays GPU data organization | Preserve the upstream field layout and indexing semantics |
 | objectCulling.comp | Per-sprite culling, transforms, audio scale, HSV/pulses, opacity and raw sprite output | Port the calculations, not the desktop-only compute API syntax |
 | objectDrawing.vert | Applies GPU-produced sprite state to vertices | Port the output transform and vertex mapping |
@@ -36,6 +36,15 @@ The upstream desktop compute/SSBO/indirect-draw path therefore needs a real iOS 
 - Keep the pixel shader responsible for sampling the selected sprite sheet and applying the GPU-resolved color.
 
 These are API substitutions only. They must not become a return to the old assist/ownership design. The new beta is GPU-only: if its GPU render path fails, report a beta failure; do not draw the affected content through stock Cocos.
+
+## Step 4 source parity notes
+
+- Runtime blend flags are not a fixed level-initialization snapshot: the iOS scene refreshes the owner's color-channel blend map every frame and applies the corresponding scheduler variant as soon as its asynchronous job is ready. The previous ordered batch remains active while a new variant is pending.
+- Sprite base/detail/glow/black classification, rotated texture rectangles, flips, transforms, opacity, direct-tint channel 0, HSV, pulse, invisible-block, camera, and audio calculations were compared against the current upstream source. The iOS root-versus-child black classification now matches the owner's separate object-black and color-sprite-black flags.
+- The ES2 renderer now requires fragment highp precision for sprite atlas coordinates and restores the caller's full vertex-attrib descriptors, including client-memory arrays, after submission.
+- This is a source audit only. Shader compilation, device rendering, frame-to-frame visual comparisons, and gameplay/level-transition tests remain unverified until a real iOS build is available.
+
+Known compatibility boundaries inherited from current upstream/API constraints: TEXT/SPECIAL sprite sheets remain unassigned in upstream; unsupported sprite trees and over-limit pulse lists fail the GPU-only beta instead of falling back.
 
 ## Porting rules
 
