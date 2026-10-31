@@ -32,7 +32,6 @@ public:
     bool isReady() const { return ready; }
 
 private:
-    cocos2d::CCTexture2D* getSpriteSheetTexture(SpriteSheet sheet) const;
     bool buildSortedObjectList(std::vector<GameObject*>& objects) const;
     void fetchBlendingStates(ColorChannelBlendStates& states) const;
     void updateColorChannelTable();
