@@ -320,7 +320,10 @@ bool ObjectBatch::addSprite(
     if (triangleCount == 0)
         return false;
 
-    const u32 colorChannelFlags = ObjectUtils::getSpriteColorChannel(type, object, sprite);
+    u32 colorChannelFlags = ObjectUtils::getSpriteColorChannel(type, object, sprite);
+    if (type == SpriteType::DETAIL)
+        colorChannelFlags |= IOS_COLOR_CHANNEL_DETAIL_FLAG;
+
     InputSprite input;
     input.objectIndex = objectIndex;
     input.spriteType = static_cast<u32>(type);
