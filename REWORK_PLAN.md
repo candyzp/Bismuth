@@ -122,6 +122,22 @@ Source implementation is in place on `rework/ios-gpu-v2`:
 - Reconciled shader byte packing, direct-tint handling, pulse sentinels/ES2 loop limits, raw Z-layer keys, empty scenes, and renderer failure propagation against upstream.
 - Added strict validation of sprite remaps, layer-range coverage, work-group partitioning, vertex offsets, and float-index precision.
 
-Step 3 source work is ready to move into step 4, but it has not been compiled or validated on a device.
+Step 3 source work has been reviewed against the current upstream implementation during Step 4, but it has not been compiled or validated on a device.
+
+### Step 4 — source parity and compatibility review
+Source-level review complete on `rework/ios-gpu-v2`:
+- Compared the upstream renderer's per-frame blend-state refresh and scheduler selection. Fixed the iOS port so it fetches the live channel blend map, requests the matching asynchronous sorted variant, preserves the last valid draw order until ready, and increments the ordered-geometry revision when the new schedule is applied.
+- Compared object/sprite traversal, Z-layer/sheet/blend ordering, triangle remaps, sprite offsets, rotated texture rectangles, flips, alpha handling, group transforms, rotation actions, camera culling, audio/orb scale, HSV, pulses, special glow and invisible-block calculations.
+- Restored upstream root-versus-child black-sprite channel semantics while keeping the iOS direct-tint adaptation for legacy/default color channel 0.
+- Fixed ES2 GL-state restoration so prior client-memory vertex attribute descriptors are restored as well as VBO-backed descriptors.
+- Promoted atlas texture-coordinate varyings to `highp` and added runtime fragment-highp capability reporting/validation instead of relying on mediump precision for large sprite sheets.
+- Reviewed reset/checkpoint/cleanup flow, empty-level behavior, strict failure propagation, and the iOS gameplay hooks that preserve Geometry Dash's physics and simulation ownership.
+
+**Step 4 boundary:** This completes the source-level parity review possible before a real iOS build. Shader compilation, rendered-image comparisons, actual gameplay checks, level-transition stress, and device compatibility remain unverified. They must be performed during the next build/device validation phase; no source-only claim is being made that the renderer works.
+
+**Known source-level limitations to validate:** The current upstream texture map leaves `TEXT` and `SPECIAL` sheets unassigned; unsupported visual trees with non-sprite children or duplicate sprite nodes fail initialization; pulse lists exceeding the ES2 shader's bounded loop are rejected. These retain strict GPU-only failure behavior and do not use stock rendering.
+
+### Step 5 — build and optimization
+**Not started.** No iOS arm64 build or optimization run has been attempted. Step 5 may begin only after this source review is recorded; it must produce a real build result and resolve actual build/shader errors before any performance tuning.
 
 Do not start from or extend the old `AssistShadowBatch`, `ResolvedStateLayer`, or atlas-interleaving renderer.
