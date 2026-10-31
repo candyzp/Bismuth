@@ -60,6 +60,9 @@ Shader* Shader::create(const ShaderSources& sources) {
     glBindAttribLocation(linkedProgram, 2, "a_objectStateIndex");
     glBindAttribLocation(linkedProgram, 3, "a_colorChannel");
     glBindAttribLocation(linkedProgram, 3, "a_spriteStateIndex");
+    glBindAttribLocation(linkedProgram, 2, "a_objectAndGroupIndex");
+    glBindAttribLocation(linkedProgram, 3, "a_spriteAndMeta");
+    glBindAttribLocation(linkedProgram, 4, "a_objectStartPosition");
 
     glLinkProgram(linkedProgram);
 
