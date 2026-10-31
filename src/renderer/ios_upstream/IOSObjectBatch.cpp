@@ -101,6 +101,8 @@ void ObjectBatch::clear() {
     for (const auto& source : sourceSpritePointers) {
         if (source.sprite)
             source.sprite->release();
+        if (source.object)
+            source.object->release();
     }
     objectInfos.clear();
     objectIndices.clear();
@@ -381,7 +383,11 @@ bool ObjectBatch::addSprite(
     sourceSpriteAppearances.push_back(
         captureSpriteAppearance(sprite, object, directTint)
     );
+    // The sprite may outlive its parent while the GPU cache is in use.
+    // Retain both the leaf and its owning GameObject so refreshSpriteAppearances
+    // never dereferences a destroyed orb/object root after gameplay activation.
     sprite->retain();
+    object->retain();
     sourceSpritePointers.push_back({object, sprite, type});
 
     workGroupScheduler.addSprite(
