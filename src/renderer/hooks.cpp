@@ -9,6 +9,7 @@
 #include "ios/AtlasInterleave.hpp"
 #include "ios_upstream/IOSGPUCapabilities.hpp"
 #include "ios_upstream/IOSSceneData.hpp"
+#include "ios_upstream/IOSGPURenderer.hpp"
 #include <decomp/GJBaseGameLayer.hpp>
 #include <Geode/binding/CheckpointObject.hpp>
 #include <optional>
@@ -39,15 +40,32 @@ class $modify(RendererPlayLayer, PlayLayer) {
 
     void resetLevel() {
 #ifdef GEODE_IS_IOS
-        // A replacement PlayLayer can finish setup before the outgoing layer's
-        // destructor runs. Its renderer must not block this level's creation.
         if (newPlayLayer) {
-            if (auto existing = Renderer::forPlayLayer(this))
-                existing->resumeGPU();
-            else if (auto previous = Renderer::get())
-                previous->suspendGPU();
+            auto batchLayer = this->m_objectLayer;
+            if (!batchLayer) {
+                log::error("failed to attach Bismuth GPU renderer: object layer not found");
+                PlayLayer::resetLevel();
+                return;
+            }
+
+            // Match the owner's lifecycle: create the renderer after level
+            // objects are prepared but before the final PlayLayer reset.
+            // IOSGPURenderer hides stock batches as the first ownership action.
+            auto gpuRenderer = IOSUpstream::IOSGPURenderer::create(this);
+            if (gpuRenderer)
+                batchLayer->addChild(gpuRenderer, -100000);
+
+            PlayLayer::resetLevel();
+            return;
         }
-#endif
+
+        PlayLayer::resetLevel();
+
+        if (auto gpuRenderer = IOSUpstream::IOSGPURenderer::getCurrent();
+            gpuRenderer && gpuRenderer->getPlayLayer() == this) {
+            gpuRenderer->reset();
+        }
+#else
         if (newPlayLayer && Renderer::get() == nullptr) {
             PlayLayer::resetLevel();
 
@@ -58,40 +76,17 @@ class $modify(RendererPlayLayer, PlayLayer) {
             }
 
             auto renderer = Renderer::create(this);
-            if (renderer) {
+            if (renderer)
                 batchLayer->addChild(renderer, -100000);
-                renderer->reset();
-#ifdef GEODE_IS_IOS
-                if (auto resolved = ResolvedStateLayer::getCurrent())
-                    resolved->reseedActiveFromStock();
-#endif
-            }
             return;
         }
 
         PlayLayer::resetLevel();
 
-#ifdef GEODE_IS_IOS
-        if (auto scene = IOSUpstream::SceneData::getCurrent();
-            scene && scene->getPlayLayer() == this) {
-            scene->reset();
-        }
-
-        // Menu restart may reuse this layer without another enter-transition
-        // callback. The active singleton is null while its renderer is suspended.
-        auto renderer = Renderer::forPlayLayer(this);
-        if (renderer)
-            renderer->resumeGPU();
-#else
         auto renderer = Renderer::get();
-#endif
-        if (renderer) {
+        if (renderer)
             renderer->reset();
-#ifdef GEODE_IS_IOS
-            if (auto resolved = ResolvedStateLayer::getCurrent())
-                resolved->reseedActiveFromStock();
 #endif
-        }
     }
 
     CheckpointObject* createCheckpoint() {
@@ -532,8 +527,10 @@ class $modify(RendererInterleavedSpriteBatchNode, cocos2d::CCSpriteBatchNode) {
 #include <Geode/modify/CCDisplayLinkDirector.hpp>
 class $modify(RendererCCDisplayLinkDirector, CCDisplayLinkDirector) {
     void mainLoop() {
-        auto ren = Renderer::get();
-        if (!ren) {
+#ifdef GEODE_IS_IOS
+        auto gpuRenderer = IOSUpstream::IOSGPURenderer::getCurrent();
+        auto renderer = Renderer::get();
+        if (!gpuRenderer && !renderer) {
             CCDisplayLinkDirector::mainLoop();
             return;
         }
@@ -541,7 +538,18 @@ class $modify(RendererCCDisplayLinkDirector, CCDisplayLinkDirector) {
         auto timer = BProfiler::start("Frame time");
         CCDisplayLinkDirector::mainLoop();
         timer.end();
-
         BProfiler::frameEnd();
+#else
+        auto renderer = Renderer::get();
+        if (!renderer) {
+            CCDisplayLinkDirector::mainLoop();
+            return;
+        }
+
+        auto timer = BProfiler::start("Frame time");
+        CCDisplayLinkDirector::mainLoop();
+        timer.end();
+        BProfiler::frameEnd();
+#endif
     }
 };
