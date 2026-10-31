@@ -191,12 +191,9 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
                 );
             }
 
-            objects = getOptimizedGroup(groupId);
-            if (objects) {
-                ((decomp_GJBaseGameLayer*)this)->moveObjects(
-                    objects, node->m_unk090, node->m_unk098, 0
-                );
-            }
+            // In the owner's optimized path decorations have already been
+            // removed from the vanilla group arrays by optimizeMoveGroups().
+            // Their movement is represented exclusively in GroupManager.
         }
         return;
 #else
@@ -234,67 +231,9 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
             return;
         }
 
-        // Mirror the owner's per-command rotation delta before Geometry Dash
-        // runs its existing object/section/oriented-box updates.
-        auto effectManager = m_effectManager;
-        for (auto command : effectManager->m_unkVector5b0) {
-            if (!command || command->m_someInterpValue1RelatedFalse)
-                continue;
-
-            const i32 targetId = command->m_targetGroupID;
-            const i32 centerId = command->m_centerGroupID;
-            auto staticGroup = getStaticGroup(targetId);
-            const bool hasStaticGroup = staticGroup && staticGroup->count() != 0;
-
-            float rotation = hasStaticGroup
-                ? command->m_someInterpValue1RelatedOne - command->m_someInterpValue1RelatedZero
-                : command->m_someInterpValue2RelatedOne - command->m_someInterpValue2RelatedZero;
-
-            if (rotation == 0.f && !command->m_finishRelated)
-                continue;
-
-            auto combined = effectManager->m_unkMap770.find({targetId, centerId});
-            if (combined != effectManager->m_unkMap770.end()) {
-                for (auto extra : combined->second) {
-                    if (!extra || extra->m_someInterpValue1RelatedFalse)
-                        continue;
-                    rotation += hasStaticGroup
-                        ? extra->m_someInterpValue1RelatedOne - extra->m_someInterpValue1RelatedZero
-                        : extra->m_someInterpValue2RelatedOne - extra->m_someInterpValue2RelatedZero;
-                }
-            }
-
-            std::optional<glm::vec2> center;
-            if (auto mainObject = tryGetMainObject(centerId))
-                center = ccPointToGLM(mainObject->getUnmodifiedPosition());
-
-            scene->getGroupManager().rotateGroup(
-                static_cast<IOSUpstream::GroupID>(targetId),
-                rotation,
-                command->m_lockObjectRotation,
-                center
-            );
-
-            // Preserve the owner's extra translation associated with a
-            // centered rotation command.
-            if (center.has_value()) {
-                auto moveIt = effectManager->m_unkMap618.find(targetId);
-                if (moveIt != effectManager->m_unkMap618.end()) {
-                    const CCPoint extraMove = hasStaticGroup
-                        ? ccp(moveIt->second->m_unk090, moveIt->second->m_unk098)
-                        : ccp(moveIt->second->m_unk038, moveIt->second->m_unk040);
-                    if (extraMove.x != 0.f || extraMove.y != 0.f) {
-                        scene->getGroupManager().moveGroup(
-                            static_cast<IOSUpstream::GroupID>(targetId),
-                            extraMove.x,
-                            extraMove.y
-                        );
-                    }
-                }
-            }
-        }
-
-        ((decomp_GJBaseGameLayer*)this)->processRotationActions();
+        ((decomp_GJBaseGameLayer*)this)->optimized_processRotationActions(
+            scene->getGroupManager()
+        );
         return;
 #else
         auto renderer = Renderer::get();
@@ -432,7 +371,18 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
         GJBaseGameLayer::optimizeMoveGroups();
 
 #ifdef GEODE_IS_IOS
-        return;
+        auto scene = IOSUpstream::SceneData::getCurrent();
+        if (!scene || !scene->isReady() ||
+            static_cast<GJBaseGameLayer*>(scene->getPlayLayer()) != this)
+            return;
+
+        // Match the owner's optimized renderer: GPU-managed decorations are
+        // removed from vanilla move/rotation groups while solid gameplay
+        // objects remain available for physics and oriented-box updates.
+        for (auto array : m_optimizedGroups)
+            removeDecoObjects(array);
+        for (auto array : m_staticGroups)
+            removeDecoObjects(array);
 #else
         auto renderer = Renderer::get();
         if (!renderer || !renderer->useOptimizations())
