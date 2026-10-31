@@ -154,6 +154,12 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
         if (renderer && static_cast<GJBaseGameLayer*>(renderer->getPlayLayer()) !=
             static_cast<GJBaseGameLayer*>(this))
             return;
+
+        if (auto scene = IOSUpstream::SceneData::getCurrent();
+            scene && scene->isReady() &&
+            static_cast<GJBaseGameLayer*>(scene->getPlayLayer()) == this) {
+            scene->update(dt);
+        }
 #endif
         if (renderer) {
             renderer->update(dt);
