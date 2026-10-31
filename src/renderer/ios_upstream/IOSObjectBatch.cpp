@@ -107,11 +107,7 @@ void ObjectBatch::clear() {
     sourceInputSprites.clear();
     sourceSpriteAppearances.clear();
     sourceSpritePointers.clear();
-    vertices.clear();
     orderedVertices.clear();
-    inputSprites.clear();
-    spriteAppearances.clear();
-    spritePointers.clear();
     usedLayerKeyStorage.clear();
     usedLayerKeys.clear();
     sortedBatch = {};
@@ -437,22 +433,10 @@ bool ObjectBatch::applySortedBatch(const SortedObjectBatch& newSortedBatch) {
     // the GPU culling/evaluation pass. Reordering these arrays as well would
     // make those remap indices address the wrong sprites.
     sortedBatch = newSortedBatch;
-    vertices = sourceVertices;
-    inputSprites = sourceInputSprites;
-    spriteAppearances = sourceSpriteAppearances;
-    spritePointers = sourceSpritePointers;
-
-    // Keep both candidate blend variants inserted by addSprite(). A color
-    // trigger can change a channel's blend state later; the renderer must
-    // already have a GPU layer node at the corresponding Cocos Z slot.
-    if (vertices.size() != sourceVertices.size() ||
-        inputSprites.size() != sourceInputSprites.size() ||
-        spriteAppearances.size() != sourceSpriteAppearances.size() ||
-        spritePointers.size() != sourceSpritePointers.size())
-        return false;
-
-    if (sortedBatch.inputSpriteIndices.size() != inputSprites.size() ||
-        sortedBatch.preCulledSprites.size() != inputSprites.size())
+    // Sprite metadata remains in source order because the vertex attributes
+    // retain source sprite indices after the geometry is reordered.
+    if (sortedBatch.inputSpriteIndices.size() != sourceInputSprites.size() ||
+        sortedBatch.preCulledSprites.size() != sourceInputSprites.size())
         return false;
 
     // ES2 has no compute-generated indirect index buffer. Materialize only the
@@ -484,9 +468,9 @@ bool ObjectBatch::applySortedBatch(const SortedObjectBatch& newSortedBatch) {
 
     // The remap must be a permutation of source sprite indices. Verify it now,
     // before step 3 uploads these arrays or emits GPU draw ranges.
-    std::vector<u8> seen(inputSprites.size(), 0);
+    std::vector<u8> seen(sourceInputSprites.size(), 0);
     for (u32 sourceIndex : sortedBatch.inputSpriteIndices) {
-        if (sourceIndex >= inputSprites.size() || seen[sourceIndex] != 0)
+        if (sourceIndex >= sourceInputSprites.size() || seen[sourceIndex] != 0)
             return false;
         seen[sourceIndex] = 1;
     }
@@ -495,7 +479,7 @@ bool ObjectBatch::applySortedBatch(const SortedObjectBatch& newSortedBatch) {
         const u64 endVertex = static_cast<u64>(range.firstVertex) + range.vertexCount;
         const u64 endSprite = static_cast<u64>(range.firstInputSprite) + range.spriteCount;
         const u64 endWorkGroup = static_cast<u64>(range.firstWorkGroup) + range.workGroupCount;
-        if (endVertex > static_cast<u64>(vertices.size()) ||
+        if (endVertex > static_cast<u64>(sourceVertices.size()) ||
             endSprite > static_cast<u64>(sortedBatch.inputSpriteIndices.size()) ||
             endWorkGroup > static_cast<u64>(sortedBatch.workGroups.size()) ||
             range.vertexCount % 3 != 0)
@@ -577,14 +561,15 @@ bool ObjectBatch::build(
 }
 
 void ObjectBatch::refreshSpriteAppearances() {
-    if (!built || spritePointers.size() != spriteAppearances.size())
+    if (!built || sourceSpritePointers.size() != sourceSpriteAppearances.size() ||
+        sourceInputSprites.size() != sourceSpriteAppearances.size())
         return;
 
-    for (usize i = 0; i < spritePointers.size(); ++i) {
-        const auto& source = spritePointers[i];
+    for (usize i = 0; i < sourceSpritePointers.size(); ++i) {
+        const auto& source = sourceSpritePointers[i];
         const bool directTint =
-            (inputSprites[i].colorChannelFlags & IOS_COLOR_CHANNEL_DIRECT_FLAG) != 0;
-        spriteAppearances[i] = captureSpriteAppearance(
+            (sourceInputSprites[i].colorChannelFlags & IOS_COLOR_CHANNEL_DIRECT_FLAG) != 0;
+        sourceSpriteAppearances[i] = captureSpriteAppearance(
             source.sprite, source.object, directTint
         );
     }
