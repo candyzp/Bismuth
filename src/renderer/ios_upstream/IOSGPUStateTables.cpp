@@ -188,6 +188,7 @@ bool GPUStateTables::initialize(const SceneData& scene) {
 }
 
 bool GPUStateTables::upload(const SceneData& scene) {
+    ready = false;
     if (!scene.isReady())
         return false;
 
