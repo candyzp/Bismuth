@@ -6,7 +6,6 @@
 #include "IOSGPUCapabilities.hpp"
 #include <Geode/cocos/base_nodes/CCNode.h>
 #include <set>
-#include <utility>
 #include <string>
 #include <vector>
 
@@ -27,7 +26,7 @@ public:
     bool initForPlayLayer(PlayLayer* layer);
     void reset();
     void reportFailure(const std::string& reason) { fail(reason); }
-    void enforceGPUOwnership() { if (isReadyForDrawing()) hideStockBatches(); }
+    void enforceGPUOwnership();
     bool syncLayerNodes();
     void drawLayer(const LayerKey& key);
     void beginFrame();
@@ -45,7 +44,6 @@ private:
     bool uploadOrderedVertices();
     bool createLayerNodes();
     void hideStockBatches();
-    void showStockBatches();
     void createDebugOverlay();
     void updateDebugOverlay();
     void fail(const std::string& reason);
@@ -59,7 +57,6 @@ private:
     u32 vertexBuffer = 0;
     u64 uploadedOrderRevision = 0;
     std::vector<cocos2d::CCNode*> layerNodes;
-    std::vector<std::pair<cocos2d::CCNode*, bool>> stockBatchVisibility;
     std::set<LayerKey> layerNodeKeys;
 
     IOSGPU::Capabilities capabilities;
@@ -68,7 +65,6 @@ private:
     u32 drawsThisFrame = 0;
     u32 lastFrameDraws = 0;
     bool initialized = false;
-    bool ownsStockBatches = false;
     bool failed = false;
     bool reportedDrawFailure = false;
 };
