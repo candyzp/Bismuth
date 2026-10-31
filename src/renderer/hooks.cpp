@@ -103,14 +103,10 @@ class $modify(RendererPlayLayer, PlayLayer) {
             if (auto gpuRenderer = IOSUpstream::IOSGPURenderer::getCurrent();
                 gpuRenderer && gpuRenderer->isReadyForDrawing() &&
                 gpuRenderer->getPlayLayer() == scene->getPlayLayer()) {
-                if (!scene->update(dt)) {
-                    gpuRenderer->reportFailure(
-                        "scene update or GPU state upload failed"
-                    );
-                    return;
-                }
+                scene->getGroupManager().storeCheckpoint(checkpoint);
             }
-        }#endif
+        }
+#endif
         return checkpoint;
     }
 
