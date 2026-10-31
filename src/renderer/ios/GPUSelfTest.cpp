@@ -185,7 +185,8 @@ static bool compileShader(
 
 static bool createFloatDataTexture(
     GLuint& texture,
-    const std::array<float, 4>& texel
+    const std::array<float, 4>& texel,
+    GLenum& error
 ) {
     glGenTextures(1, &texture);
     if (!texture)
@@ -207,7 +208,8 @@ static bool createFloatDataTexture(
         GL_FLOAT,
         texel.data()
     );
-    return takeFirstGLError() == GL_NO_ERROR;
+    error = takeFirstGLError();
+    return error == GL_NO_ERROR;
 }
 
 } // namespace
@@ -308,9 +310,10 @@ Result run() {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 4, 4, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-    if (takeFirstGLError() != GL_NO_ERROR) {
+    const GLenum targetAllocationError = takeFirstGLError();
+    if (targetAllocationError != GL_NO_ERROR) {
         result.stage = "render-target-allocation";
-        result.glError = takeFirstGLError();
+        result.glError = targetAllocationError;
         return result;
     }
 
@@ -329,20 +332,23 @@ Result run() {
         return result;
     }
 
+    GLenum dataTextureError = GL_NO_ERROR;
     if (!createFloatDataTexture(
             resources.objectStateTexture,
-            std::array<float, 4>{1.f, 1.f, 0.f, 0.f})) {
+            std::array<float, 4>{1.f, 1.f, 0.f, 0.f},
+            dataTextureError)) {
         result.stage = "object-state-float-texture";
-        result.glError = takeFirstGLError();
+        result.glError = dataTextureError;
         return result;
     }
 
     glActiveTexture(GL_TEXTURE1);
     if (!createFloatDataTexture(
             resources.spriteStateTexture,
-            std::array<float, 4>{0.25f, 0.50f, 0.75f, 1.f})) {
+            std::array<float, 4>{0.25f, 0.50f, 0.75f, 1.f},
+            dataTextureError)) {
         result.stage = "sprite-state-float-texture";
-        result.glError = takeFirstGLError();
+        result.glError = dataTextureError;
         return result;
     }
 
