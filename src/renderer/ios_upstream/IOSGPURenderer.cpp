@@ -497,6 +497,13 @@ void IOSGPURenderer::drawLayer(const LayerKey& key) {
     if (failed || !sceneData.isReady() || !shader || !vertexBuffer)
         return;
 
+    // Apply the live blend-state variant before reading its draw range or
+    // uploading its ordered vertices, matching the owner's renderer pre-draw.
+    if (!sceneData.refreshBlendOrder()) {
+        fail("could not refresh the live blend-state draw schedule");
+        return;
+    }
+
     const auto& batch = sceneData.getObjectBatch();
     const auto rangeIt = batch.getSortedBatch().layerRanges.find(key);
     if (rangeIt == batch.getSortedBatch().layerRanges.end())
