@@ -282,9 +282,9 @@ void SceneData::prepareForDraw() {
         updateGameState();
 }
 
-void SceneData::update(float dt) {
+bool SceneData::update(float dt) {
     if (!ready)
-        return;
+        return false;
 
     gameTimer += dt;
 
@@ -293,7 +293,7 @@ void SceneData::update(float dt) {
     // while Geometry Dash is paused.
     fetchBlendingStates(blendStates);
     if (layer->m_isPaused)
-        return;
+        return true;
 
     updateColorChannelTable();
     groupManager.updateGroupStateBuffer();
@@ -302,10 +302,18 @@ void SceneData::update(float dt) {
     // channel's blend state changes. Until it is ready, keep the last complete
     // GPU order rather than routing any content through stock Cocos.
     objectBatch.updateBlendStates(blendStates);
+    if (objectBatch.hasSortValidationFailed()) {
+        log::error("Bismuth iOS upstream scene data: generated blend order failed validation");
+        return false;
+    }
+
     objectBatch.refreshSpriteAppearances();
 
-    if (!gpuStateTables.upload(*this))
+    if (!gpuStateTables.upload(*this)) {
         log::error("Bismuth iOS upstream scene data: GPU state-table upload failed during gameplay");
+        return false;
+    }
+    return true;
 }
 
 } // namespace IOSUpstream
