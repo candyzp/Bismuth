@@ -3,7 +3,6 @@
 #include "IOSObjectBatch.hpp"
 
 #include <Geode/Enums.hpp>
-#include <Geode/binding/EnhancedGameObject.hpp>
 #include <Geode/binding/RingObject.hpp>
 #include <Geode/cocos/CCDirector.h>
 #include <Geode/utils/cocos.hpp>
@@ -272,6 +271,11 @@ bool ObjectBatch::addSprite(
         return false;
     if (object->m_hasNoGlow && type == SpriteType::GLOW)
         return true;
+
+    if (sourceInputSprites.size() >= (1u << 24)) {
+        log::error("Bismuth iOS upstream batch exceeded the exact ES2 float sprite-index range");
+        return false;
+    }
 
     const SpriteSheet spriteSheet = ObjectUtils::getSpritesheetOfObject(object, type);
     const u32 objectIndex = getObjectIndex(object);
