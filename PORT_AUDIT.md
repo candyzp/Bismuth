@@ -81,15 +81,23 @@ The hooks continue to call Geometry Dash's gameplay/physics routines for the non
 
 The fork's `libs/ios-shims/Geode/cocos/platform/win32/CCGL.h` includes Apple's `OpenGLES/ES2/gl.h` and `glext.h`. This establishes an ES2-compatible compile surface, but does not prove the exact runtime context version; `IOSGPUCapabilities` queries the live context at gameplay initialization.
 
-### Native OpenGL ES techniques
+### Native OpenGL ES techniques already present in the fork
 
-Apple's OpenGL ES documentation describes:
+The existing iOS backend provides useful low-level patterns, even though its old hybrid renderer is not the architecture being continued:
+
+- `src/renderer/ios/DataTexture.cpp` allocates one-row/multi-row RGBA textures, uses `GL_NEAREST` and `GL_CLAMP_TO_EDGE`, and supports `GL_FLOAT` or `GL_UNSIGNED_BYTE` texels.
+- `DataTexture::uploadRange/uploadRanges` updates changed rows through `glTexSubImage2D`, preserving the current texture binding and splitting a range across partial/full texture rows.
+- `src/renderer/ios/ShaderIOS.cpp` compiles and links an ES vertex/fragment pair, pins attribute locations with `glBindAttribLocation`, and binds texture units/uniforms.
+- `resources/shaders/object_ios.vert` demonstrates vertex-stage state-table sampling with `texture2D`; its legacy table layout is a reference for ES2 techniques only, not the new renderer architecture.
+- `src/renderer/ios/BufferIOS.cpp` uses ordinary `GL_ARRAY_BUFFER` plus `glBufferSubData` and optional CPU shadow memory. Its no-op SSBO binding methods are not a usable implementation of the desktop owner's storage-buffer API.
+
+Apple's OpenGL ES documentation also describes:
 - runtime capability queries such as `GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS`;
 - vertex-shader texture lookups for transform data;
 - render-to-texture using framebuffer objects, including GPU-produced data used by a later vertex-processing stage;
 - texture-unit reuse to avoid unnecessary extra rendering passes.
 
-The port should use the live capabilities report to decide which data-table formats are legal. In particular, texture sampling support and renderable float/half-float color targets are separate capabilities and are now logged separately.
+The new live capabilities report logs vertex texture units, float/half-float texture support, float/half-float color targets, MRT, and timer-query extensions separately. Step 3 should use vertex texture fetch and CPU-updated data textures for the owner-style records; no desktop SSBO calls should be sent through the iOS buffer shim.
 
 ### Metal option
 
