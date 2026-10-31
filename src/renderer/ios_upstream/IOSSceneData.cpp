@@ -270,9 +270,10 @@ void SceneData::reset() {
     if (!ready)
         return;
 
+    // The owner resets group transforms/toggles but keeps the level's
+    // initialization-time blend schedule. Refresh the mutable tables now so
+    // the next owned draw sees the reset state immediately.
     groupManager.resetGroupStates();
-    fetchBlendingStates(blendStates);
-    objectBatch.updateBlendStates(blendStates);
     updateColorChannelTable();
     objectBatch.refreshSpriteAppearances();
 
@@ -291,25 +292,14 @@ bool SceneData::update(float dt) {
 
     gameTimer += dt;
 
-    // Match Renderer::draw(): blending state is observed every frame, but
-    // mutable color/group data and the scheduler prepass are not regenerated
-    // while Geometry Dash is paused.
-    fetchBlendingStates(blendStates);
+    // Match Renderer::draw(): the layer's blend-state schedule is fixed during
+    // renderer initialization. While paused, mutable color/group data and the
+    // scheduler prepass are not regenerated.
     if (layer->m_isPaused)
         return true;
 
     updateColorChannelTable();
     groupManager.updateGroupStateBuffer();
-
-    // The owner schedules a new layer ordering asynchronously whenever a
-    // channel's blend state changes. Until it is ready, keep the last complete
-    // GPU order rather than routing any content through stock Cocos.
-    objectBatch.updateBlendStates(blendStates);
-    if (objectBatch.hasSortValidationFailed()) {
-        log::error("Bismuth iOS upstream scene data: generated blend order failed validation");
-        return false;
-    }
-
     objectBatch.refreshSpriteAppearances();
 
     if (!gpuStateTables.upload(*this)) {
