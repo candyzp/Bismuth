@@ -19,18 +19,6 @@ using namespace geode::prelude;
 
 static bool newPlayLayer = false;
 
-#ifdef GEODE_IS_IOS
-static void hideStockPlayLayerBatches(PlayLayer* layer) {
-    if (!layer || !layer->m_batchNodes)
-        return;
-
-    for (auto batch : CCArrayExt<cocos2d::CCNode*>(layer->m_batchNodes)) {
-        if (batch)
-            batch->setVisible(false);
-    }
-}
-#endif
-
 #include <Geode/modify/PlayLayer.hpp>
 class $modify(RendererPlayLayer, PlayLayer) {
     void setupHasCompleted() {
@@ -57,7 +45,6 @@ class $modify(RendererPlayLayer, PlayLayer) {
             if (!batchLayer) {
                 log::error("Bismuth GPU-only beta FAILED: object layer not found");
                 PlayLayer::resetLevel();
-                hideStockPlayLayerBatches(this);
                 return;
             }
 
@@ -74,8 +61,6 @@ class $modify(RendererPlayLayer, PlayLayer) {
             PlayLayer::resetLevel();
             if (gpuRenderer)
                 gpuRenderer->enforceGPUOwnership();
-            else
-                hideStockPlayLayerBatches(this);
             return;
         }
 
@@ -532,7 +517,8 @@ class $modify(RendererInterleavedSpriteBatchNode, cocos2d::CCSpriteBatchNode) {
         // Block stock draws only for the PlayLayer owned by the active GPU
         // renderer. A previous PlayLayer may still be alive during a scene
         // transition; it must not suppress the incoming scene's setup draws.
-        if (auto gpuRenderer = IOSUpstream::IOSGPURenderer::getCurrent()) {
+        if (auto gpuRenderer = IOSUpstream::IOSGPURenderer::getCurrent();
+            gpuRenderer && gpuRenderer->isReadyForDrawing()) {
             cocos2d::CCNode* ancestor = this;
             auto owner = static_cast<cocos2d::CCNode*>(gpuRenderer->getPlayLayer());
             while (ancestor && ancestor != owner)
@@ -599,9 +585,18 @@ class $modify(RendererCCDisplayLinkDirector, CCDisplayLinkDirector) {
             return;
         }
 
+        if (gpuRenderer)
+            gpuRenderer->beginFrame();
+
         auto timer = BProfiler::start("Frame time");
         CCDisplayLinkDirector::mainLoop();
         timer.end();
+
+        // Re-acquire after the scene tick: a PlayLayer transition may destroy
+        // the renderer that was current at frame start.
+        if (auto currentGPU = IOSUpstream::IOSGPURenderer::getCurrent())
+            currentGPU->finishFrame();
+
         BProfiler::frameEnd();
 #else
         auto renderer = Renderer::get();
