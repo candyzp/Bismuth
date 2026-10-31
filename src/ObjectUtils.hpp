@@ -181,14 +181,12 @@ public:
 
         u32 colorChannel = sanitizeColorChannel(rawColorChannel);
 
-        // SpriteType already tracks whether a sprite belongs to the base/detail
-        // subtree. Using "root vs child" here incorrectly treated every layered
-        // base child (coins/orbs included) as a detail sprite.
-        bool isSpriteBlack = false;
-        if (type == SpriteType::DETAIL)
-            isSpriteBlack = object->m_isColorSpriteBlack;
-        else if (type == SpriteType::BASE || type == SpriteType::BLACK)
-            isSpriteBlack = object->m_isObjectBlack;
+        // Match upstream's root-versus-child black classification. SpriteType
+        // controls the color channel and shader processing; it does not replace
+        // the GameObject's distinct object-black and color-sprite-black flags.
+        const bool isSpriteBlack = sprite == object
+            ? object->m_isObjectBlack
+            : (type != SpriteType::GLOW && object->m_isColorSpriteBlack);
 
         if (isSpriteBlack || type == SpriteType::BLACK)
             return COLOR_CHANNEL_BLACK;
