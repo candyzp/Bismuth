@@ -25,7 +25,17 @@ The current upstream renderer checks for desktop OpenGL 4.3 and uses:
 - `glSpecializeShader` and desktop shader include extensions
 - WGL function loading and OpenCL/GL context interop for GPU core count discovery
 
-Apple's documented `OpenGLES.framework` on iOS implements ES 1.1, 2.0, and 3.0. The upstream desktop compute/SSBO/indirect-draw path therefore needs a real iOS backend port. These API substitutions must preserve the upstream renderer's data flow and calculations; they must not become a return to the old assist/ownership design.
+Apple's documented `OpenGLES.framework` on iOS implements ES 1.1, 2.0, and 3.0. More importantly, this fork's own iOS GL shim includes `OpenGLES/ES2/gl.h` and `OpenGLES/ES2/glext.h`, and documents Geometry Dash as using a Cocos OpenGL ES 2 context. Treat ES2 as the active target until the runtime capability report proves otherwise.
+
+The upstream desktop compute/SSBO/indirect-draw path therefore needs a real iOS backend port. The ES2 translation should preserve the owner's CPU data preparation and ordering, while moving the owner's per-sprite culling/transform/color calculations into the iOS GPU shader path:
+- Keep the owner's ObjectSorter, GroupManager, ObjectBatch, and WorkGroupScheduler responsibilities.
+- Build GPU vertex/index data in the same upstream layer / sprite-sheet / blend order.
+- Carry per-sprite/object/group indices in ES2-compatible vertex attributes and GPU-readable state tables. Confirm vertex texture sampling limits before choosing the state-table representation.
+- Translate the calculation body of `objectCulling.comp` into the GPU vertex-processing path. A sprite that is culled is moved outside the clip volume; it is not drawn by Cocos.
+- Replace indirect draw commands with the corresponding CPU-scheduled `glDrawElements` ranges because ES2 does not expose the upstream indirect draw mechanism.
+- Keep the pixel shader responsible for sampling the selected sprite sheet and applying the GPU-resolved color.
+
+These are API substitutions only. They must not become a return to the old assist/ownership design. The new beta is GPU-only: if its GPU render path fails, report a beta failure; do not draw the affected content through stock Cocos.
 
 ## Porting rules
 
