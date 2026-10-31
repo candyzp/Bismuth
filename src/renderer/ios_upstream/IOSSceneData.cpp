@@ -6,7 +6,7 @@
 #include <Geode/binding/GJBaseGameLayer.hpp>
 #include <Geode/cocos/CCDirector.h>
 #include <Geode/cocos/kazmath/include/kazmath/mat4.h>
-#include <Geode/cocos/sprite_nodes/CCTextureCache.h>
+#include <Geode/cocos/textures/CCTextureCache.h>
 #include <Geode/utils/cocos.hpp>
 #include <ObjectSorter.hpp>
 #include <SpriteMeshDictionary.hpp>
