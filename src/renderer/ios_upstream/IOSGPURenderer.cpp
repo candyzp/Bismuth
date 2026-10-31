@@ -506,7 +506,6 @@ void IOSGPURenderer::drawLayer(const LayerKey& key) {
     shader->setFloat("u_objectHSVOffset", static_cast<float>(tableLayout.objectHSVOffset));
     shader->setFloat("u_pulseEntriesOffset", static_cast<float>(tableLayout.pulseEntriesOffset));
     shader->setFloat("u_spriteAppearanceOffset", static_cast<float>(tableLayout.spriteAppearanceOffset));
-    shader->setFloat("u_pulseEntryCount", static_cast<float>(tableLayout.pulseEntryCount));
 
     shader->setMatrix4("u_mvp", glm::value_ptr(gameState.mvp));
     shader->setFloat("u_timer", gameState.timer);
