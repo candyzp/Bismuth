@@ -9,6 +9,11 @@ namespace IOSUpstream {
 
 class SceneData {
 public:
+    SceneData() = default;
+    ~SceneData();
+
+    static SceneData* getCurrent();
+
     bool init(PlayLayer* layer);
     void reset();
     void update(float dt);
