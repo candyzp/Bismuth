@@ -3,6 +3,7 @@
 #ifdef GEODE_IS_IOS
 
 #include "IOSSceneData.hpp"
+#include "IOSGPUCapabilities.hpp"
 #include <Geode/cocos/base_nodes/CCNode.h>
 #include <vector>
 
