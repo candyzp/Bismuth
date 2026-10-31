@@ -3,7 +3,7 @@
 #include "IOSSceneData.hpp"
 
 #include <Geode/Enums.hpp>
-#include <Geode/binding/GJEffectManager.hpp>
+#include <Geode/binding/GJBaseGameLayer.hpp>
 #include <Geode/cocos/CCDirector.h>
 #include <Geode/cocos/kazmath/include/kazmath/mat4.h>
 #include <Geode/cocos/sprite_nodes/CCTextureCache.h>
@@ -265,8 +265,12 @@ void SceneData::reset() {
     fetchBlendingStates(blendStates);
     objectBatch.updateBlendStates(blendStates);
     updateColorChannelTable();
-    updateGameState();
     objectBatch.refreshSpriteAppearances();
+}
+
+void SceneData::prepareForDraw() {
+    if (ready)
+        updateGameState();
 }
 
 void SceneData::update(float dt) {
@@ -274,7 +278,6 @@ void SceneData::update(float dt) {
         return;
 
     gameTimer += dt;
-    updateGameState();
 
     if (!layer->m_isPaused) {
         updateColorChannelTable();
