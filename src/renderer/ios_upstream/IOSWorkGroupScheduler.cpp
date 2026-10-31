@@ -94,8 +94,12 @@ const SortedObjectBatch* WorkGroupScheduler::waitForSortedBatch(
     {
         std::scoped_lock lock(mutex);
         auto found = generationJobs.find(blendStates);
-        if (found == generationJobs.end())
-            return nullptr;
+        if (found == generationJobs.end()) {
+            // Another fetch may have collected the completed future while this
+            // caller was between the two lock scopes.
+            auto ready = sortedBatches.find(blendStates);
+            return ready == sortedBatches.end() ? nullptr : &ready->second;
+        }
         pending = std::move(found->second);
         generationJobs.erase(found);
     }
