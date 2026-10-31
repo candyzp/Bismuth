@@ -6,6 +6,7 @@
 #include <Geode/binding/CheckpointObject.hpp>
 #include <Geode/binding/PlayLayer.hpp>
 #include <map>
+#include <optional>
 #include <set>
 #include <unordered_map>
 #include <vector>
