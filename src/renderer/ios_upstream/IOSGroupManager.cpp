@@ -430,10 +430,13 @@ void GroupManager::updatePulseEntries() {
             }
         }
 
-        if (pulseIndex != pulseEntries.size())
-            groupStates[combinationIndex].pulseIndex = pulseIndex;
-        if (pulseIndex != pulseEntries.size())
-            pulseEntries.push_back(PulseEntry::endIndicator());
+        // Match the owner's pulse table layout: every non-empty
+        // combination gets a terminator, and empty combinations keep index 0.
+        if (pulseIndex == pulseEntries.size())
+            continue;
+
+        pulseEntries.push_back(PulseEntry::endIndicator());
+        groupStates[combinationIndex].pulseIndex = pulseIndex;
     }
 }
 
