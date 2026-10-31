@@ -155,6 +155,12 @@ bool SceneData::init(PlayLayer* playLayer) {
     );
 
     ready = true;
+    if (!gpuStateTables.initialize(*this)) {
+        log::error("Bismuth iOS upstream scene data: GPU state-table initialization failed");
+        ready = false;
+        return false;
+    }
+
     g_currentSceneData = this;
     return true;
 }
@@ -266,6 +272,9 @@ void SceneData::reset() {
     objectBatch.updateBlendStates(blendStates);
     updateColorChannelTable();
     objectBatch.refreshSpriteAppearances();
+
+    if (!gpuStateTables.upload(*this))
+        log::error("Bismuth iOS upstream scene data: GPU state-table upload failed after reset");
 }
 
 void SceneData::prepareForDraw() {
@@ -287,8 +296,15 @@ void SceneData::update(float dt) {
     // The owner re-evaluates color-channel blending every frame. The scheduler
     // generates a new layer ordering asynchronously when any channel changes.
     fetchBlendingStates(blendStates);
-    objectBatch.updateBlendStates(blendStates);
+    if (!objectBatch.updateBlendStates(blendStates)) {
+        // A newly generated blend order may not be ready until the next frame.
+        // Continue using the previous completed scheduler product; it is still
+        // a valid GPU order and never routes draws to Cocos.
+    }
     objectBatch.refreshSpriteAppearances();
+
+    if (!gpuStateTables.upload(*this))
+        log::error("Bismuth iOS upstream scene data: GPU state-table upload failed during gameplay");
 }
 
 } // namespace IOSUpstream
