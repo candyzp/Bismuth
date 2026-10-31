@@ -385,12 +385,14 @@ bool IOSGPURenderer::syncLayerNodes() {
         return false;
     }
 
-    // The owner resolves blend variants during initialization. Create nodes
-    // for the active scheduler ranges; the layer topology remains fixed for
-    // this level, as it does in the current upstream renderer.
+    // Match Renderer::generateBatchNodes(): visit ObjectBatch's candidate
+    // layer-key set, including both blend variants, and attach a draw node
+    // only when Geometry Dash has a corresponding stock Z-order container.
+    // A key without a stock container is acceptable when it is merely a
+    // candidate; it is fatal when the scheduler actually assigned sprites to it.
     const auto& ranges = sceneData.getObjectBatch().getSortedBatch().layerRanges;
-    for (const auto& [key, range] : ranges) {
-        if (range.vertexCount == 0 || layerNodeKeys.contains(key))
+    for (const auto& key : sceneData.getObjectBatch().getUsedLayerKeys()) {
+        if (layerNodeKeys.contains(key))
             continue;
 
         cocos2d::CCNode* stockNode = layer->parentForZLayer(
@@ -401,13 +403,17 @@ bool IOSGPURenderer::syncLayerNodes() {
         );
 
         if (!stockNode || layer->m_batchNodes->indexOfObject(stockNode) == UINT_MAX) {
-            fail(fmt::format(
-                "active GPU layer has no stock Z-order container (Z={}, sheet={}, blend={})",
-                static_cast<i32>(key.zlayer),
-                static_cast<i32>(key.spriteSheet),
-                key.blending
-            ));
-            return false;
+            const auto activeRange = ranges.find(key);
+            if (activeRange != ranges.end() && activeRange->second.vertexCount != 0) {
+                fail(fmt::format(
+                    "active GPU layer has no stock Z-order container (Z={}, sheet={}, blend={})",
+                    static_cast<i32>(key.zlayer),
+                    static_cast<i32>(key.spriteSheet),
+                    key.blending
+                ));
+                return false;
+            }
+            continue;
         }
 
         auto node = new IOSGPULayerNode(layer, key);
