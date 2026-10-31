@@ -442,12 +442,9 @@ bool ObjectBatch::applySortedBatch(const SortedObjectBatch& newSortedBatch) {
     spriteAppearances = sourceSpriteAppearances;
     spritePointers = sourceSpritePointers;
 
-    usedLayerKeys.clear();
-    for (const auto& [key, range] : sortedBatch.layerRanges) {
-        if (range.spriteCount != 0)
-            usedLayerKeys.insert(key);
-    }
-
+    // Keep both candidate blend variants inserted by addSprite(). A color
+    // trigger can change a channel's blend state later; the renderer must
+    // already have a GPU layer node at the corresponding Cocos Z slot.
     if (vertices.size() != sourceVertices.size() ||
         inputSprites.size() != sourceInputSprites.size() ||
         spriteAppearances.size() != sourceSpriteAppearances.size() ||
