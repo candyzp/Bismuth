@@ -29,6 +29,9 @@ public:
 
     const std::vector<ObjectInfo>& getObjectInfos() const { return objectInfos; }
     const std::vector<ObjectVertex>& getVertices() const { return vertices; }
+    // ES2 draw stream arranged by the owner's scheduler remap. The source
+    // vertex array and InputSprite indices remain untouched.
+    const std::vector<ObjectVertex>& getOrderedVertices() const { return orderedVertices; }
     const std::vector<InputSprite>& getInputSprites() const { return inputSprites; }
     const std::vector<SpriteAppearance>& getSpriteAppearances() const { return spriteAppearances; }
     const std::vector<PreCulledSprite>& getPreCulledSprites() const { return sortedBatch.preCulledSprites; }
@@ -95,6 +98,7 @@ private:
     // Final owner-style draw order. Vertex spriteIndex values index the
     // correspondingly ordered InputSprite / SpriteAppearance arrays.
     std::vector<ObjectVertex> vertices;
+    std::vector<ObjectVertex> orderedVertices;
     std::vector<InputSprite> inputSprites;
     std::vector<SpriteAppearance> spriteAppearances;
     std::vector<SpriteSource> spritePointers;
