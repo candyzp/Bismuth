@@ -25,6 +25,7 @@ public:
     );
 
     void refreshSpriteAppearances();
+    bool updateBlendStates(const ColorChannelBlendStates& blendStates);
 
     const std::vector<ObjectInfo>& getObjectInfos() const { return objectInfos; }
     const std::vector<ObjectVertex>& getVertices() const { return vertices; }
@@ -75,6 +76,7 @@ private:
         u32 spriteIndex
     );
     bool finalizeSortedGeometry(const ColorChannelBlendStates& blendStates);
+    bool applySortedBatch(const SortedObjectBatch& sortedBatch);
     void clear();
 
 private:
@@ -104,6 +106,8 @@ private:
     glm::vec2 currentObjectStartPosition {};
     u32 currentSpriteIndex = 0;
 
+    ColorChannelBlendStates currentBlendStates {};
+    bool hasCurrentBlendStates = false;
     bool built = false;
 };
 
