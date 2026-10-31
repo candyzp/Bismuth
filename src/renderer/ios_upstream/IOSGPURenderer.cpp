@@ -272,8 +272,17 @@ void IOSGPURenderer::updateDebugOverlay() {
         const auto& batch = sceneData.getObjectBatch();
         detail = "Sprites " + std::to_string(batch.getSpriteCount()) +
             " | Vertices " + std::to_string(batch.getOrderedVertices().size()) +
-            " | Layers " + std::to_string(layerNodes.size()) +
+            " | GPU layers " + std::to_string(layerNodes.size()) + "/" +
+            std::to_string(activeLayerCount) +
+            " | Missing " + std::to_string(missingLayerNodeCount) +
             " | Draws/frame " + std::to_string(lastFrameDraws);
+        if (batch.getSpriteCount() == 0 ||
+            batch.getOrderedVertices().empty() ||
+            (activeLayerCount != 0 && lastFrameDraws == 0)) {
+            debugOverlay->setColor({255, 190, 80});
+        } else {
+            debugOverlay->setColor({105, 255, 150});
+        }
         debugOverlay->setColor(initialized
             ? ccColor3B{105, 255, 150}
             : ccColor3B{255, 235, 90});
@@ -485,13 +494,18 @@ bool IOSGPURenderer::syncLayerNodes() {
         return false;
     }
 
-    // Match Renderer::generateBatchNodes(): visit ObjectBatch's candidate
-    // layer-key set, including both blend variants, and attach a draw node
-    // only when Geometry Dash has a corresponding stock Z-order container.
-    // A key without a stock container is acceptable when it is merely a
-    // candidate; it is fatal when the scheduler actually assigned sprites to it.
-    const auto& ranges = sceneData.getObjectBatch().getSortedBatch().layerRanges;
-    for (const auto& key : sceneData.getObjectBatch().getUsedLayerKeys()) {
+    // Match Renderer::generateBatchNodes(): attach a draw node for each
+    // active owner-derived layer key that has a Geometry Dash Z-order container.
+    const auto& batch = sceneData.getObjectBatch();
+    const auto& ranges = batch.getSortedBatch().layerRanges;
+    activeLayerCount = 0;
+    missingLayerNodeCount = 0;
+    for (const auto& [key, range] : ranges) {
+        if (range.vertexCount != 0)
+            ++activeLayerCount;
+    }
+
+    for (const auto& key : batch.getUsedLayerKeys()) {
         if (layerNodeKeys.contains(key))
             continue;
 
@@ -502,12 +516,12 @@ bool IOSGPURenderer::syncLayerNodes() {
             false
         );
 
-        // Match the owner's generateBatchNodes(): if Geometry Dash has no
-        // corresponding Z-order container for this key, skip only that key.
-        // Do not abort the entire level's GPU scene because one optional layer
-        // has no stock batch container.
-        if (!stockNode || layer->m_batchNodes->indexOfObject(stockNode) == UINT_MAX)
+        if (!stockNode || layer->m_batchNodes->indexOfObject(stockNode) == UINT_MAX) {
+            const auto activeRange = ranges.find(key);
+            if (activeRange != ranges.end() && activeRange->second.vertexCount != 0)
+                ++missingLayerNodeCount;
             continue;
+        }
 
         auto node = new IOSGPULayerNode(layer, key);
         if (!node->init()) {
@@ -522,8 +536,15 @@ bool IOSGPURenderer::syncLayerNodes() {
         layerNodeKeys.insert(key);
     }
 
-    // No active ranges means there is nothing to submit. This is a valid
-    // GPU-owned empty scene, not a renderer initialization failure.
+    if (activeLayerCount != 0 && layerNodes.empty()) {
+        fail(fmt::format(
+            "GPU batch has {} active layers, but no drawable Z-order nodes were attached ({} missing)",
+            activeLayerCount,
+            missingLayerNodeCount
+        ));
+        return false;
+    }
+
     return true;
 }
 
