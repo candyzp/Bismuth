@@ -539,9 +539,15 @@ bool IOSGPURenderer::syncLayerNodes() {
         layerNodeKeys.insert(key);
     }
 
-    if (activeLayerCount != 0 && layerNodes.empty()) {
+    u32 attachedActiveLayerCount = 0;
+    for (const auto& [key, range] : ranges) {
+        if (range.vertexCount != 0 && layerNodeKeys.contains(key))
+            ++attachedActiveLayerCount;
+    }
+
+    if (activeLayerCount != 0 && attachedActiveLayerCount == 0) {
         fail(fmt::format(
-            "GPU batch has {} active layers, but no drawable Z-order nodes were attached ({} missing)",
+            "GPU batch has {} active layers, but none has a drawable Z-order node ({} missing)",
             activeLayerCount,
             missingLayerNodeCount
         ));
