@@ -397,42 +397,15 @@ bool ObjectBatch::writeGameObject(GameObject* object, GroupManager& groupManager
 }
 
 bool ObjectBatch::applySortedBatch(const SortedObjectBatch& newSortedBatch) {
+    // Keep the owner's original sprite/vertex arrays in their source order.
+    // The scheduler's inputSpriteIndices is the draw-order remap consumed by
+    // the GPU culling/evaluation pass. Reordering these arrays as well would
+    // make those remap indices address the wrong sprites.
     sortedBatch = newSortedBatch;
-    vertices.clear();
-    inputSprites.clear();
-    spriteAppearances.clear();
-    spritePointers.clear();
-
-    vertices.reserve(sourceVertices.size());
-    inputSprites.reserve(sourceInputSprites.size());
-    spriteAppearances.reserve(sourceSpriteAppearances.size());
-    spritePointers.reserve(sourceSpritePointers.size());
-
-    for (u32 sourceSpriteIndex : sortedBatch.inputSpriteIndices) {
-        if (sourceSpriteIndex >= sourceInputSprites.size())
-            return false;
-
-        const InputSprite& sourceInput = sourceInputSprites[sourceSpriteIndex];
-        const usize sourceVertexStart = static_cast<usize>(sourceInput.indexStart) * 3;
-        const usize sourceVertexCount = static_cast<usize>(sourceInput.indexCount) * 3;
-        if (sourceVertexStart > sourceVertices.size() ||
-            sourceVertexCount > sourceVertices.size() - sourceVertexStart)
-            return false;
-
-        const u32 orderedSpriteIndex = static_cast<u32>(inputSprites.size());
-        InputSprite orderedInput = sourceInput;
-        orderedInput.indexStart = static_cast<u32>(vertices.size() / 3);
-        inputSprites.push_back(orderedInput);
-
-        for (usize i = 0; i < sourceVertexCount; ++i) {
-            ObjectVertex vertex = sourceVertices[sourceVertexStart + i];
-            vertex.spriteIndex = static_cast<float>(orderedSpriteIndex);
-            vertices.push_back(vertex);
-        }
-
-        spriteAppearances.push_back(sourceSpriteAppearances[sourceSpriteIndex]);
-        spritePointers.push_back(sourceSpritePointers[sourceSpriteIndex]);
-    }
+    vertices = sourceVertices;
+    inputSprites = sourceInputSprites;
+    spriteAppearances = sourceSpriteAppearances;
+    spritePointers = sourceSpritePointers;
 
     usedLayerKeys.clear();
     for (const auto& [key, range] : sortedBatch.layerRanges) {
@@ -446,12 +419,33 @@ bool ObjectBatch::applySortedBatch(const SortedObjectBatch& newSortedBatch) {
         spritePointers.size() != sourceSpritePointers.size())
         return false;
 
-    // The scheduler's cumulative triangle offsets must match the reordered
-    // vertex stream exactly. This catches stale sprite indices before step 3
-    // uploads any geometry to the GPU.
+    if (sortedBatch.inputSpriteIndices.size() != inputSprites.size() ||
+        sortedBatch.preCulledSprites.size() != inputSprites.size())
+        return false;
+
+    // The remap must be a permutation of source sprite indices. Verify it now,
+    // before step 3 uploads these arrays or emits GPU draw ranges.
+    std::vector<u8> seen(inputSprites.size(), 0);
+    for (u32 sourceIndex : sortedBatch.inputSpriteIndices) {
+        if (sourceIndex >= inputSprites.size() || seen[sourceIndex] != 0)
+            return false;
+        seen[sourceIndex] = 1;
+    }
+
     for (const auto& [key, range] : sortedBatch.layerRanges) {
         const u64 endVertex = static_cast<u64>(range.firstVertex) + range.vertexCount;
-        if (endVertex > vertices.size() || range.vertexCount % 3 != 0)
+        const u64 endSprite = static_cast<u64>(range.firstInputSprite) + range.spriteCount;
+        const u64 endWorkGroup = static_cast<u64>(range.firstWorkGroup) + range.workGroupCount;
+        if (endVertex > static_cast<u64>(vertices.size()) ||
+            endSprite > static_cast<u64>(sortedBatch.inputSpriteIndices.size()) ||
+            endWorkGroup > static_cast<u64>(sortedBatch.workGroups.size()) ||
+            range.vertexCount % 3 != 0)
+            return false;
+    }
+
+    for (const auto& workGroup : sortedBatch.workGroups) {
+        if (workGroup.inputSpriteStart > workGroup.inputSpriteEnd ||
+            workGroup.inputSpriteEnd > sortedBatch.inputSpriteIndices.size())
             return false;
     }
 
