@@ -108,6 +108,7 @@ void ObjectBatch::clear() {
     sourceSpriteAppearances.clear();
     sourceSpritePointers.clear();
     vertices.clear();
+    orderedVertices.clear();
     inputSprites.clear();
     spriteAppearances.clear();
     spritePointers.clear();
@@ -455,6 +456,24 @@ bool ObjectBatch::applySortedBatch(const SortedObjectBatch& newSortedBatch) {
         sortedBatch.preCulledSprites.size() != inputSprites.size())
         return false;
 
+    // ES2 has no compute-generated indirect index buffer. Materialize only the
+    // scheduler's draw-order remap as a sequential vertex stream; all per-sprite
+    // transforms, culling and final colors remain GPU shader work.
+    orderedVertices.clear();
+    orderedVertices.reserve(sourceVertices.size());
+    for (u32 sourceIndex : sortedBatch.inputSpriteIndices) {
+        const auto& input = sourceInputSprites[sourceIndex];
+        const usize firstVertex = static_cast<usize>(input.indexStart) * 3;
+        const usize vertexCount = static_cast<usize>(input.indexCount) * 3;
+        orderedVertices.insert(
+            orderedVertices.end(),
+            sourceVertices.begin() + firstVertex,
+            sourceVertices.begin() + firstVertex + vertexCount
+        );
+    }
+    if (orderedVertices.size() != sourceVertices.size())
+        return false;
+
     // The remap must be a permutation of source sprite indices. Verify it now,
     // before step 3 uploads these arrays or emits GPU draw ranges.
     std::vector<u8> seen(inputSprites.size(), 0);
@@ -481,7 +500,7 @@ bool ObjectBatch::applySortedBatch(const SortedObjectBatch& newSortedBatch) {
             return false;
     }
 
-    return true;
+    return orderedVertices.size() == sourceVertices.size();
 }
 
 bool ObjectBatch::finalizeSortedGeometry(const ColorChannelBlendStates& blendStates) {
