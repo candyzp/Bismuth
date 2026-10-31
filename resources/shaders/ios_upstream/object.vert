@@ -460,7 +460,7 @@ void main() {
     else
         color.rgb *= color.a;
 
-    if (color.a <= 0.001) {
+    if (color.a <= 0.0) {
         gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
         v_color = vec4(0.0);
         return;
