@@ -18,10 +18,6 @@ using namespace geode::prelude;
 namespace IOSUpstream {
 namespace {
 
-constexpr u32 IOS_SPRITE_APPEARANCE_VISIBLE = 1u << 0;
-constexpr u32 IOS_SPRITE_APPEARANCE_OPACITY_MODIFY_RGB = 1u << 1;
-constexpr u32 IOS_SPRITE_APPEARANCE_DIRECT_TINT = 1u << 2;
-
 u32 convertToShaderHSV(const cocos2d::ccHSVValue& hsv) {
     const u32 hue = static_cast<u32>(hsv.h + 256.f);
     const u32 saturation = static_cast<u32>(
@@ -64,12 +60,23 @@ u32 packDisplayedColor(cocos2d::CCSprite* sprite) {
 
 SpriteAppearance captureSpriteAppearance(
     cocos2d::CCSprite* sprite,
+    GameObject* objectRoot,
     bool usesDirectTint
 ) {
     SpriteAppearance result;
     result.packedDisplayedColor = packDisplayedColor(sprite);
-    if (sprite && sprite->isVisible() && !sprite->getDontDraw())
+
+    bool visible = sprite && sprite->isVisible() && !sprite->getDontDraw();
+    for (auto parent = sprite ? sprite->getParent() : nullptr;
+         visible && parent && parent != objectRoot;
+         parent = parent->getParent()) {
+        visible = parent->isVisible();
+    }
+    if (visible)
         result.flags |= IOS_SPRITE_APPEARANCE_VISIBLE;
+    else
+        result.packedDisplayedColor &= 0x00ffffffu; // Zero alpha for hidden ancestry.
+
     if (sprite && sprite->isOpacityModifyRGB())
         result.flags |= IOS_SPRITE_APPEARANCE_OPACITY_MODIFY_RGB;
     if (usesDirectTint)
@@ -256,7 +263,17 @@ void ObjectBatch::writeSpriteVertex(
         transforms.texCoordRight * point.x +
         transforms.texCoordUp * point.y +
         transforms.texCoordBottomLeft;
-    vertex.spriteIndex = static_cast<float>(spriteIndex);
+    vertex.objectAndGroupIndex = glm::vec2(
+        static_cast<float>(currentObjectIndex),
+        static_cast<float>(currentGroupCombinationIndex)
+    );
+    vertex.spriteAndMeta = glm::vec2(
+        static_cast<float>(spriteIndex),
+        static_cast<float>(
+            currentSpriteType * 65536u + currentColorChannelFlags
+        )
+    );
+    vertex.objectStartPosition = objectStartPosition;
     sourceVertices.push_back(vertex);
 }
 
@@ -295,6 +312,9 @@ bool ObjectBatch::addSprite(
 
     currentTransforms = getSpriteVertexTransform(sprite, transform, texture);
     currentObjectStartPosition = ccPointToGLM(object->m_startPosition);
+    currentObjectIndex = objectIndex;
+    currentGroupCombinationIndex = groupCombinationIndex;
+    currentSpriteType = static_cast<u32>(type);
     currentSpriteIndex = static_cast<u32>(sourceInputSprites.size());
 
     const usize firstTriangle = sourceVertices.size() / 3;
@@ -323,8 +343,11 @@ bool ObjectBatch::addSprite(
     u32 colorChannelFlags = ObjectUtils::getSpriteColorChannel(type, object, sprite);
     if (type == SpriteType::DETAIL)
         colorChannelFlags |= IOS_COLOR_CHANNEL_DETAIL_FLAG;
+    currentColorChannelFlags = colorChannelFlags;
 
-    InputSprite input;
+    // The vertex metadata has already been written while the mesh was built.
+    // Its sprite type/channel flags are also mirrored in the source input
+    // record so the culling/order stage can validate and inspect them.
     input.objectIndex = objectIndex;
     input.spriteType = static_cast<u32>(type);
     input.indexStart = static_cast<u32>(firstTriangle);
@@ -334,7 +357,9 @@ bool ObjectBatch::addSprite(
 
     const bool directTint =
         (colorChannelFlags & IOS_COLOR_CHANNEL_DIRECT_FLAG) != 0;
-    sourceSpriteAppearances.push_back(captureSpriteAppearance(sprite, directTint));
+    sourceSpriteAppearances.push_back(
+        captureSpriteAppearance(sprite, object, directTint)
+    );
     sprite->retain();
     sourceSpritePointers.push_back({object, sprite, type});
 
@@ -525,7 +550,9 @@ void ObjectBatch::refreshSpriteAppearances() {
         const auto& source = spritePointers[i];
         const bool directTint =
             (inputSprites[i].colorChannelFlags & IOS_COLOR_CHANNEL_DIRECT_FLAG) != 0;
-        spriteAppearances[i] = captureSpriteAppearance(source.sprite, directTint);
+        spriteAppearances[i] = captureSpriteAppearance(
+            source.sprite, source.object, directTint
+        );
     }
 }
 
