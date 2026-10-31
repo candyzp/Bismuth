@@ -296,7 +296,9 @@ void main() {
     float encodedMeta = floor(a_spriteAndMeta.y + 0.5);
     float spriteType = floor(encodedMeta / 65536.0);
     float colorChannelFlags = mod(encodedMeta, 65536.0);
-    float colorChannel = mod(colorChannelFlags, 4096.0);
+    // Strip both iOS metadata bits (detail 0x1000, direct tint 0x2000).
+    // Valid Geometry Dash color IDs occupy only the low 11 bits.
+    float colorChannel = mod(colorChannelFlags, 2048.0);
     float directTint = hasFlag(colorChannelFlags, COLOR_DIRECT_FLAG);
     float isDetail = hasFlag(colorChannelFlags, COLOR_DETAIL_FLAG);
 
@@ -372,10 +374,10 @@ void main() {
 
     vec4 color;
     if (directTint > 0.5) {
-        // texture2D returns normalized RGBA; the packed CPU bytes are already
-        // converted to 0..1 by the GL sampler. Alpha is applied below exactly
-        // once through directSpriteOpacity.
-        color = vec4(appearance.rgb, 1.0);
+        // getSpriteAppearance() decodes the RGBA8 table to byte values
+        // (0..255), unlike getColorChannel(), which reads normalized bytes.
+        // Convert the displayed tint and opacity back to 0..1 before blending.
+        color = vec4(appearance.rgb / 255.0, 1.0);
     } else {
         color = getColorChannel(colorChannel);
     }
@@ -445,7 +447,7 @@ void main() {
     // The per-sprite displayed alpha is used only for direct-tint mode, where
     // no valid channel entry exists (legacy/default color channel zero).
     float directSpriteOpacity = directTint > 0.5
-        ? appearance.a
+        ? appearance.a / 255.0
         : 1.0;
     color.a *= directSpriteOpacity * externalOpacity;
 
