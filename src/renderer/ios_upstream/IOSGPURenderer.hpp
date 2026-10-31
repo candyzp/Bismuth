@@ -12,8 +12,6 @@ class Shader;
 
 namespace IOSUpstream {
 
-class IOSGPULayerNode;
-
 class IOSGPURenderer : public cocos2d::CCNode {
 public:
     IOSGPURenderer() = default;
@@ -48,7 +46,7 @@ private:
     Shader* shader = nullptr;
     u32 vertexBuffer = 0;
     u64 uploadedOrderRevision = 0;
-    std::vector<IOSGPULayerNode*> layerNodes;
+    std::vector<cocos2d::CCNode*> layerNodes;
     std::set<LayerKey> layerNodeKeys;
 
     IOSGPU::Capabilities capabilities;
