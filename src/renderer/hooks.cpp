@@ -10,6 +10,7 @@
 #include "ios_upstream/IOSGPUCapabilities.hpp"
 #include "ios_upstream/IOSSceneData.hpp"
 #include "ios_upstream/IOSGPURenderer.hpp"
+#include <Geode/utils/cocos.hpp>
 #include <decomp/GJBaseGameLayer.hpp>
 #include <Geode/binding/CheckpointObject.hpp>
 #include <optional>
