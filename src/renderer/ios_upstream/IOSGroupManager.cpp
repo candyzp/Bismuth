@@ -171,6 +171,14 @@ bool GroupManager::initWithObjects(PlayLayer* playLayer, cocos2d::CCArray* objec
     layer = playLayer;
     groupStates.clear();
     pulseEntries.clear();
+    isGroupToggledOn.clear();
+    alphaIndicesPerGroupCombinationIndex.clear();
+    alphaIndexGroupIdFastStructure.clear();
+    alphaValuesPerGroupId.clear();
+    alphaValuesPerAlphaIndex.clear();
+    groupCombinationCount = 0;
+    transformCombinationCount = 0;
+    alphaIndicesCount = 0;
     groupCombinations.clear();
     groupCombinationIndices.clear();
     transformCombinationIndices.clear();
@@ -451,9 +459,10 @@ void GroupManager::rotateGroup(
 
     const float cosine = std::cos(glm::radians(angle));
     const float sine = std::sin(glm::radians(angle));
+    // Match the owner's column-major matrix convention exactly.
     const glm::mat2 rotation(
-        glm::vec2(cosine, sine),
-        glm::vec2(-sine, cosine)
+        glm::vec2(cosine, -sine),
+        glm::vec2(sine, cosine)
     );
 
     for (const auto combinationIndex :
