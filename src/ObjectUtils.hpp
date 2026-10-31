@@ -201,12 +201,11 @@ public:
     }
 
     /*
-        This function unpacks GameObject and turns them into
-        individual sprites and calls func for every sprite
-        in draw order.
-
-        Returns false if the visual tree contains an unsupported non-sprite
-        child or duplicate sprite. On failure, func is not called at all.
+        Unpack the GameObject's heterogeneous Cocos visual tree into sprites
+        and call func for each unique sprite in owner-compatible draw order.
+        Non-sprite nodes are traversed as transform containers; duplicate sprite
+        pointers are emitted only once. Returns false only for invalid inputs or
+        a failed recursive traversal. Collection is transactional.
     */
     static bool unpackObjectIntoSprites(
         GameObject* object,
