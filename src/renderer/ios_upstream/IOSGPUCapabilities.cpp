@@ -1,11 +1,13 @@
 #ifdef GEODE_IS_IOS
 
 #include "IOSGPUCapabilities.hpp"
+#include <Geode/Geode.hpp>
 #include <OpenGLES/ES2/gl.h>
 #include <OpenGLES/ES2/glext.h>
 
 #include <cstdio>
 #include <sstream>
+#include <utility>
 
 namespace IOSGPU {
 namespace {
@@ -96,7 +98,8 @@ bool queryCapabilities(Capabilities& out) {
         out.apiMajor > 3 || (out.apiMajor == 3 && out.apiMinor >= 1)
     );
     out.hasShaderStorageBuffers = out.hasComputeShaders;
-    out.hasIndirectMultiDraw = out.hasComputeShaders;
+    out.hasIndirectMultiDraw =
+        hasExtension(out, "GL_EXT_multi_draw_indirect");
 
     return true;
 }
