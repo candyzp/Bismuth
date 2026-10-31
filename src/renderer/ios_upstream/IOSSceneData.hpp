@@ -3,6 +3,7 @@
 #ifdef GEODE_IS_IOS
 
 #include "IOSObjectBatch.hpp"
+#include "IOSGPUStateTables.hpp"
 #include <array>
 
 namespace IOSUpstream {
@@ -25,6 +26,8 @@ public:
     const GameState& getGameState() const { return gameState; }
     const ColorChannelTable& getColorChannels() const { return colorChannels; }
     const ColorChannelBlendStates& getBlendStates() const { return blendStates; }
+    GPUStateTables& getGPUStateTables() { return gpuStateTables; }
+    const GPUStateTables& getGPUStateTables() const { return gpuStateTables; }
     bool isReady() const { return ready; }
 
 private:
@@ -39,6 +42,7 @@ private:
     std::array<cocos2d::CCTexture2D*, static_cast<usize>(SpriteSheet::COUNT)> spriteSheets {};
     GroupManager groupManager;
     ObjectBatch objectBatch;
+    GPUStateTables gpuStateTables;
     GameState gameState {};
     ColorChannelTable colorChannels {};
     ColorChannelBlendStates blendStates {};
