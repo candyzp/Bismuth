@@ -62,6 +62,8 @@ private:
     IOSGPU::Capabilities capabilities;
     std::string failureReason;
     cocos2d::CCLabelBMFont* debugOverlay = nullptr;
+    u32 layerVisitsThisFrame = 0;
+    u32 lastFrameLayerVisits = 0;
     u32 drawsThisFrame = 0;
     u32 lastFrameDraws = 0;
     u32 activeLayerCount = 0;
