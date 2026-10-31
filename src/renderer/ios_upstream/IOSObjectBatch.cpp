@@ -108,7 +108,6 @@ void ObjectBatch::clear() {
     sourceSpriteAppearances.clear();
     sourceSpritePointers.clear();
     orderedVertices.clear();
-    usedLayerKeyStorage.clear();
     usedLayerKeys.clear();
     sortedBatch = {};
     currentSpriteIndex = 0;
@@ -466,8 +465,8 @@ bool ObjectBatch::applySortedBatch(const SortedObjectBatch& newSortedBatch) {
     if (orderedVertices.size() != sourceVertices.size())
         return false;
 
-    // The remap must be a permutation of source sprite indices. Verify it now,
-    // before step 3 uploads these arrays or emits GPU draw ranges.
+    // The remap must be a permutation of source sprite indices. Verify it
+    // before the GPU draw ranges are accepted.
     std::vector<u8> seen(sourceInputSprites.size(), 0);
     for (u32 sourceIndex : sortedBatch.inputSpriteIndices) {
         if (sourceIndex >= sourceInputSprites.size() || seen[sourceIndex] != 0)
