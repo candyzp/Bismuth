@@ -39,7 +39,7 @@ These are API substitutions only. They must not become a return to the old assis
 
 ## Step 4 source parity notes
 
-- Runtime blend flags are not a fixed level-initialization snapshot: the iOS scene refreshes the owner's color-channel blend map every frame and applies the corresponding scheduler variant as soon as its asynchronous job is ready. The previous ordered batch remains active while a new variant is pending.
+- Runtime blend flags are not a fixed level-initialization snapshot: the iOS hook refreshes the owner's color-channel blend map once in `PlayLayer::updateVisibility`, before GPU layer traversal, and applies the corresponding scheduler variant as soon as its asynchronous job is ready. The previous ordered batch remains active while a new variant is pending, so every GPU layer node in a frame uses the same sorted range map.
 - Sprite base/detail/glow/black classification, rotated texture rectangles, flips, transforms, opacity, direct-tint channel 0, HSV, pulse, invisible-block, camera, and audio calculations were compared against the current upstream source. The iOS root-versus-child black classification now matches the owner's separate object-black and color-sprite-black flags.
 - The ES2 renderer now requires fragment highp precision for sprite atlas coordinates and restores the caller's full vertex-attrib descriptors, including client-memory arrays, after submission.
 - This is a source audit only. Shader compilation, device rendering, frame-to-frame visual comparisons, and gameplay/level-transition tests remain unverified until a real iOS build is available.
