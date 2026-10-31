@@ -7,7 +7,7 @@ Repositories compared:
 - iOS fork: https://github.com/candyzp/Bismuth, master at `d31115ee3851655c6671233bc13b1a42e0d7e157`
 - Port branch: `rework/ios-gpu-v2`
 
-This is a source audit and step-2 port record, not a successful build report. The owner-style CPU modules live under `src/renderer/ios_upstream/`. They are now connected to the new GPU-renderer owner, but the GPU shader/table/draw path remains draft work for step 3 and has not been compiled or device-tested.
+This is a source audit and source-port record for steps 2 and 3, not a successful build report. The owner-style CPU modules and the ES2 GPU evaluation/draw path live under `src/renderer/ios_upstream/`. They are connected in the new GPU-only renderer, but have not been compiled or device-tested.
 
 ## Findings
 
@@ -23,11 +23,11 @@ This is a source audit and step-2 port record, not a successful build report. Th
 | Upstream component | Fork state | Required iOS work |
 |---|---|---|
 | `WorkGroupScheduler.hpp/.cpp` | Ported in `IOSWorkGroupScheduler` | CPU sorting, per-layer ordering, sprite remapping, pre-culled records, and work-group ranges. The desktop OpenCL GPU-core-count heuristic is replaced by a fixed provisional batch size pending iOS measurements. |
-| `SAOBuffer.hpp` | Data model ported | Owner record meanings are represented in `IOSRenderRecords.hpp`; step 3 serializes them into ES-compatible texture/attribute tables rather than SSBOs. |
-| `resources/shaders/headers/*` | CPU record semantics ported | Flags, group state, pulse entries, HSV encoding, game state, color channels, and input-sprite records are represented. The GLSL ES lookup helpers and texture layouts remain step 3. |
-| `objectCulling.comp` | Not yet ported | Step 3 translates the per-sprite visibility, transform, audio-scale, group, color, HSV, and pulse calculations into the iOS GPU vertex-processing path. |
-| `objectDrawing.vert/.frag` | Not yet ported | Step 3 ports final vertex transform and sprite-sheet sampling to GLSL ES. |
-| `Renderer.cpp` | CPU initialization flow ported to `IOSSceneData`; a separate iOS GPU-renderer owner is present | Step 3 audits and completes the ES2 state-table/shader/draw path and checks it against current upstream behavior. |
+| `SAOBuffer.hpp` | Data model and ES2 transport implemented | Owner record meanings are represented in `IOSRenderRecords.hpp`; `IOSGPUStateTables` serializes them into float/byte textures and the VBO carries per-vertex indices instead of SSBOs. |
+| `resources/shaders/headers/*` | Record semantics and ES2 shader lookups implemented | Flags, group state, pulse entries, HSV encoding, game state, color channels, and input-sprite records are represented in CPU records and decoded by the GLSL ES 1.00 vertex shader. |
+| `objectCulling.comp` | Calculation body ported into `object_es2.vert` | GPU vertex processing evaluates group transforms, camera culling, audio scale, color channels, HSV, pulses, invisible-block fade/glow, and premultiplied opacity. |
+| `objectDrawing.vert/.frag` | Ported to `object_es2.vert/.frag` | The vertex shader applies the owner mesh transform and resolved vertex color; the fragment shader samples the sprite sheet and multiplies by that color. |
+| `Renderer.cpp` | CPU initialization and ES2 GPU draw owner implemented | `IOSSceneData` prepares owner-style records; `IOSGPURenderer` uploads ordered vertices/state textures, creates layer nodes, binds uniforms, applies the owner blend mode, draws each scheduled range, and restores Cocos GL state. |
 | `DifferenceMode`, `OverdrawView` | Not ported | Optional diagnostics; keep BProfiler and the fork's existing debugger. Not required for the core renderer. |
 | `GJEffectManager` decomp helpers | Not required by current CPU port | The iOS GroupManager reads the same live pulse/color action data directly. Revisit only if shader parity reveals a binding gap. |
 | `GPUTimer` | Capability reporting added | The live context report checks timer-query support; step 4 can add an extension-backed timer without importing desktop-only query assumptions. |
@@ -42,10 +42,10 @@ This is a source audit and step-2 port record, not a successful build report. Th
 
 **ObjectBatch**
 - Ported in `IOSObjectBatch.hpp/.cpp`: owner-style object metadata, sprite-tree expansion, rotated/flipped texture-rect mapping, convex mesh triangulation, six-vertex quads, per-sprite input records, source-sprite lifetime pins, and scheduler-produced layer ranges.
-- Source vertex/input arrays remain in their original owner order. The scheduler's remap/pre-culled arrays express draw order; they are not also physically reordered. The port validates that the remap is a complete permutation before step 3.
+- Source vertex/input arrays remain in their original owner order. The scheduler's remap/pre-culled arrays express draw order; they are not also physically reordered. The port validates a complete permutation and checks contiguous layer/work-group coverage before accepting the GPU draw batch.
 - iOS-specific direct displayed-tint metadata is retained as a sidecar record; encoded color flags are masked only for blend-channel lookup.
 - The owner's blend-state map is fetched during renderer initialization and remains the scheduler key for that level; the iOS port follows that fixed per-level schedule.
-- GPU-produced raw-sprite state, culling-index generation, and final draw submission remain step 3.
+- ES2 has no upstream compute/SSBO/indirect-draw equivalents, so the owner culling calculations run in the GPU vertex shader and the CPU submits the scheduler's contiguous triangle-list ranges with `glDrawArrays`. This combines the owner's two GPU stages without moving final transforms/colors to the CPU.
 - The fork's old `VisibilityManager`, section culling and live-VBO-refresh implementation are not the base of this port.
 
 **ObjectUtils**
@@ -56,7 +56,7 @@ This is a source audit and step-2 port record, not a successful build report. Th
 **Renderer / draw nodes**
 - `IOSSceneData` ports the owner's CPU initialization/data-refresh sequence: sprite-sheet/mesh setup, full-level GroupManager initialization, ObjectSorter traversal, ObjectBatch build, persistent color-channel table refresh using `m_copyColor`, game/camera/audio state, and draw-time MVP/camera refresh.
 - Gameplay hooks mirror move, optimized rotation, follow, toggle and checkpoint state into the active SceneData; Geometry Dash continues to update non-decoration object positions, sections, collision and oriented boxes.
-- The CPU scene-data module is now owned by the iOS GPU renderer. The current `IOSGPURenderer`, `IOSGPUStateTables`, and ES2 shaders are step-3 work-in-progress; their presence does not mean the GPU path is validated.
+- The CPU scene-data module is owned by `IOSGPURenderer`. The renderer uses three vertex-readable state textures, a source-indexed ordered VBO, and GPU layer nodes keyed by the upstream scheduler. The active PlayLayer's stock Cocos batches stay hidden; shader, table, or draw failures stop the GPU path and do not fall back.
 - The legacy `RendererIOS.cpp`, `ResolvedStateLayer`, `AssistShadowBatch`, `StandaloneAssistBatch`, and `AtlasInterleave` are not dependencies of the new renderer path. When the new GPU renderer exists, the iOS batch hook explicitly blocks legacy Cocos batch draws. Initialization and draw failures keep stock batches hidden; they do not route to stock rendering.
 
 
@@ -101,7 +101,7 @@ Apple's OpenGL ES documentation also describes:
 - render-to-texture using framebuffer objects, including GPU-produced data used by a later vertex-processing stage;
 - texture-unit reuse to avoid unnecessary extra rendering passes.
 
-The new live capabilities report logs vertex texture units, float/half-float texture support, float/half-float color targets, MRT, and timer-query extensions separately. Step 3 should use vertex texture fetch and CPU-updated data textures for the owner-style records; no desktop SSBO calls should be sent through the iOS buffer shim.
+The new live capabilities report logs vertex texture units, float/half-float texture support, float/half-float color targets, MRT, and timer-query extensions separately. The ES2 renderer requires three vertex texture units, four combined texture units, five attributes, and float texture sampling; unsupported contexts fail GPU initialization. No desktop SSBO calls are sent through the iOS buffer shim.
 
 ### Metal option
 
@@ -139,10 +139,13 @@ If vertex texture fetch or the required data formats are unavailable in the live
 - [x] Match upstream's renderer creation point inside `setupHasCompleted()` / `resetLevel()`.
 - [x] Close the stock-render escape paths when GPU-renderer initialization or owner-node creation fails.
 - [x] Re-audit blend-flag masking, raw scheduler Z-layer keys, direct-tint channel-0 sorting, sprite-remap bounds, and optimized-group movement.
-- [ ] Step 3: finish/audit GPU texture-table serialization, ES shader parity, and ordered layer draw submission. Draft code exists, but is not verified.
-- [ ] Step 4: verify visual parity, effect coverage, lifecycle stability, and performance instrumentation on device.
-- [ ] Step 5: run the iOS build and address compile/link failures.
+- [x] Step 3 source implementation: serialize owner records into ES2 texture tables, port the culling/evaluation calculations to the vertex shader, add the sprite-sheet fragment shader, upload scheduler-ordered geometry, and submit GPU layer ranges.
+- [x] Step 3 source audit: validate byte packing, float-index precision, pulse sentinels/limits, scheduler permutations/range coverage, texture units, vertex attributes, blend functions, and GL-state restoration.
+- [ ] Step 4: verify visual parity for color/HSV/pulse/glow/invisible blocks/audio scale/rotation/culling, then test level lifecycle and effect compatibility on device.
+- [ ] Step 5: build the iOS beta, resolve compile/link/shader failures, and optimize only after parity.
 
-**Step 2 status:** Source comparison, the iOS GPU API audit, and the owner-style CPU preparation/lifecycle port are complete on `rework/ios-gpu-v2`. The separate GPU renderer and shaders already present in the branch are the next step, not a completed or tested renderer.
+**Step 2 status:** Upstream comparison, the iOS GPU API audit, and the owner-style CPU preparation/lifecycle port are complete on `rework/ios-gpu-v2`.
+
+**Step 3 status:** The ES2 GPU renderer, texture tables, shader calculations, ordered layer submission, and no-fallback failure handling are implemented at source level. They are not yet compiled, shader-validated on device, or visually tested.
 
 **Build status:** No build has been run yet. Build verification remains reserved for step 5.
