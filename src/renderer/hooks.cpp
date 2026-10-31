@@ -117,6 +117,15 @@ class $modify(RendererPlayLayer, PlayLayer) {
 
     void updateVisibility(float dt) {
 #ifdef GEODE_IS_IOS
+        auto scene = IOSUpstream::SceneData::getCurrent();
+        if (scene && scene->isReady() && scene->getPlayLayer() == this) {
+            // Owner-style GPU visibility path. The iOS decomp keeps 2.2 Area
+            // visual updates, enter effects, audio scale, colors and particles
+            // advancing while omitting the expensive per-object stock
+            // visibility walk; the GPU renderer owns final sprite visibility.
+            ((decomp_PlayLayer*)this)->optimized_updateVisibility(dt);
+            return;
+        }
         PlayLayer::updateVisibility(dt);
 #else
         auto renderer = Renderer::get();
