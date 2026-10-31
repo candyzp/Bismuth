@@ -5,6 +5,7 @@
 #include "IOSSceneData.hpp"
 #include "IOSGPUCapabilities.hpp"
 #include <Geode/cocos/base_nodes/CCNode.h>
+#include <set>
 #include <vector>
 
 class Shader;
@@ -23,6 +24,7 @@ public:
 
     bool initForPlayLayer(PlayLayer* layer);
     void reset();
+    bool syncLayerNodes();
     void drawLayer(const LayerKey& key);
 
     PlayLayer* getPlayLayer() const { return layer; }
@@ -47,6 +49,7 @@ private:
     u32 vertexBuffer = 0;
     u64 uploadedOrderRevision = 0;
     std::vector<IOSGPULayerNode*> layerNodes;
+    std::set<LayerKey> layerNodeKeys;
 
     IOSGPU::Capabilities capabilities;
     std::string failureReason;
