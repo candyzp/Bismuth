@@ -375,12 +375,12 @@ bool ObjectBatch::addSprite(
     );
 
     usedLayerKeys.insert({
-        object->getObjectZLayer(),
+        LayerKey::getNormalObjectZLayer(object),
         spriteSheet,
         false
     });
     usedLayerKeys.insert({
-        object->getObjectZLayer(),
+        LayerKey::getNormalObjectZLayer(object),
         spriteSheet,
         true
     });
@@ -464,9 +464,18 @@ bool ObjectBatch::applySortedBatch(const SortedObjectBatch& newSortedBatch) {
     orderedVertices.clear();
     orderedVertices.reserve(sourceVertices.size());
     for (u32 sourceIndex : sortedBatch.inputSpriteIndices) {
+        // Validate before indexing. A malformed scheduler remap must fail the
+        // GPU-only beta cleanly rather than read outside the CPU vertex array.
+        if (sourceIndex >= sourceInputSprites.size())
+            return false;
+
         const auto& input = sourceInputSprites[sourceIndex];
         const usize firstVertex = static_cast<usize>(input.indexStart) * 3;
         const usize vertexCount = static_cast<usize>(input.indexCount) * 3;
+        if (firstVertex > sourceVertices.size() ||
+            vertexCount > sourceVertices.size() - firstVertex)
+            return false;
+
         orderedVertices.insert(
             orderedVertices.end(),
             sourceVertices.begin() + firstVertex,
