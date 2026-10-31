@@ -17,7 +17,7 @@ using GroupCombinationIndex = u32;
 
 class GroupCombination {
 public:
-    GroupCombination(std::array<GroupID, GROUP_IDS_PER_OBJECT>* groupIds, i32 count);
+    GroupCombination(std::array<GroupID, IOS_GROUP_IDS_PER_OBJECT>* groupIds, i32 count);
     explicit GroupCombination(std::vector<GroupID> groupIds);
     GroupCombination() = default;
     explicit GroupCombination(GameObject* object);
@@ -32,7 +32,7 @@ public:
 
 private:
     i32 count = 0;
-    std::array<GroupID, GROUP_IDS_PER_OBJECT> ids {};
+    std::array<GroupID, IOS_GROUP_IDS_PER_OBJECT> ids {};
 };
 
 struct StoredGroupStates {
