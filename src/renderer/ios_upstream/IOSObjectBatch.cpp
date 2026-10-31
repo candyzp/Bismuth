@@ -128,10 +128,17 @@ bool ObjectBatch::buildObjectInfo(const std::vector<GameObject*>& objects) {
     objectInfos.reserve(objects.size());
     objectIndices.reserve(objects.size());
 
+    constexpr usize MAX_EXACT_ES2_FLOAT_INDEX = 1u << 24;
+
     for (auto object : objects) {
         if (!object || object->isTrigger() || object->m_isHide ||
             object->m_objectID == IOS_GUIDE_OBJECT_ID)
             continue;
+
+        if (objectInfos.size() >= MAX_EXACT_ES2_FLOAT_INDEX) {
+            log::error("Bismuth iOS upstream batch exceeded the ES2 exact object-index range");
+            return false;
+        }
 
         ObjectInfo info;
         if (object->getHasRotateAction())
@@ -300,6 +307,17 @@ bool ObjectBatch::addSprite(
     const u32 objectIndex = getObjectIndex(object);
     const u32 groupCombinationIndex =
         groupManager.getGroupCombinationIndexForObject(object);
+
+    // Object/group/sprite indices are carried as float vertex attributes in
+    // ES2. Reject an index that cannot be represented exactly instead of
+    // silently addressing another record in a large custom level.
+    constexpr u32 MAX_EXACT_ES2_FLOAT_INDEX = 1u << 24;
+    if (objectIndex >= MAX_EXACT_ES2_FLOAT_INDEX ||
+        groupCombinationIndex >= MAX_EXACT_ES2_FLOAT_INDEX ||
+        sourceInputSprites.size() >= MAX_EXACT_ES2_FLOAT_INDEX) {
+        log::error("Bismuth iOS upstream batch exceeded an exact ES2 float metadata index");
+        return false;
+    }
 
     u32 colorChannelFlags = ObjectUtils::getSpriteColorChannel(type, object, sprite);
     if (type == SpriteType::DETAIL)
