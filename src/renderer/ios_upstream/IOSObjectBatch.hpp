@@ -14,6 +14,7 @@ namespace IOSUpstream {
 
 class ObjectBatch {
 public:
+    ~ObjectBatch();
     using TextureResolver = std::function<cocos2d::CCTexture2D*(SpriteSheet)>;
 
     bool build(
