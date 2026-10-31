@@ -71,7 +71,7 @@ SpriteAppearance captureSpriteAppearance(
     for (auto parent = sprite ? sprite->getParent() : nullptr;
          visible && parent;
          parent = parent->getParent()) {
-        if (!parent->isVisible() || parent->getDontDraw())
+        if (!parent->isVisible())
             visible = false;
         if (parent == objectRoot)
             break;
@@ -240,8 +240,8 @@ ObjectBatch::SpriteVertexTransforms ObjectBatch::getSpriteVertexTransform(
 
     const float scaleFactor = CCDirector::get()->getContentScaleFactor();
     const glm::vec2 textureCoordFactor(
-        scaleFactor / std::max(1, texture->getPixelsWide()),
-        scaleFactor / std::max(1, texture->getPixelsHigh())
+        scaleFactor / std::max(1u, texture->getPixelsWide()),
+        scaleFactor / std::max(1u, texture->getPixelsHigh())
     );
 
     textureBottomLeft *= textureCoordFactor;
