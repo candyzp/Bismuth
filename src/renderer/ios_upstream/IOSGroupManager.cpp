@@ -131,7 +131,9 @@ void GroupCombination::removeGroupIdsNotInSet(const std::set<GroupID>& maskSet) 
     i32 destination = 0;
     for (i32 source = 0; source < count; ++source) {
         const GroupID id = ids[static_cast<usize>(source)];
-        if (maskSet.contains(id))
+        // Group ID 0 is the empty-slot sentinel in the owner's combination
+        // filtering algorithm and is never retained as a transform/alpha ID.
+        if (id != 0 && maskSet.contains(id))
             ids[static_cast<usize>(destination++)] = id;
     }
     std::fill(ids.begin() + destination, ids.end(), 0);
