@@ -88,10 +88,10 @@ static EncodedPulseEntry makePulseEntry(const PulseEffectAction& action) {
 } // namespace
 
 GroupCombination::GroupCombination(
-    std::array<GroupID, GROUP_IDS_PER_OBJECT>* groupIds,
+    std::array<GroupID, IOS_GROUP_IDS_PER_OBJECT>* groupIds,
     i32 count
 ) {
-    if (!groupIds || count < 0 || count > static_cast<i32>(GROUP_IDS_PER_OBJECT)) {
+    if (!groupIds || count < 0 || count > static_cast<i32>(IOS_GROUP_IDS_PER_OBJECT)) {
         this->count = 0;
         ids.fill(0);
         return;
@@ -105,7 +105,7 @@ GroupCombination::GroupCombination(
 }
 
 GroupCombination::GroupCombination(std::vector<GroupID> groupIds) {
-    count = static_cast<i32>(std::min<usize>(groupIds.size(), GROUP_IDS_PER_OBJECT));
+    count = static_cast<i32>(std::min<usize>(groupIds.size(), IOS_GROUP_IDS_PER_OBJECT));
     std::copy_n(groupIds.begin(), count, ids.begin());
     std::fill(ids.begin() + count, ids.end(), 0);
     std::sort(ids.begin(), ids.begin() + count);
@@ -118,7 +118,7 @@ GroupCombination::GroupCombination(GameObject* object) {
         return;
     }
     auto groups = object->m_groups;
-    count = std::clamp<i32>(object->m_groupCount, 0, GROUP_IDS_PER_OBJECT);
+    count = std::clamp<i32>(object->m_groupCount, 0, IOS_GROUP_IDS_PER_OBJECT);
     for (i32 i = 0; i < count; ++i)
         ids[static_cast<usize>(i)] = groups->at(static_cast<usize>(i));
     std::fill(ids.begin() + count, ids.end(), 0);
