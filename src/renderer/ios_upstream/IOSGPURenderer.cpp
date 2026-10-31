@@ -307,9 +307,9 @@ IOSGPURenderer* IOSGPURenderer::create(PlayLayer* playLayer) {
         return nullptr;
     }
 
-    // GPU-only beta: initialization failure never unhides stock Cocos batches.
-    // Keep the failed owner node attached so the failure remains visible in logs
-    // and the legacy renderer cannot silently reclaim the same frame.
+    // Keep the owner node attached even when initialization fails so its
+    // on-screen diagnostic remains available. Stock ownership is transferred
+    // only after the complete GPU path is ready.
     ret->initForPlayLayer(playLayer);
     ret->autorelease();
     return ret;
