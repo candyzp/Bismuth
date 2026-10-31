@@ -26,6 +26,7 @@ public:
     );
 
     void refreshSpriteAppearances();
+    bool refreshBlendOrder(const ColorChannelBlendStates& blendStates);
 
     const std::vector<ObjectInfo>& getObjectInfos() const { return objectInfos; }
     const std::vector<ObjectVertex>& getVertices() const { return sourceVertices; }
@@ -103,6 +104,8 @@ private:
 
     std::set<LayerKey> usedLayerKeys;
     SortedObjectBatch sortedBatch;
+    ColorChannelBlendStates appliedBlendStates{};
+    bool hasAppliedBlendStates = false;
 
     SpriteVertexTransforms currentTransforms;
     glm::vec2 currentObjectStartPosition {};
