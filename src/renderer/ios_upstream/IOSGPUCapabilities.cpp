@@ -74,6 +74,19 @@ bool queryCapabilities(Capabilities& out) {
     out.maxTextureSize = queryInteger(GL_MAX_TEXTURE_SIZE);
     out.maxRenderbufferSize = queryInteger(GL_MAX_RENDERBUFFER_SIZE);
 
+    GLint fragmentHighpRange[2] = {0, 0};
+    GLint fragmentHighpPrecision = 0;
+    glGetShaderPrecisionFormat(
+        GL_FRAGMENT_SHADER,
+        GL_HIGH_FLOAT,
+        fragmentHighpRange,
+        &fragmentHighpPrecision
+    );
+    out.fragmentHighpRangeMin = fragmentHighpRange[0];
+    out.fragmentHighpRangeMax = fragmentHighpRange[1];
+    out.fragmentHighpPrecision = fragmentHighpPrecision;
+    out.hasFragmentHighpPrecision = fragmentHighpPrecision > 0;
+
     const std::string extensionString = glString(GL_EXTENSIONS);
     std::istringstream stream(extensionString);
     std::string extension;
@@ -125,18 +138,22 @@ void logCapabilities(const Capabilities& caps) {
         caps.renderer
     );
     log::info(
-        "Bismuth iOS GL limits: attribs {}, vertex uniforms {}, vertex texture units {}, fragment texture units {}, combined texture units {}, max texture size {}, max renderbuffer size {}",
+        "Bismuth iOS GL limits: attribs {}, vertex uniforms {}, vertex texture units {}, fragment texture units {}, combined texture units {}, max texture size {}, max renderbuffer size {}, fragment highp range {}..{} precision {}",
         caps.maxVertexAttribs,
         caps.maxVertexUniformVectors,
         caps.maxVertexTextureUnits,
         caps.maxFragmentTextureUnits,
         caps.maxCombinedTextureUnits,
         caps.maxTextureSize,
-        caps.maxRenderbufferSize
+        caps.maxRenderbufferSize,
+        caps.fragmentHighpRangeMin,
+        caps.fragmentHighpRangeMax,
+        caps.fragmentHighpPrecision
     );
     log::info(
-        "Bismuth iOS GL features: vertex textures {}, VAO {}, uint indices {}, float textures {}, half-float textures {}, float color targets {}, half-float color targets {}, MRT {}, disjoint timer queries {}, compute {}, SSBO {}, indirect multi-draw {}",
+        "Bismuth iOS GL features: vertex textures {}, fragment highp {}, VAO {}, uint indices {}, float textures {}, half-float textures {}, float color targets {}, half-float color targets {}, MRT {}, disjoint timer queries {}, compute {}, SSBO {}, indirect multi-draw {}",
         caps.hasVertexTextureSampling,
+        caps.hasFragmentHighpPrecision,
         caps.hasVertexArrayObject,
         caps.hasUIntElementIndices,
         caps.hasFloatTexture,
