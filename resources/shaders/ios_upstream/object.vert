@@ -202,18 +202,29 @@ vec4 applyPulseEntries(
                 float satAdd = mod(floor(hsv.a / 32.0), 2.0);
                 float valAdd = mod(floor(hsv.a / 16.0), 2.0);
 
+                // Match the owner's getMultipliedHSV(): hue is scaled toward
+                // zero while additive/multiplicative saturation and value keep
+                // their respective interpolation rules.
+                float hueBits = hsv.b + mod(hsv.a, 2.0) * 256.0;
+                float hue = (hueBits - 256.0) / 360.0;
+                float scaledHueBits = clamp(
+                    floor(hue * value * 360.0 + 256.0 + 0.5),
+                    0.0,
+                    511.0
+                );
+                hsv.b = mod(scaledHueBits, 256.0);
+                hsv.a = floor(hsv.a / 2.0) * 2.0 +
+                    floor(scaledHueBits / 256.0);
+
                 float sat = hsv.g / 127.5;
                 float val = hsv.r / 127.5;
                 if (satAdd > 0.5) {
-                    sat -= 1.0;
-                    sat *= value;
-                    sat += 0.0;
+                    sat = (sat - 1.0) * value;
                 } else {
                     sat = sat * value + (1.0 - value);
                 }
                 if (valAdd > 0.5) {
-                    val -= 1.0;
-                    val *= value;
+                    val = (val - 1.0) * value;
                 } else {
                     val = val * value + (1.0 - value);
                 }
