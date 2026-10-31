@@ -354,6 +354,7 @@ bool ObjectBatch::addSprite(
 
     // The vertex metadata above is mirrored in the source input record so
     // the culling/order stage can validate and inspect it.
+    InputSprite input;
     input.objectIndex = objectIndex;
     input.spriteType = static_cast<u32>(type);
     input.indexStart = static_cast<u32>(firstTriangle);
