@@ -33,7 +33,7 @@ public:
         glm::vec2 byteTextureSize {};
     };
 
-    GPUStateTables() = default;
+    GPUStateTables();
     ~GPUStateTables();
 
     GPUStateTables(const GPUStateTables&) = delete;
