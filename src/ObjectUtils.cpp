@@ -55,9 +55,9 @@ bool ObjectUtils::unpackObjectIntoSprites(
     if (!object || !func)
         return false;
 
-    // Collection is transactional. The public callback is only invoked after
-    // the complete visual tree has been proven to consist entirely of sprites.
-    // If one unsupported child exists anywhere, the whole object stays stock.
+    // Collect first, then publish the completed sprite stream. Cocos visual
+    // trees are heterogeneous: non-sprite container nodes still carry useful
+    // transforms and may contain sprite descendants.
     std::vector<CollectedSprite> collected;
     collected.reserve(8);
 
@@ -71,10 +71,9 @@ bool ObjectUtils::unpackObjectIntoSprites(
     };
 
     CCSprite* colorSprite = object->m_colorSprite;
-
-    bool shouldUnpackColorSprite = colorSprite && colorSprite->getParent() != object;
-    bool isColorSpriteInFront    = object->m_colorZLayerRelated;
-
+    const bool shouldUnpackColorSprite =
+        colorSprite && colorSprite->getParent() != object;
+    const bool isColorSpriteInFront = object->m_colorZLayerRelated;
     auto transform = CCAffineTransformMakeIdentity();
 
     if (object->m_glowSprite &&
@@ -95,20 +94,26 @@ bool ObjectUtils::unpackObjectIntoSprites(
         return false;
     }
 
-    // A visual sprite must map to one record for one object. Duplicate discovery
-    // can otherwise create two GPU records for the same Cocos node and makes
-    // all-or-nothing standalone suppression impossible to prove.
+    // The owner-style traversal can discover the same glow/color sprite once
+    // via its dedicated pointer and once through the root child tree. Keep its
+    // first (owner-defined draw-order) occurrence instead of rejecting the
+    // entire GameObject or producing duplicate GPU geometry.
     std::unordered_set<cocos2d::CCSprite*> uniqueSprites;
     uniqueSprites.reserve(collected.size());
+    std::vector<CollectedSprite> uniqueCollected;
+    uniqueCollected.reserve(collected.size());
     for (const auto& unpacked : collected) {
-        if (!unpacked.sprite || !uniqueSprites.insert(unpacked.sprite).second) {
+        if (!unpacked.sprite)
+            return false;
+        if (!uniqueSprites.insert(unpacked.sprite).second) {
             if (stats)
                 ++stats->duplicateSprites;
-            return false;
+            continue;
         }
+        uniqueCollected.push_back(unpacked);
     }
 
-    for (const auto& unpacked : collected) {
+    for (const auto& unpacked : uniqueCollected) {
         func({
             unpacked.sprite,
             unpacked.parentObject,
@@ -122,63 +127,59 @@ bool ObjectUtils::unpackObjectIntoSprites(
 
 bool ObjectUtils::unpackSpriteRecursively(
     GameObject* object,
-    cocos2d::CCSprite* sprite,
+    cocos2d::CCNode* node,
     cocos2d::CCAffineTransform transform,
     ReceiveUnpackedSpriteFunc func,
     SpriteUnpackStats* stats,
     SpriteType type
 ) {
-    if (!object || !sprite || !func)
+    if (!object || !node || !func)
         return false;
 
-    transform = CCAffineTransformConcat(sprite->nodeToParentTransform(), transform);
+    transform = CCAffineTransformConcat(node->nodeToParentTransform(), transform);
 
+    auto sprite = typeinfo_cast<cocos2d::CCSprite*>(node);
     SpriteType spriteType = type;
-    if (sprite == object->m_colorSprite)
+    if (sprite && sprite == object->m_colorSprite)
         spriteType = SpriteType::DETAIL;
-    if (sprite == object->m_glowSprite)
+    if (sprite && sprite == object->m_glowSprite)
         spriteType = SpriteType::GLOW;
 
-    // Preserve the owner's black-sprite classification. The shader uses the
-    // BLACK sprite type to bypass HSV and pulse processing, not just the black
-    // color-channel lookup. Descendants inherit the base/detail tree type; a
-    // black parent must not accidentally turn every child into a black sprite.
-    bool isSpriteBlack = false;
-    if (sprite == object)
-        isSpriteBlack = object->m_isObjectBlack;
-    else if (spriteType != SpriteType::GLOW)
-        isSpriteBlack = object->m_isColorSpriteBlack;
-    if (sprite->getTag() == 997)
-        isSpriteBlack = false;
-    const SpriteType outputType = isSpriteBlack ? SpriteType::BLACK : spriteType;
-
-    // CCNode::getChildren() is heterogeneous. Never reinterpret every child as
-    // CCSprite: decoration-heavy objects can contain other CCNode subclasses.
-    std::vector<cocos2d::CCSprite*> spriteChildren;
-    if (auto children = sprite->getChildren()) {
-        spriteChildren.reserve(children->count());
-        for (auto childNode : CCArrayExt<cocos2d::CCNode*>(children)) {
-            auto childSprite = typeinfo_cast<cocos2d::CCSprite*>(childNode);
-            if (!childSprite) {
-                if (stats)
-                    ++stats->nonSpriteChildren;
-                return false;
-            }
-            spriteChildren.push_back(childSprite);
+    std::vector<cocos2d::CCNode*> nodeChildren;
+    if (auto children = node->getChildren()) {
+        nodeChildren.reserve(children->count());
+        for (auto child : CCArrayExt<cocos2d::CCNode*>(children)) {
+            if (!child)
+                continue;
+            if (!typeinfo_cast<cocos2d::CCSprite*>(child) && stats)
+                ++stats->nonSpriteChildren;
+            nodeChildren.push_back(child);
         }
     }
 
-    for (auto child : spriteChildren) {
+    for (auto child : nodeChildren) {
         if (child->getZOrder() < 0 &&
             !unpackSpriteRecursively(object, child, transform, func, stats, spriteType)) {
             return false;
         }
     }
 
-    if (!sprite->getDontDraw())
-        func({sprite, object, outputType, transform});
+    if (sprite) {
+        bool isSpriteBlack = false;
+        if (sprite == object)
+            isSpriteBlack = object->m_isObjectBlack;
+        else if (spriteType != SpriteType::GLOW)
+            isSpriteBlack = object->m_isColorSpriteBlack;
+        if (sprite->getTag() == 997)
+            isSpriteBlack = false;
 
-    for (auto child : spriteChildren) {
+        const SpriteType outputType =
+            isSpriteBlack ? SpriteType::BLACK : spriteType;
+        if (!sprite->getDontDraw())
+            func({sprite, object, outputType, transform});
+    }
+
+    for (auto child : nodeChildren) {
         if (child->getZOrder() >= 0 &&
             !unpackSpriteRecursively(object, child, transform, func, stats, spriteType)) {
             return false;
