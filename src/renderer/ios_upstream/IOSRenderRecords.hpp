@@ -13,7 +13,7 @@
 // texture tables and ordinary vertex attributes.
 namespace IOSUpstream {
 
-constexpr u32 COLOR_CHANNEL_COUNT = 1101;
+constexpr u32 IOS_COLOR_CHANNEL_COUNT = 1101;
 constexpr u32 GROUP_IDS_PER_OBJECT = 10;
 
 constexpr u32 OBJECT_FLAG_USES_AUDIO_SCALE   = 1u << 0;
@@ -136,11 +136,11 @@ struct SortedObjectBatch {
     std::vector<WorkGroup> workGroups;
 };
 
-using ColorChannelBlendStates = std::array<bool, COLOR_CHANNEL_COUNT>;
-using ColorChannelTable = std::array<cocos2d::ccColor4B, COLOR_CHANNEL_COUNT>;
+using ColorChannelBlendStates = std::array<bool, IOS_COLOR_CHANNEL_COUNT>;
+using ColorChannelTable = std::array<cocos2d::ccColor4B, IOS_COLOR_CHANNEL_COUNT>;
 
 inline u32 colorChannelForSortKey(u32 colorChannel) {
-    return colorChannel < COLOR_CHANNEL_COUNT ? colorChannel : COLOR_CHANNEL_COUNT - 1;
+    return colorChannel < IOS_COLOR_CHANNEL_COUNT ? colorChannel : IOS_COLOR_CHANNEL_COUNT - 1;
 }
 
 } // namespace IOSUpstream
