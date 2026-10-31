@@ -57,7 +57,7 @@ Port the owner's algorithms and semantics. Do not copy Windows-only API glue, Op
 
 Apple documents the iOS OpenGLES framework as implementing OpenGL ES 1.1, 2.0, and 3.0. The fork's own iOS shim explicitly includes `OpenGLES/ES2/gl.h` / `glext.h` and documents Geometry Dash as using a Cocos OpenGL ES 2 context. Treat ES2 as the actual target until the runtime capability report proves otherwise.
 
-The upstream renderer requires desktop OpenGL 4.3 features including compute shaders, shader-storage buffers, and indirect multi-draw. Those APIs are not available in the game's documented/current ES2 path. Preserve the owner's data preparation, work-group scheduling, ordering, and per-sprite calculations; translate the culling/transform/color evaluation into the ES2 GPU vertex path, using GPU-readable state tables only after confirming the context's vertex-texture support. CPU scheduling can issue the corresponding precomputed `glDrawElements` ranges. This is an API translation of the owner's renderer, not a continuation of the old hybrid assist design.
+The upstream renderer requires desktop OpenGL 4.3 features including compute shaders, shader-storage buffers, and indirect multi-draw. Those APIs are not available in the game's documented/current ES2 path. Preserve the owner's data preparation, work-group scheduling, ordering, and per-sprite calculations; translate the culling/transform/color evaluation into the ES2 GPU vertex path, using GPU-readable state tables only after confirming the context's vertex-texture support. CPU scheduling issues the corresponding precomputed `glDrawArrays` ranges over the expanded triangle-list vertex stream. This is an API translation of the owner's renderer, not a continuation of the old hybrid assist design.
 
 Before implementation, use the new runtime capability report to verify the live context version, GLSL ES version, texture limits, vertex texture units, extensions, and supported formats. Do not assume ES 3.0 merely because the framework can provide it.
 
@@ -115,11 +115,17 @@ Completed on `rework/ios-gpu-v2` at source level:
 - Closed the stock-render escape paths when the new GPU renderer owns the PlayLayer or initialization fails.
 
 ### Step 3 — GPU evaluation and drawing
-Next:
-- Audit and finish the ES2 texture-table serialization and owner-derived shader calculations.
-- Verify object/group/sprite indices, blend variants, Z-layer ranges, texture units, and all uniform bindings.
-- Complete the GPU-only draw path without any Cocos fallback.
+In progress on `rework/ios-gpu-v2`:
+- Added texture-backed object/group/color/HSV/pulse/sprite-appearance tables for ES2.
+- Ported the owner culling/evaluation calculations into a vertex shader and sprite-sheet sampling into the fragment shader.
+- Added ordered VBO uploads, one GPU draw node per active owner layer range, upstream blend functions, and Cocos GL-state restoration.
+- Reconciled shader byte packing, direct-tint handling, pulse sentinels/loop limits, Z-layer keys, empty scenes, and renderer failure propagation against upstream source.
 
-The branch already contains initial `IOSGPURenderer`, `IOSGPUStateTables`, and ES2 shader files, but those are draft work and are not considered complete or tested yet.
+Still required before step 3 can be called complete:
+- Build the shader and renderer with the iOS toolchain and fix compiler/linker errors.
+- Verify texture-table contents, shader attribute/uniform bindings, and actual draw submissions on device.
+- Compare visual output for color, HSV, pulses, glow, invisible blocks, rotation, audio scale, culling, and sprite-sheet ordering.
+
+This source work is not yet compiled or device-tested. No Cocos fallback has been added.
 
 Do not start from or extend the old `AssistShadowBatch`, `ResolvedStateLayer`, or atlas-interleaving renderer.
