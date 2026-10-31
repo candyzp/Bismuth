@@ -11,6 +11,7 @@
 #include "ios_upstream/IOSSceneData.hpp"
 #include <decomp/GJBaseGameLayer.hpp>
 #include <Geode/binding/CheckpointObject.hpp>
+#include <optional>
 #endif
 
 using namespace geode::prelude;
@@ -282,7 +283,7 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
                     const CCPoint extraMove = hasStaticGroup
                         ? ccp(moveIt->second->m_unk090, moveIt->second->m_unk098)
                         : ccp(moveIt->second->m_unk038, moveIt->second->m_unk040);
-                    if (extraMove != CCPointZero) {
+                    if (extraMove.x != 0.f || extraMove.y != 0.f) {
                         scene->getGroupManager().moveGroup(
                             static_cast<IOSUpstream::GroupID>(targetId),
                             extraMove.x,
@@ -445,7 +446,6 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
     }
 };
 
-#ifdef GEODE_IS_IOS
 #ifdef GEODE_IS_IOS
 #include <Geode/modify/CheckpointObject.hpp>
 class $modify(RendererCheckpointObject, CheckpointObject) {
