@@ -202,9 +202,6 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
                     "scene update or GPU state upload failed"
                 );
                 return;
-            } else if (!scene->update(dt)) {
-                log::error("Bismuth iOS GPU-only beta FAILED: scene update failed without an active renderer");
-                return;
             }
         }
 #endif
