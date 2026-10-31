@@ -5,6 +5,7 @@
 #include "IOSObjectBatch.hpp"
 #include "IOSGPUStateTables.hpp"
 #include <array>
+#include <string>
 
 namespace IOSUpstream {
 
@@ -33,6 +34,7 @@ public:
     GPUStateTables& getGPUStateTables() { return gpuStateTables; }
     const GPUStateTables& getGPUStateTables() const { return gpuStateTables; }
     bool isReady() const { return ready; }
+    const std::string& getFailureReason() const { return failureReason; }
 
 private:
     bool buildSortedObjectList(std::vector<GameObject*>& objects) const;
@@ -50,6 +52,7 @@ private:
     ColorChannelTable colorChannels {};
     ColorChannelBlendStates blendStates {};
     float gameTimer = 0.f;
+    std::string failureReason;
     bool ready = false;
 };
 
