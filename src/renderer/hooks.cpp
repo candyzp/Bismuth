@@ -197,14 +197,11 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
             gpuRenderer->isReadyForDrawing() &&
             gpuRenderer->getPlayLayer() == scene->getPlayLayer() &&
             static_cast<GJBaseGameLayer*>(scene->getPlayLayer()) == this) {
-            if (auto gpuRenderer = IOSUpstream::IOSGPURenderer::getCurrent();
-                gpuRenderer && gpuRenderer->getPlayLayer() == scene->getPlayLayer()) {
-                if (!scene->update(dt)) {
-                    gpuRenderer->reportFailure(
-                        "scene update or GPU state upload failed"
-                    );
-                    return;
-                }
+            if (!scene->update(dt)) {
+                gpuRenderer->reportFailure(
+                    "scene update or GPU state upload failed"
+                );
+                return;
             } else if (!scene->update(dt)) {
                 log::error("Bismuth iOS GPU-only beta FAILED: scene update failed without an active renderer");
                 return;
@@ -425,8 +422,11 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
     void toggleGroup(int id, bool activate) {
         GJBaseGameLayer::toggleGroup(id, activate);
 #ifdef GEODE_IS_IOS
-        if (auto scene = IOSUpstream::SceneData::getCurrent();
-            scene && scene->isReady() &&
+        auto scene = IOSUpstream::SceneData::getCurrent();
+        auto gpuRenderer = IOSUpstream::IOSGPURenderer::getCurrent();
+        if (scene && scene->isReady() && gpuRenderer &&
+            gpuRenderer->isReadyForDrawing() &&
+            gpuRenderer->getPlayLayer() == scene->getPlayLayer() &&
             static_cast<GJBaseGameLayer*>(scene->getPlayLayer()) == this) {
             scene->getGroupManager().toggleGroup(
                 static_cast<IOSUpstream::GroupID>(id), activate
