@@ -106,6 +106,10 @@ private:
 
     SpriteVertexTransforms currentTransforms;
     glm::vec2 currentObjectStartPosition {};
+    u32 currentObjectIndex = 0;
+    u32 currentGroupCombinationIndex = 0;
+    u32 currentSpriteType = 0;
+    u32 currentColorChannelFlags = 0;
     u32 currentSpriteIndex = 0;
 
     ColorChannelBlendStates currentBlendStates {};
