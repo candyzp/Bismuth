@@ -503,11 +503,17 @@ class $modify(RendererOwnedCCSprite, cocos2d::CCSprite) {
 
 class $modify(RendererInterleavedSpriteBatchNode, cocos2d::CCSpriteBatchNode) {
     void draw() {
-        // Once the new upstream-style GPU renderer owns this PlayLayer, no
-        // legacy Cocos batch may execute a stock draw, even if a batch node is
-        // accidentally made visible by another mod or a lifecycle transition.
-        if (IOSUpstream::IOSGPURenderer::getCurrent())
-            return;
+        // Block stock draws only for the PlayLayer owned by the active GPU
+        // renderer. A previous PlayLayer may still be alive during a scene
+        // transition; it must not suppress the incoming scene's setup draws.
+        if (auto gpuRenderer = IOSUpstream::IOSGPURenderer::getCurrent()) {
+            cocos2d::CCNode* ancestor = this;
+            auto owner = static_cast<cocos2d::CCNode*>(gpuRenderer->getPlayLayer());
+            while (ancestor && ancestor != owner)
+                ancestor = ancestor->getParent();
+            if (ancestor == owner)
+                return;
+        }
 
         auto renderer = Renderer::get();
         if (!renderer || !renderer->isEnabled()) {
