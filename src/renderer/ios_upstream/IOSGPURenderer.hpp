@@ -6,6 +6,7 @@
 #include "IOSGPUCapabilities.hpp"
 #include <Geode/cocos/base_nodes/CCNode.h>
 #include <set>
+#include <utility>
 #include <string>
 #include <vector>
 
@@ -58,6 +59,7 @@ private:
     u32 vertexBuffer = 0;
     u64 uploadedOrderRevision = 0;
     std::vector<cocos2d::CCNode*> layerNodes;
+    std::vector<std::pair<cocos2d::CCNode*, bool>> stockBatchVisibility;
     std::set<LayerKey> layerNodeKeys;
 
     IOSGPU::Capabilities capabilities;
