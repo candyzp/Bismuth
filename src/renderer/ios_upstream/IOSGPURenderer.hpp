@@ -23,6 +23,7 @@ public:
 
     bool initForPlayLayer(PlayLayer* layer);
     void reset();
+    void reportFailure(const std::string& reason) { fail(reason); }
     void enforceGPUOwnership() { hideStockBatches(); }
     bool syncLayerNodes();
     void drawLayer(const LayerKey& key);
