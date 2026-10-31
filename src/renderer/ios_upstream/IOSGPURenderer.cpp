@@ -275,7 +275,8 @@ void IOSGPURenderer::updateDebugOverlay() {
             " | GPU layers " + std::to_string(layerNodes.size()) + "/" +
             std::to_string(activeLayerCount) +
             " | Missing " + std::to_string(missingLayerNodeCount) +
-            " | Draws/frame " + std::to_string(lastFrameDraws);
+            " | Visits/frame " + std::to_string(lastFrameLayerVisits) +
+            " | GPU draws/frame " + std::to_string(lastFrameDraws);
         if (batch.getSpriteCount() == 0 ||
             batch.getOrderedVertices().empty() ||
             (activeLayerCount != 0 && lastFrameDraws == 0)) {
@@ -293,10 +294,12 @@ void IOSGPURenderer::updateDebugOverlay() {
 }
 
 void IOSGPURenderer::beginFrame() {
+    layerVisitsThisFrame = 0;
     drawsThisFrame = 0;
 }
 
 void IOSGPURenderer::finishFrame() {
+    lastFrameLayerVisits = layerVisitsThisFrame;
     lastFrameDraws = drawsThisFrame;
     updateDebugOverlay();
 }
@@ -614,6 +617,7 @@ void IOSGPURenderer::reset() {
 }
 
 void IOSGPURenderer::drawLayer(const LayerKey& key) {
+    ++layerVisitsThisFrame;
     if (failed || !sceneData.isReady() || !shader || !vertexBuffer)
         return;
 
