@@ -118,6 +118,7 @@ void ObjectBatch::clear() {
     currentSpriteIndex = 0;
     hasCurrentBlendStates = false;
     currentBlendStates.fill(false);
+    orderRevision = 0;
     built = false;
 }
 
@@ -500,7 +501,10 @@ bool ObjectBatch::applySortedBatch(const SortedObjectBatch& newSortedBatch) {
             return false;
     }
 
-    return orderedVertices.size() == sourceVertices.size();
+    if (orderedVertices.size() != sourceVertices.size())
+        return false;
+    ++orderRevision;
+    return true;
 }
 
 bool ObjectBatch::finalizeSortedGeometry(const ColorChannelBlendStates& blendStates) {
