@@ -186,6 +186,14 @@ IOSGPURenderer* IOSGPURenderer::getCurrent() {
 }
 
 IOSGPURenderer* IOSGPURenderer::create(PlayLayer* playLayer) {
+    if (currentRenderer && currentRenderer->getPlayLayer() != playLayer) {
+        auto previous = currentRenderer;
+        if (previous->getParent())
+            previous->removeFromParentAndCleanup(true);
+    }
+    if (currentRenderer && currentRenderer->getPlayLayer() == playLayer)
+        return currentRenderer;
+
     auto ret = new IOSGPURenderer();
     if (!ret->cocos2d::CCNode::init()) {
         delete ret;
@@ -346,13 +354,13 @@ bool IOSGPURenderer::createLayerNodes() {
         );
 
         if (!stockNode || layer->m_batchNodes->indexOfObject(stockNode) == UINT_MAX) {
-            log::warn(
-                "Bismuth iOS GPU: no stock layer container for Z={}, sheet={}, blend={}",
+            fail(fmt::format(
+                "no stock Z-order container for layer key Z={}, sheet={}, blend={}",
                 static_cast<i32>(key.zlayer),
                 static_cast<i32>(key.spriteSheet),
                 key.blending
-            );
-            continue;
+            ));
+            return false;
         }
 
         auto node = new IOSGPULayerNode(this, key);
@@ -391,8 +399,10 @@ bool IOSGPURenderer::initForPlayLayer(PlayLayer* playLayer) {
     if (!queryAndValidateCapabilities())
         return false;
 
-    if (!sceneData.init(layer))
-        return fail("owner-style CPU scene data or GPU state tables failed to initialize"), false;
+    if (!sceneData.init(layer)) {
+        fail("owner-style CPU scene data or GPU state tables failed to initialize");
+        return false;
+    }
 
     if (!createShaderProgram())
         return false;
@@ -475,6 +485,9 @@ void IOSGPURenderer::drawLayer(const LayerKey& key) {
         GROUP_DATA_TEXTURE_UNIT,
         BYTE_DATA_TEXTURE_UNIT
     );
+    shader->setInt("u_objectDataTexture", OBJECT_DATA_TEXTURE_UNIT);
+    shader->setInt("u_groupDataTexture", GROUP_DATA_TEXTURE_UNIT);
+    shader->setInt("u_byteDataTexture", BYTE_DATA_TEXTURE_UNIT);
     shader->setTexture(
         "u_spriteSheetTexture",
         SPRITE_SHEET_TEXTURE_UNIT,
@@ -551,7 +564,6 @@ void IOSGPURenderer::drawLayer(const LayerKey& key) {
         return;
     }
 
-    reportedDrawFailure = false;
 }
 
 } // namespace IOSUpstream
