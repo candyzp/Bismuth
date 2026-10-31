@@ -249,8 +249,11 @@ void IOSGPURenderer::updateDebugOverlay() {
 
     // PlayLayer::resetLevel may rebuild its child list. Keep the status label
     // attached to the active PlayLayer instead of silently losing the debugger.
-    if (debugOverlay->getParent() != layer)
+    if (debugOverlay->getParent() != layer) {
+        if (debugOverlay->getParent())
+            debugOverlay->removeFromParentAndCleanup(false);
         layer->addChild(debugOverlay, 1000000);
+    }
 
     const auto winSize = CCDirector::get()->getWinSize();
     debugOverlay->setPosition(CCPoint(8.f, winSize.height - 8.f));
