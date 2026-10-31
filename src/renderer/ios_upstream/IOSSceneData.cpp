@@ -89,17 +89,22 @@ void SceneData::fetchBlendingStates(ColorChannelBlendStates& states) const {
 
 bool SceneData::init(PlayLayer* playLayer) {
     ready = false;
+    failureReason.clear();
     layer = playLayer;
     spriteSheets.fill(nullptr);
-    if (!layer || !layer->m_objects || !layer->m_effectManager)
+    if (!layer || !layer->m_objects || !layer->m_effectManager) {
+        failureReason = "PlayLayer, level objects, or effect manager is missing";
         return false;
+    }
 
     auto textureCache = cocos2d::CCTextureCache::get();
-    if (!textureCache)
+    if (!textureCache) {
+        failureReason = "Cocos texture cache is unavailable";
         return false;
+    }
 
-    // Keep the exact texture set currently loaded by the owner's Renderer.
-    // TEXT/SPECIAL remain intentionally unassigned in upstream (TODO there).
+    // Match the exact texture set currently used by the owner's Renderer.
+    // TEXT/SPECIAL remain unassigned in upstream (TODO there).
     spriteSheets[static_cast<usize>(SpriteSheet::GAME_1)] =
         textureCache->addImage("GJ_GameSheet.png", false);
     spriteSheets[static_cast<usize>(SpriteSheet::GAME_2)] =
@@ -116,13 +121,15 @@ bool SceneData::init(PlayLayer* playLayer) {
     SpriteMeshDictionary::loadFromFile("spriteMeshes.json");
 
     if (!groupManager.initWithObjects(layer, layer->m_objects)) {
-        log::error("Bismuth iOS upstream scene data: GroupManager initialization failed");
+        failureReason = "GroupManager could not build the level's group-state tables";
+        log::error("Bismuth iOS upstream scene data: {}", failureReason);
         return false;
     }
 
     std::vector<GameObject*> objects;
     if (!buildSortedObjectList(objects)) {
-        log::error("Bismuth iOS upstream scene data: object sorting failed");
+        failureReason = "ObjectSorter could not build the level's sorted object list";
+        log::error("Bismuth iOS upstream scene data: {}", failureReason);
         return false;
     }
 
@@ -136,8 +143,11 @@ bool SceneData::init(PlayLayer* playLayer) {
         [this](SpriteSheet sheet) { return getSpriteSheetTexture(sheet); }
     );
     if (!batchOK) {
+        failureReason =
+            "ObjectBatch build failed; check the preceding object ID, sprite sheet, or mesh diagnostic";
         log::error(
-            "Bismuth iOS upstream scene data: ObjectBatch build failed; {} objects were sorted",
+            "Bismuth iOS upstream scene data: {}; {} objects were sorted",
+            failureReason,
             objects.size()
         );
         return false;
@@ -158,7 +168,8 @@ bool SceneData::init(PlayLayer* playLayer) {
 
     ready = true;
     if (!gpuStateTables.initialize(*this)) {
-        log::error("Bismuth iOS upstream scene data: GPU state-table initialization failed");
+        failureReason = "GPU state-table initialization or texture upload failed";
+        log::error("Bismuth iOS upstream scene data: {}", failureReason);
         ready = false;
         return false;
     }
