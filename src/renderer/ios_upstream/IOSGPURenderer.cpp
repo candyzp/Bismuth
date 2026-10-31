@@ -137,16 +137,21 @@ private:
 
 class IOSGPULayerNode final : public cocos2d::CCNode {
 public:
-    IOSGPULayerNode(IOSGPURenderer* renderer, LayerKey key)
-      : renderer(renderer), key(key) {}
+    IOSGPULayerNode(PlayLayer* owner, LayerKey key)
+      : owner(owner), key(key) {}
 
     void draw() override {
-        if (renderer)
+        // Layer nodes are siblings of the renderer owner so their Z order
+        // matches the stock batches. Resolve the live owner at draw time rather
+        // than retaining a raw pointer to a renderer that may be destroyed
+        // before the PlayLayer's sibling nodes are released.
+        auto renderer = IOSGPURenderer::getCurrent();
+        if (renderer && renderer->getPlayLayer() == owner)
             renderer->drawLayer(key);
     }
 
 private:
-    IOSGPURenderer* renderer = nullptr;
+    PlayLayer* owner = nullptr;
     LayerKey key {};
 };
 
@@ -163,10 +168,9 @@ static bool isValidDrawRange(const LayerDrawRange& range, usize vertexCount) {
 } // namespace
 
 IOSGPURenderer::~IOSGPURenderer() {
-    for (auto node : layerNodes) {
-        if (node && node->getParent())
-            node->removeFromParentAndCleanup(true);
-    }
+    // Layer nodes are siblings under PlayLayer::m_objectLayer. They resolve
+    // their owner through getCurrent(), so they become inert as soon as this
+    // renderer is destroyed and are released with their owning PlayLayer.
     layerNodes.clear();
 
     if (vertexBuffer) {
@@ -363,7 +367,7 @@ bool IOSGPURenderer::createLayerNodes() {
             return false;
         }
 
-        auto node = new IOSGPULayerNode(this, key);
+        auto node = new IOSGPULayerNode(layer, key);
         if (!node->init()) {
             delete node;
             fail("failed to initialize a GPU layer node");
