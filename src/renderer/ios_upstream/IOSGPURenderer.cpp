@@ -321,7 +321,7 @@ bool IOSGPURenderer::createVertexBuffer() {
 }
 
 bool IOSGPURenderer::uploadOrderedVertices() {
-    if (!vertexBuffer || !sceneData.isReady())
+    if (!sceneData.isReady())
         return false;
 
     const auto& vertices = sceneData.getObjectBatch().getOrderedVertices();
@@ -329,6 +329,8 @@ bool IOSGPURenderer::uploadOrderedVertices() {
         uploadedOrderRevision = sceneData.getObjectBatch().getOrderRevision();
         return true;
     }
+    if (!vertexBuffer)
+        return false;
 
     if (vertices.size() >
         static_cast<usize>(std::numeric_limits<GLsizei>::max())) {
