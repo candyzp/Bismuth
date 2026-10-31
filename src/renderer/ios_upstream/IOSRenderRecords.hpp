@@ -16,6 +16,8 @@ namespace IOSUpstream {
 
 constexpr u32 IOS_COLOR_CHANNEL_COUNT = 1101;
 constexpr u32 IOS_GROUP_IDS_PER_OBJECT = 10;
+constexpr u32 IOS_COLOR_CHANNEL_INDEX_MASK = 0x0fffu;
+constexpr u32 IOS_COLOR_CHANNEL_DIRECT_FLAG = 0x2000u;
 
 constexpr u32 IOS_OBJECT_FLAG_USES_AUDIO_SCALE   = 1u << 0;
 constexpr u32 IOS_OBJECT_FLAG_CUSTOM_AUDIO_SCALE = 1u << 1;
@@ -44,10 +46,20 @@ struct ObjectVertex {
 };
 
 struct InputSprite {
+    // Owner fields: preserve their meanings and ordering.
     u32 objectIndex = 0;
     u32 spriteType = 0;
     u32 indexStart = 0;
     u32 indexCount = 0;
+
+    // iOS fork extension: ObjectUtils encodes direct-tint metadata in the high
+    // bits of the color channel. Keep it intact for the vertex/shader stage.
+    u32 colorChannelFlags = 0;
+};
+
+struct SpriteAppearance {
+    u32 packedDisplayedColor = 0xffffffffu;
+    u32 flags = 0;
 };
 
 struct PreCulledSprite {
@@ -146,8 +158,9 @@ struct RGBA8 {
 };
 using ColorChannelTable = std::array<RGBA8, IOS_COLOR_CHANNEL_COUNT>;
 
-inline u32 colorChannelForSortKey(u32 colorChannel) {
-    return colorChannel < IOS_COLOR_CHANNEL_COUNT ? colorChannel : IOS_COLOR_CHANNEL_COUNT - 1;
+inline u32 colorChannelForSortKey(u32 colorChannelFlags) {
+    const u32 channel = colorChannelFlags & IOS_COLOR_CHANNEL_INDEX_MASK;
+    return channel < IOS_COLOR_CHANNEL_COUNT ? channel : IOS_COLOR_CHANNEL_COUNT - 1;
 }
 
 } // namespace IOSUpstream
