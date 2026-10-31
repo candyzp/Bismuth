@@ -67,7 +67,9 @@ bool SceneData::buildSortedObjectList(std::vector<GameObject*>& objects) const {
 }
 
 void SceneData::fetchBlendingStates(ColorChannelBlendStates& states) const {
-    states.fill(false);
+    // blendStates is zero-initialized when SceneData is constructed. Match
+    // upstream fetchBlendingStates(): update present action entries without
+    // clearing channels whose action pointer is temporarily null.
     if (!layer || !layer->m_effectManager)
         return;
 
@@ -166,8 +168,9 @@ bool SceneData::init(PlayLayer* playLayer) {
 }
 
 void SceneData::updateColorChannelTable() {
-    colorChannels.fill(RGBA8{});
-
+    // ColorChannelTable is initialized to white once with SceneData. Preserve
+    // previous resolved channel values when no current action sprite is
+    // present, matching the owner's persistent GPU color-channel buffer.
     if (!layer || !layer->m_effectManager)
         return;
 
