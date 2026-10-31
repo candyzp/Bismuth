@@ -7,7 +7,7 @@ Repositories compared:
 - iOS fork: https://github.com/candyzp/Bismuth, master at `d31115ee3851655c6671233bc13b1a42e0d7e157`
 - Port branch: `rework/ios-gpu-v2`
 
-This is a source audit and CPU-side port record, not a successful build report. The new owner-style CPU modules live under `src/renderer/ios_upstream/`; they are separate from the old renderer until step 3 connects them to the new GPU renderer.
+This is a source audit and step-2 port record, not a successful build report. The owner-style CPU modules live under `src/renderer/ios_upstream/`. They are now connected to the new GPU-renderer owner, but the GPU shader/table/draw path remains draft work for step 3 and has not been compiled or device-tested.
 
 ## Findings
 
@@ -27,7 +27,7 @@ This is a source audit and CPU-side port record, not a successful build report. 
 | `resources/shaders/headers/*` | CPU record semantics ported | Flags, group state, pulse entries, HSV encoding, game state, color channels, and input-sprite records are represented. The GLSL ES lookup helpers and texture layouts remain step 3. |
 | `objectCulling.comp` | Not yet ported | Step 3 translates the per-sprite visibility, transform, audio-scale, group, color, HSV, and pulse calculations into the iOS GPU vertex-processing path. |
 | `objectDrawing.vert/.frag` | Not yet ported | Step 3 ports final vertex transform and sprite-sheet sampling to GLSL ES. |
-| `Renderer.cpp` | CPU initialization flow ported to `IOSSceneData` | Step 3 adds the iOS renderer owner, state-table uploads, layer draw nodes, and GPU submission. |
+| `Renderer.cpp` | CPU initialization flow ported to `IOSSceneData`; a separate iOS GPU-renderer owner is present | Step 3 audits and completes the ES2 state-table/shader/draw path and checks it against current upstream behavior. |
 | `DifferenceMode`, `OverdrawView` | Not ported | Optional diagnostics; keep BProfiler and the fork's existing debugger. Not required for the core renderer. |
 | `GJEffectManager` decomp helpers | Not required by current CPU port | The iOS GroupManager reads the same live pulse/color action data directly. Revisit only if shader parity reveals a binding gap. |
 | `GPUTimer` | Capability reporting added | The live context report checks timer-query support; step 4 can add an extension-backed timer without importing desktop-only query assumptions. |
@@ -54,10 +54,11 @@ This is a source audit and CPU-side port record, not a successful build report. 
 - The iOS direct-tint metadata for legacy/default channel 0 is kept in the high color-channel bits and carried into the new per-sprite record. The scheduler strips those flags only when indexing the blend-state table.
 
 **Renderer / draw nodes**
-- `IOSSceneData` now ports the owner's CPU initialization/data-refresh sequence: sprite-sheet/mesh setup, full-level GroupManager initialization, ObjectSorter traversal, ObjectBatch build, color-channel table refresh using `m_copyColor`, game/camera/audio state, per-frame blend changes, and draw-time MVP/camera refresh.
-- Runtime group-state hooks are installed but remain dormant until the new SceneData instance is created by the step-3 renderer owner.
-- The fork's `RendererIOS.cpp`, `ResolvedStateLayer`, `AssistShadowBatch`, `StandaloneAssistBatch`, and `AtlasInterleave` are not dependencies of the new path; they remain historical reference only.
-- The new iOS renderer owner, GPU state uploads, ordered layer draw nodes and actual GPU draw submission remain step 3.
+- `IOSSceneData` ports the owner's CPU initialization/data-refresh sequence: sprite-sheet/mesh setup, full-level GroupManager initialization, ObjectSorter traversal, ObjectBatch build, color-channel table refresh using `m_copyColor`, game/camera/audio state, per-frame blend changes, and draw-time MVP/camera refresh.
+- Gameplay hooks mirror move, optimized rotation, follow, toggle and checkpoint state into the active SceneData; Geometry Dash continues to update non-decoration object positions, sections, collision and oriented boxes.
+- The CPU scene-data module is now owned by the iOS GPU renderer. The current `IOSGPURenderer`, `IOSGPUStateTables`, and ES2 shaders are step-3 work-in-progress; their presence does not mean the GPU path is validated.
+- The legacy `RendererIOS.cpp`, `ResolvedStateLayer`, `AssistShadowBatch`, `StandaloneAssistBatch`, and `AtlasInterleave` are not dependencies of the new renderer path. When the new GPU renderer exists, the iOS batch hook explicitly blocks legacy Cocos batch draws. Initialization and draw failures keep stock batches hidden; they do not route to stock rendering.
+
 
 **Shader and buffer APIs**
 - The fork's `ShaderIOS.cpp` compiles simple vertex/fragment shaders only.
@@ -65,14 +66,16 @@ This is a source audit and CPU-side port record, not a successful build report. 
 - The fork's `Buffer.hpp` has iOS no-op implementations for uniform/storage-buffer binding. Its `BufferIOS.cpp` is not a working SSBO backend.
 - Desktop `src/gl.*`, `src/cl.*`, WGL loading, OpenCL/GL interop and GPU-core-count discovery are deliberately not ported.
 
-### Game lifecycle integration missing from the iOS hooks
+### Game lifecycle integration now present in the iOS hooks
 
-The iOS hooks now mirror the owner's state split when an `IOSSceneData` instance is active:
+The iOS hooks mirror the owner's state split when an `IOSSceneData` instance is active:
 - move deltas are accumulated into GroupManager while vanilla non-decoration object data is advanced;
 - optimized rotation uses the owner's `vanillaRotateGroups` set, `claimRotationAction` / `claimMoveAction`, object-section updates, and oriented-box maintenance;
+- move processing still advances both remaining static and optimized non-decoration objects in Geometry Dash after GPU decorations have been removed from those arrays;
 - follow deltas and group toggles are mirrored into GroupManager;
 - checkpoint group states are stored, restored and removed with checkpoint lifetime;
 - decorations are removed from vanilla move groups only after the new SceneData renderer is active.
+- if GPU-renderer construction fails before an owner node exists, the PlayLayer hook explicitly hides stock batch nodes; the active GPU renderer also blocks legacy Cocos batch draws.
 
 The hooks continue to call Geometry Dash's gameplay/physics routines for the non-decoration objects. SceneData update and draw-time uniform refresh are separate so the renderer can capture the correct camera/MVP state immediately before GPU submission.
 
@@ -133,8 +136,13 @@ If vertex texture fetch or the required data formats are unavailable in the live
 - [x] Port ObjectBatch object/sprite metadata, mesh construction, texture-rect transforms/flips, source-order buffers, scheduler remapping and lifetime management.
 - [x] Port SceneData initialization plus live color-channel/game/camera/audio state capture.
 - [x] Port move/optimized-rotation/follow/toggle/checkpoint gameplay-state hooks.
-- [ ] Step 3: port GPU texture-table serialization, ES shader equivalents, and ordered layer draw submission.
+- [x] Match upstream's renderer creation point inside `setupHasCompleted()` / `resetLevel()`.
+- [x] Close the stock-render escape paths when GPU-renderer initialization or owner-node creation fails.
+- [x] Re-audit blend-flag masking, normalized Z-layer keys, dynamic blend variants, sprite-remap bounds, and optimized-group movement.
+- [ ] Step 3: finish/audit GPU texture-table serialization, ES shader parity, and ordered layer draw submission. Draft code exists, but is not verified.
 - [ ] Step 4: verify visual parity, effect coverage, lifecycle stability, and performance instrumentation on device.
 - [ ] Step 5: run the iOS build and address compile/link failures.
 
-**Build status:** No build has been run yet. The step-2 source port has not been compiled or device-tested; build verification is deliberately reserved for step 5.
+**Step 2 status:** Source comparison, the iOS GPU API audit, and the owner-style CPU preparation/lifecycle port are complete on `rework/ios-gpu-v2`. The separate GPU renderer and shaders already present in the branch are the next step, not a completed or tested renderer.
+
+**Build status:** No build has been run yet. Build verification remains reserved for step 5.
