@@ -3,6 +3,7 @@
 #include "IOSWorkGroupScheduler.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <numeric>
 
@@ -30,12 +31,8 @@ void WorkGroupScheduler::addSprite(
     entry.zOrder = object->getObjectZOrder();
     entry.zLayer = object->getObjectZLayer();
     entry.spriteSheet = ObjectUtils::getSpritesheetOfObject(object, type);
-    entry.colorChannelId = static_cast<u16>(
-        std::min<u32>(
-            ObjectUtils::getSpriteColorChannel(type, object, sprite),
-            COLOR_CHANNEL_COUNT - 1
-        )
-    );
+    const u32 colorChannelFlags = ObjectUtils::getSpriteColorChannel(type, object, sprite);
+    entry.colorChannelId = static_cast<u16>(std::min<u32>(colorChannelFlags, 0xffffu));
     entry.inputSpriteIndex = inputSpriteIndex;
     entry.triangleCount = triangleCount;
     entry.groupCombinationIndex = groupCombinationIndex;
