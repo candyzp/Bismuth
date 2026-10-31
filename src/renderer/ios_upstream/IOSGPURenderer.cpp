@@ -385,9 +385,9 @@ bool IOSGPURenderer::syncLayerNodes() {
         return false;
     }
 
-    // The owner tracks both potential blend variants, but only currently
-    // scheduled ranges need nodes. A color action may activate the other
-    // variant later, so synchronize this set again after each state update.
+    // The owner resolves blend variants during initialization. Create nodes
+    // for the active scheduler ranges; the layer topology remains fixed for
+    // this level, as it does in the current upstream renderer.
     const auto& ranges = sceneData.getObjectBatch().getSortedBatch().layerRanges;
     for (const auto& [key, range] : ranges) {
         if (range.vertexCount == 0 || layerNodeKeys.contains(key))
