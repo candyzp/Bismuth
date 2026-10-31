@@ -32,7 +32,7 @@ The upstream desktop compute/SSBO/indirect-draw path therefore needs a real iOS 
 - Build GPU vertex/index data in the same upstream layer / sprite-sheet / blend order.
 - Carry per-sprite/object/group indices in ES2-compatible vertex attributes and GPU-readable state tables. Confirm vertex texture sampling limits before choosing the state-table representation.
 - Translate the calculation body of `objectCulling.comp` into the GPU vertex-processing path. A sprite that is culled is moved outside the clip volume; it is not drawn by Cocos.
-- Replace indirect draw commands with the corresponding CPU-scheduled `glDrawElements` ranges because ES2 does not expose the upstream indirect draw mechanism.
+- Replace indirect draw commands with CPU-scheduled `glDrawArrays` ranges over the already-triangulated ordered vertex stream because ES2 does not expose the upstream indirect draw mechanism.
 - Keep the pixel shader responsible for sampling the selected sprite sheet and applying the GPU-resolved color.
 
 These are API substitutions only. They must not become a return to the old assist/ownership design. The new beta is GPU-only: if its GPU render path fails, report a beta failure; do not draw the affected content through stock Cocos.
