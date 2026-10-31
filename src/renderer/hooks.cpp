@@ -56,8 +56,8 @@ class $modify(RendererPlayLayer, PlayLayer) {
             auto batchLayer = this->m_objectLayer;
             if (!batchLayer) {
                 log::error("Bismuth GPU-only beta FAILED: object layer not found");
-                hideStockPlayLayerBatches(this);
                 PlayLayer::resetLevel();
+                hideStockPlayLayerBatches(this);
                 return;
             }
 
@@ -68,20 +68,25 @@ class $modify(RendererPlayLayer, PlayLayer) {
                 batchLayer->addChild(gpuRenderer, -100000);
             } else {
                 // Even CCNode allocation/init failure is a hard beta failure.
-                // Keep Cocos batches hidden rather than silently rendering stock.
                 log::error("Bismuth GPU-only beta FAILED: renderer owner creation failed");
-                hideStockPlayLayerBatches(this);
             }
 
             PlayLayer::resetLevel();
+            if (gpuRenderer)
+                gpuRenderer->enforceGPUOwnership();
+            else
+                hideStockPlayLayerBatches(this);
             return;
         }
 
-        if (auto gpuRenderer = IOSUpstream::IOSGPURenderer::getCurrent();
-            gpuRenderer && gpuRenderer->getPlayLayer() == this) {
+        auto gpuRenderer = IOSUpstream::IOSGPURenderer::getCurrent();
+        if (gpuRenderer && gpuRenderer->getPlayLayer() == this)
             gpuRenderer->reset();
-        }
+
         PlayLayer::resetLevel();
+
+        if (gpuRenderer && gpuRenderer->getPlayLayer() == this)
+            gpuRenderer->enforceGPUOwnership();
 #else
         if (newPlayLayer && Renderer::get() == nullptr) {
             auto batchLayer = this->m_objectLayer;
