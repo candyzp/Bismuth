@@ -427,27 +427,21 @@ bool ObjectBatch::writeGameObject(GameObject* object, GroupManager& groupManager
 }
 
 bool ObjectBatch::applySortedBatch(const SortedObjectBatch& newSortedBatch) {
-    // Keep the owner's original sprite/vertex arrays in their source order.
-    // The scheduler's inputSpriteIndices is the draw-order remap consumed by
-    // the GPU culling/evaluation pass. Reordering these arrays as well would
-    // make those remap indices address the wrong sprites.
-    sortedBatch = newSortedBatch;
-    // Sprite metadata remains in source order because the vertex attributes
-    // retain source sprite indices after the geometry is reordered.
-    if (sortedBatch.inputSpriteIndices.size() != sourceInputSprites.size() ||
-        sortedBatch.preCulledSprites.size() != sourceInputSprites.size())
+    // Keep sprite/object/appearance records in their source order. Vertex
+    // attributes carry those source indices, so only the geometry stream is
+    // materialized in the scheduler's final layer order.
+    if (newSortedBatch.inputSpriteIndices.size() != sourceInputSprites.size() ||
+        newSortedBatch.preCulledSprites.size() != sourceInputSprites.size())
         return false;
 
-    // ES2 has no compute-generated indirect index buffer. Materialize only the
-    // scheduler's draw-order remap as a sequential vertex stream; all per-sprite
-    // transforms, culling and final colors remain GPU shader work.
-    orderedVertices.clear();
-    orderedVertices.reserve(sourceVertices.size());
-    for (u32 sourceIndex : sortedBatch.inputSpriteIndices) {
-        // Validate before indexing. A malformed scheduler remap must fail the
-        // GPU-only beta cleanly rather than read outside the CPU vertex array.
-        if (sourceIndex >= sourceInputSprites.size())
+    std::vector<u8> seen(sourceInputSprites.size(), 0);
+    std::vector<ObjectVertex> newOrderedVertices;
+    newOrderedVertices.reserve(sourceVertices.size());
+
+    for (u32 sourceIndex : newSortedBatch.inputSpriteIndices) {
+        if (sourceIndex >= sourceInputSprites.size() || seen[sourceIndex] != 0)
             return false;
+        seen[sourceIndex] = 1;
 
         const auto& input = sourceInputSprites[sourceIndex];
         const usize firstVertex = static_cast<usize>(input.indexStart) * 3;
@@ -456,43 +450,42 @@ bool ObjectBatch::applySortedBatch(const SortedObjectBatch& newSortedBatch) {
             vertexCount > sourceVertices.size() - firstVertex)
             return false;
 
-        orderedVertices.insert(
-            orderedVertices.end(),
+        newOrderedVertices.insert(
+            newOrderedVertices.end(),
             sourceVertices.begin() + firstVertex,
             sourceVertices.begin() + firstVertex + vertexCount
         );
     }
-    if (orderedVertices.size() != sourceVertices.size())
+
+    if (newOrderedVertices.size() != sourceVertices.size())
         return false;
 
-    // The remap must be a permutation of source sprite indices. Verify it
-    // before the GPU draw ranges are accepted.
-    std::vector<u8> seen(sourceInputSprites.size(), 0);
-    for (u32 sourceIndex : sortedBatch.inputSpriteIndices) {
-        if (sourceIndex >= sourceInputSprites.size() || seen[sourceIndex] != 0)
-            return false;
-        seen[sourceIndex] = 1;
-    }
+    for (const auto& [key, range] : newSortedBatch.layerRanges) {
+        const u64 endVertex =
+            static_cast<u64>(range.firstVertex) + range.vertexCount;
+        const u64 endSprite =
+            static_cast<u64>(range.firstInputSprite) + range.spriteCount;
+        const u64 endWorkGroup =
+            static_cast<u64>(range.firstWorkGroup) + range.workGroupCount;
 
-    for (const auto& [key, range] : sortedBatch.layerRanges) {
-        const u64 endVertex = static_cast<u64>(range.firstVertex) + range.vertexCount;
-        const u64 endSprite = static_cast<u64>(range.firstInputSprite) + range.spriteCount;
-        const u64 endWorkGroup = static_cast<u64>(range.firstWorkGroup) + range.workGroupCount;
-        if (endVertex > static_cast<u64>(sourceVertices.size()) ||
-            endSprite > static_cast<u64>(sortedBatch.inputSpriteIndices.size()) ||
-            endWorkGroup > static_cast<u64>(sortedBatch.workGroups.size()) ||
+        if (endVertex > static_cast<u64>(newOrderedVertices.size()) ||
+            endSprite > static_cast<u64>(newSortedBatch.inputSpriteIndices.size()) ||
+            endWorkGroup > static_cast<u64>(newSortedBatch.workGroups.size()) ||
             range.vertexCount % 3 != 0)
             return false;
     }
 
-    for (const auto& workGroup : sortedBatch.workGroups) {
+    for (const auto& workGroup : newSortedBatch.workGroups) {
         if (workGroup.inputSpriteStart > workGroup.inputSpriteEnd ||
-            workGroup.inputSpriteEnd > sortedBatch.inputSpriteIndices.size())
+            workGroup.inputSpriteEnd > newSortedBatch.inputSpriteIndices.size())
             return false;
     }
 
-    if (orderedVertices.size() != sourceVertices.size())
-        return false;
+    // Commit atomically only after every range and source index has passed.
+    // A malformed newly-generated blend order must not destroy the last valid
+    // GPU batch while the game continues running.
+    sortedBatch = newSortedBatch;
+    orderedVertices = std::move(newOrderedVertices);
     ++orderRevision;
     return true;
 }
