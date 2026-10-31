@@ -23,9 +23,13 @@ struct Capabilities {
     int maxCombinedTextureUnits = 0;
     int maxTextureSize = 0;
     int maxRenderbufferSize = 0;
+    int fragmentHighpRangeMin = 0;
+    int fragmentHighpRangeMax = 0;
+    int fragmentHighpPrecision = 0;
 
     bool isOpenGLES = false;
     bool hasVertexTextureSampling = false;
+    bool hasFragmentHighpPrecision = false;
     bool hasVertexArrayObject = false;
     bool hasUIntElementIndices = false;
     bool hasFloatTexture = false;
