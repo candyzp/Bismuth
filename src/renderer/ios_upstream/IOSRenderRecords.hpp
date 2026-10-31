@@ -1,0 +1,148 @@
+#pragma once
+
+#ifdef GEODE_IS_IOS
+
+#include <common.hpp>
+#include <ObjectUtils.hpp>
+#include <array>
+#include <map>
+#include <vector>
+
+// These records retain the owner's meaning and field order. They are not
+// std430 structs: the iOS backend serializes them into nearest-filtered ES
+// texture tables and ordinary vertex attributes.
+namespace IOSUpstream {
+
+constexpr u32 COLOR_CHANNEL_COUNT = 1101;
+constexpr u32 GROUP_IDS_PER_OBJECT = 10;
+
+constexpr u32 OBJECT_FLAG_USES_AUDIO_SCALE   = 1u << 0;
+constexpr u32 OBJECT_FLAG_CUSTOM_AUDIO_SCALE = 1u << 1;
+constexpr u32 OBJECT_FLAG_IS_ORB             = 1u << 2;
+constexpr u32 OBJECT_FLAG_IS_INVISIBLE_BLOCK = 1u << 3;
+constexpr u32 OBJECT_FLAG_SPECIAL_GLOW_COLOR = 1u << 4;
+constexpr u32 OBJECT_FLAG_IS_GLOW_COLOR_LBG  = 1u << 5;
+constexpr u32 OBJECT_FLAG_HAS_BASE_HSV       = 1u << 6;
+constexpr u32 OBJECT_FLAG_HAS_DETAIL_HSV     = 1u << 7;
+constexpr u32 OBJECT_FLAG_IS_STATIC_OBJECT   = 1u << 8;
+
+constexpr u32 GAME_STATE_IS_PLAYER_DEAD = 1u << 0;
+
+constexpr u32 PULSE_FLAG_IS_BASE_ONLY   = 1u << 26;
+constexpr u32 PULSE_FLAG_IS_DETAIL_ONLY = 1u << 27;
+constexpr u32 PULSE_FLAG_IS_HSV         = 1u << 28;
+constexpr u32 PULSE_FLAG_IS_DYNAMIC_HSV = 1u << 29;
+constexpr u32 PULSE_FLAG_IS_ACTIVE      = 1u << 30;
+
+struct ObjectVertex {
+    glm::vec2 positionOffset {};
+    glm::vec2 texCoord {};
+    // ES2 has no integer vertex attributes. Keep this index exactly
+    // representable as a float and validate it before uploading.
+    float spriteIndex = 0.f;
+};
+
+struct InputSprite {
+    u32 objectIndex = 0;
+    u32 spriteType = 0;
+    u32 indexStart = 0;
+    u32 indexCount = 0;
+};
+
+struct PreCulledSprite {
+    u32 groupCombinationIndex = 0;
+    glm::vec2 startPosition {};
+};
+
+struct WorkGroup {
+    u32 inputSpriteStart = 0;
+    u32 inputSpriteEnd = 0;
+    u32 culledIndexBufferOutputIndex = 0;
+};
+
+struct DrawCommand {
+    u32 count = 0;
+    u32 instanceCount = 1;
+    u32 first = 0;
+    u32 baseInstance = 0;
+};
+
+struct GroupCombinationState {
+    glm::mat2 positionalTransform {1.f};
+    glm::mat2 localTransform {1.f};
+    glm::vec2 offset {};
+    float opacity = 1.f;
+    u32 pulseIndex = 0;
+};
+
+struct ObjectInfo {
+    float rotationSpeed = 0.f;
+    i32 flags = 0;
+    float audioScaleMin = 0.f;
+    float audioScaleMax = 0.f;
+    float fadeMargin = 0.f;
+    float opacity = 1.f;
+    u32 baseColorChannelId = 0;
+    u32 baseHSV = 0;
+    u32 detailColorChannelId = 0;
+    u32 detailHSV = 0;
+};
+
+struct PulseEntry {
+    u32 flags = 0;
+    union {
+        u32 hsv;
+        cocos2d::ccColor4B color;
+    };
+
+    PulseEntry() : hsv(0) {}
+
+    static PulseEntry endIndicator() {
+        return PulseEntry{};
+    }
+};
+
+struct GameState {
+    glm::mat4 mvp {1.f};
+    float timer = 0.f;
+    float audioScale = 0.5f;
+    glm::vec2 cameraViewSize {};
+    glm::vec2 cameraPosition {};
+    glm::vec2 cameraRight {1.f, 0.f};
+    glm::vec2 cameraUp {0.f, 1.f};
+    glm::vec2 cameraSize {};
+    glm::vec2 windowSize {};
+    float screenRight = 0.f;
+    float cameraUnzoomedX = 0.f;
+    glm::vec3 specialLightBGColor {};
+    u32 gameStateFlags = 0;
+};
+
+struct LayerDrawRange {
+    LayerKey key {};
+    u32 firstInputSprite = 0;
+    u32 spriteCount = 0;
+    u32 firstVertex = 0;
+    u32 vertexCount = 0;
+    u32 firstWorkGroup = 0;
+    u32 workGroupCount = 0;
+};
+
+struct SortedObjectBatch {
+    u32 workGroupCount = 0;
+    std::map<LayerKey, LayerDrawRange> layerRanges;
+    std::vector<u32> inputSpriteIndices;
+    std::vector<PreCulledSprite> preCulledSprites;
+    std::vector<WorkGroup> workGroups;
+};
+
+using ColorChannelBlendStates = std::array<bool, COLOR_CHANNEL_COUNT>;
+using ColorChannelTable = std::array<cocos2d::ccColor4B, COLOR_CHANNEL_COUNT>;
+
+inline u32 colorChannelForSortKey(u32 colorChannel) {
+    return colorChannel < COLOR_CHANNEL_COUNT ? colorChannel : COLOR_CHANNEL_COUNT - 1;
+}
+
+} // namespace IOSUpstream
+
+#endif
