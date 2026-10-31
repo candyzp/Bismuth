@@ -375,12 +375,12 @@ bool ObjectBatch::addSprite(
     );
 
     usedLayerKeys.insert({
-        LayerKey::getNormalObjectZLayer(object),
+        object->getObjectZLayer(),
         spriteSheet,
         false
     });
     usedLayerKeys.insert({
-        LayerKey::getNormalObjectZLayer(object),
+        object->getObjectZLayer(),
         spriteSheet,
         true
     });
