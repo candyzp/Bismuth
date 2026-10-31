@@ -27,7 +27,7 @@ struct GLStateSnapshot {
     GLint attribNormalized = GL_FALSE;
     GLint attribStride = 0;
     GLint attribEnabled = GL_FALSE;
-    const void* attribPointer = nullptr;
+    void* attribPointer = nullptr;
 
     GLboolean blend = GL_FALSE;
     GLboolean scissor = GL_FALSE;
