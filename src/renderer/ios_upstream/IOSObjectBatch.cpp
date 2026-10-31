@@ -299,6 +299,10 @@ bool ObjectBatch::addSprite(
     const u32 groupCombinationIndex =
         groupManager.getGroupCombinationIndexForObject(object);
 
+    u32 colorChannelFlags = ObjectUtils::getSpriteColorChannel(type, object, sprite);
+    if (type == SpriteType::DETAIL)
+        colorChannelFlags |= IOS_COLOR_CHANNEL_DETAIL_FLAG;
+
     const auto texture = resolveTexture
         ? resolveTexture(spriteSheet)
         : sprite->getTexture();
@@ -315,6 +319,7 @@ bool ObjectBatch::addSprite(
     currentObjectIndex = objectIndex;
     currentGroupCombinationIndex = groupCombinationIndex;
     currentSpriteType = static_cast<u32>(type);
+    currentColorChannelFlags = colorChannelFlags;
     currentSpriteIndex = static_cast<u32>(sourceInputSprites.size());
 
     const usize firstTriangle = sourceVertices.size() / 3;
@@ -340,14 +345,8 @@ bool ObjectBatch::addSprite(
     if (triangleCount == 0)
         return false;
 
-    u32 colorChannelFlags = ObjectUtils::getSpriteColorChannel(type, object, sprite);
-    if (type == SpriteType::DETAIL)
-        colorChannelFlags |= IOS_COLOR_CHANNEL_DETAIL_FLAG;
-    currentColorChannelFlags = colorChannelFlags;
-
-    // The vertex metadata has already been written while the mesh was built.
-    // Its sprite type/channel flags are also mirrored in the source input
-    // record so the culling/order stage can validate and inspect them.
+    // The vertex metadata above is mirrored in the source input record so
+    // the culling/order stage can validate and inspect it.
     input.objectIndex = objectIndex;
     input.spriteType = static_cast<u32>(type);
     input.indexStart = static_cast<u32>(firstTriangle);
