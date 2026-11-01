@@ -61,27 +61,21 @@ u32 packDisplayedColor(cocos2d::CCSprite* sprite) {
 
 SpriteAppearance captureSpriteAppearance(
     cocos2d::CCSprite* sprite,
-    GameObject* objectRoot,
     bool usesDirectTint
 ) {
     SpriteAppearance result;
     result.packedDisplayedColor = packDisplayedColor(sprite);
 
-    bool visible = sprite && sprite->isVisible() && !sprite->getDontDraw();
-    for (auto parent = sprite ? sprite->getParent() : nullptr;
-         visible && parent;
-         parent = parent->getParent()) {
-        if (!parent->isVisible())
-            visible = false;
-        if (parent == objectRoot)
-            break;
-    }
-    if (objectRoot && objectRoot->getDontDraw())
-        visible = false;
-    if (visible)
+    // Match the owner's ObjectUtils::unpackSpriteRecursively(): only the
+    // sprite's explicit getDontDraw() flag suppresses extraction. Do not use
+    // CCNode::isVisible() or ancestor visibility here. On iOS the GPU owns
+    // camera visibility, while the optimized PlayLayer path intentionally
+    // skips vanilla's per-object CPU visibility walk; those Cocos visibility
+    // flags can therefore be stale and must never cull GPU-owned geometry.
+    if (sprite && !sprite->getDontDraw())
         result.flags |= IOS_SPRITE_APPEARANCE_VISIBLE;
     else
-        result.packedDisplayedColor &= 0x00ffffffu; // Zero alpha for hidden ancestry.
+        result.packedDisplayedColor &= 0x00ffffffu;
 
     if (sprite && sprite->isOpacityModifyRGB())
         result.flags |= IOS_SPRITE_APPEARANCE_OPACITY_MODIFY_RGB;
@@ -381,7 +375,7 @@ bool ObjectBatch::addSprite(
     const bool directTint =
         (colorChannelFlags & IOS_COLOR_CHANNEL_DIRECT_FLAG) != 0;
     sourceSpriteAppearances.push_back(
-        captureSpriteAppearance(sprite, object, directTint)
+        captureSpriteAppearance(sprite, directTint)
     );
     // The sprite may outlive its parent while the GPU cache is in use.
     // Retain both the leaf and its owning GameObject so refreshSpriteAppearances
@@ -645,9 +639,7 @@ void ObjectBatch::refreshSpriteAppearances() {
         const auto& source = sourceSpritePointers[i];
         const bool directTint =
             (sourceInputSprites[i].colorChannelFlags & IOS_COLOR_CHANNEL_DIRECT_FLAG) != 0;
-        sourceSpriteAppearances[i] = captureSpriteAppearance(
-            source.sprite, source.object, directTint
-        );
+        sourceSpriteAppearances[i] = captureSpriteAppearance(source.sprite, directTint);
     }
 }
 
