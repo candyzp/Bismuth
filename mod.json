@@ -43,7 +43,7 @@
 			"name": "Detailed crash diagnostics",
 			"type": "bool",
 			"default": false,
-			"description": "Adds object activation, renderer, draw and frame breadcrumbs to Geode's native crash report. No on-screen debugger or second crash handler is installed."
+			"description": "Writes renderer-stage and large-level progress breadcrumbs to Geode's native log and the mod save folder (crash-breadcrumbs.log). Per-object log spam is disabled; no second crash handler is installed."
 		}
 	}
 }

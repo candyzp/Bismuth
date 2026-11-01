@@ -1,6 +1,7 @@
 #ifdef GEODE_IS_IOS
 
 #include "IOSSceneData.hpp"
+#include "IOSCrashDiagnostics.hpp"
 
 #include <Geode/Enums.hpp>
 #include <Geode/binding/GJBaseGameLayer.hpp>
@@ -13,6 +14,7 @@
 
 #include <algorithm>
 #include <vector>
+#include <os/proc.h>
 
 using namespace geode::prelude;
 
@@ -20,6 +22,19 @@ namespace IOSUpstream {
 
 namespace {
 SceneData* g_currentSceneData = nullptr;
+
+// Record the OS-provided available-memory estimate at each expensive stage.
+// It is advisory and deliberately does not reject a level using an arbitrary
+// per-object estimate; the log should tell us where memory actually drops.
+void logSceneMemorySnapshot(usize objectCount, const char* stage) {
+    const auto availableBytes = os_proc_available_memory();
+    crashBreadcrumb(fmt::format(
+        "SceneData memory snapshot stage={} objects={} availableMiB={}",
+        stage,
+        objectCount,
+        static_cast<u64>(availableBytes) / (1024u * 1024u)
+    ));
+}
 }
 
 SceneData::~SceneData() {
@@ -42,10 +57,20 @@ bool SceneData::buildSortedObjectList(std::vector<GameObject*>& objects) const {
     if (!layer || !layer->m_objects)
         return false;
 
+    const bool diagnosticsEnabled = crashDiagnosticsEnabled();
+    usize visited = 0;
     ObjectSorter sorter;
     sorter.initForGameLayer(layer);
 
     for (auto object : CCArrayExt<GameObject*>(layer->m_objects)) {
+        ++visited;
+        if (diagnosticsEnabled && visited % 50000u == 0) {
+            crashBreadcrumb(fmt::format(
+                "SceneData::buildSortedObjectList progress visited={}/{}",
+                visited,
+                layer->m_objects->count()
+            ));
+        }
         if (!object)
             continue;
         if (object == layer->m_anticheatSpike)
@@ -59,9 +84,11 @@ bool SceneData::buildSortedObjectList(std::vector<GameObject*>& objects) const {
 
     // Match the owner's Renderer::init iteration: consume the ObjectSorter
     // iterator after populating the level's layer lists.
+    crashBreadcrumb("SceneData::buildSortedObjectList sorter input complete; materializing sorted object vector");
     objects.clear();
     for (auto iterator = sorter.iterator(); !iterator.isEnd(); iterator.next())
         objects.push_back(iterator.get());
+    crashBreadcrumb(fmt::format("SceneData::buildSortedObjectList COMPLETE sortedObjects={}", objects.size()));
 
     return true;
 }
@@ -97,6 +124,14 @@ bool SceneData::init(PlayLayer* playLayer) {
         return false;
     }
 
+    const usize objectCount = static_cast<usize>(layer->m_objects->count());
+    crashBreadcrumb(fmt::format(
+        "SceneData::init BEGIN layer={:p} objects={}",
+        static_cast<void*>(layer),
+        objectCount
+    ));
+    logSceneMemorySnapshot(objectCount, "before GroupManager");
+
     auto textureCache = cocos2d::CCTextureCache::get();
     if (!textureCache) {
         failureReason = "Cocos texture cache is unavailable";
@@ -120,22 +155,29 @@ bool SceneData::init(PlayLayer* playLayer) {
 
     SpriteMeshDictionary::loadFromFile("spriteMeshes.json");
 
+    crashBreadcrumb("SceneData::init GroupManager BEGIN");
     if (!groupManager.initWithObjects(layer, layer->m_objects)) {
         failureReason = "GroupManager could not build the level's group-state tables";
         log::error("Bismuth iOS upstream scene data: {}", failureReason);
         return false;
     }
+    crashBreadcrumb(fmt::format("SceneData::init GroupManager PASS combinations={} maxGroupId={}",
+        groupManager.getGroupCombinationCount(), groupManager.getMaxGroupId()));
+    logSceneMemorySnapshot(objectCount, "after GroupManager / before sorting");
 
     std::vector<GameObject*> objects;
+    crashBreadcrumb("SceneData::init sorted object extraction BEGIN");
     if (!buildSortedObjectList(objects)) {
         failureReason = "ObjectSorter could not build the level's sorted object list";
         log::error("Bismuth iOS upstream scene data: {}", failureReason);
         return false;
     }
+    logSceneMemorySnapshot(objectCount, "after sorting / before ObjectBatch");
 
     fetchBlendingStates(blendStates);
     this->blendStates = blendStates;
 
+    crashBreadcrumb(fmt::format("SceneData::init ObjectBatch BEGIN sortedObjects={}", objects.size()));
     const bool batchOK = objectBatch.build(
         objects,
         groupManager,
@@ -152,6 +194,9 @@ bool SceneData::init(PlayLayer* playLayer) {
         );
         return false;
     }
+    crashBreadcrumb(fmt::format("SceneData::init ObjectBatch PASS sprites={} sourceVertices={} orderedVertices={}",
+        objectBatch.getSpriteCount(), objectBatch.getVertices().size(), objectBatch.getOrderedVertices().size()));
+    logSceneMemorySnapshot(objectCount, "after ObjectBatch");
 
     gameTimer = 0.f;
     updateColorChannelTable();
@@ -167,6 +212,8 @@ bool SceneData::init(PlayLayer* playLayer) {
     );
 
     ready = true;
+    crashBreadcrumb("SceneData::init GPU state-table initialization BEGIN");
+    logSceneMemorySnapshot(objectCount, "before GPU state-table upload");
     if (!gpuStateTables.initialize(*this)) {
         failureReason = "GPU state-table initialization or texture upload failed";
         log::error("Bismuth iOS upstream scene data: {}", failureReason);
@@ -174,6 +221,7 @@ bool SceneData::init(PlayLayer* playLayer) {
         return false;
     }
 
+    crashBreadcrumb("SceneData::init COMPLETE; GPU state tables ready");
     g_currentSceneData = this;
     return true;
 }

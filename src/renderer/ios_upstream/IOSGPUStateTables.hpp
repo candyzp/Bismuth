@@ -43,6 +43,10 @@ public:
     bool upload(const SceneData& scene);
     void bind(i32 objectUnit, i32 groupUnit, i32 byteUnit) const;
 
+    u64 getLastPayloadTexels() const { return lastPayloadTexels; }
+    u64 getLastPayloadBytes() const { return lastPayloadBytes; }
+    float getLastBuildMilliseconds() const { return lastBuildMilliseconds; }
+    float getLastTransferMilliseconds() const { return lastTransferMilliseconds; }
     bool isReady() const { return ready; }
     const Layout& getLayout() const { return layout; }
     u32 getObjectTexture() const;
@@ -70,6 +74,10 @@ private:
     std::vector<RGBA8> byteTexels;
 
     Layout layout {};
+    u64 lastPayloadTexels = 0;
+    u64 lastPayloadBytes = 0;
+    float lastBuildMilliseconds = 0.f;
+    float lastTransferMilliseconds = 0.f;
     bool ready = false;
 };
 

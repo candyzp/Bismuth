@@ -229,7 +229,7 @@ void IOSGPURenderer::updateStartupDiagnostic(const std::string& message) {
         startupDiagnosticLabel = cocos2d::CCLabelTTF::create(
             "BISMUTH iOS GPU: STARTING",
             "Arial",
-            14.0f
+            11.0f
         );
         if (!startupDiagnosticLabel) {
             log::error("Bismuth iOS GPU diagnostic: failed to create CCLabelTTF");
@@ -285,22 +285,46 @@ void IOSGPURenderer::updateDebugOverlay() {
             status = "BISMUTH iOS GPU: VISITED, NO GPU DRAWS";
     }
 
-    std::string detail;
-    if (failed) {
-        detail = failureReason;
-    } else {
-        detail =
-            "Sprites: " + std::to_string(batch.getSpriteCount()) +
-            " | Vertices: " + std::to_string(batch.getOrderedVertices().size()) +
-            "\nShader: " + std::string(shader ? "ready" : "missing") +
-            " | VBO: " + std::string(vertexBuffer ? "ready" : "missing") +
-            "\nGPU nodes: " + std::to_string(layerNodes.size()) +
-            " | Active ranges: " + std::to_string(activeLayerCount) +
-            " | Missing: " + std::to_string(missingLayerNodeCount) +
-            "\nVisits: " + std::to_string(lastFrameLayerVisits) +
-            " | Draw attempts: " + std::to_string(lastFrameDrawAttempts) +
-            " | Successful draws: " + std::to_string(lastFrameDraws);
-    }
+    std::string detail = failed
+        ? fmt::format("Failure: {}\n", failureReason)
+        : std::string{};
+    detail += fmt::format(
+        "Level O:{} S:{} G:{}\n"
+        "CPU ms GD:{:.1f} SC:{:.1f} BL:{:.1f} SUB:{:.1f}\n"
+        "CPU sprites scanned:{} changed:{}\n"
+        "Group records:{} | pulse entries:{}\n"
+        "Table pack:{:.1f}ms upload:{:.1f}ms\n"
+        "Table data:{:.1f}KB / {} texels\n"
+        "GPU draws:{} verts:{} triangles:{}\n"
+        "VBO:{:.1f}KB | frame:{} loop:{:.1f}ms FPS:{:.1f}\n"
+        "Nodes:{} ranges:{} missing:{} visits:{}",
+        layer && layer->m_objects ? layer->m_objects->count() : 0,
+        batch.getSpriteCount(),
+        sceneData.getGroupManager().getGroupCombinationCount(),
+        lastGameLayerUpdateMilliseconds,
+        lastSceneUpdateMilliseconds,
+        lastBlendRefreshMilliseconds,
+        lastDrawSubmitMilliseconds,
+        lastSpritesScanned,
+        lastSpritesChanged,
+        lastGroupStateRecords,
+        lastPulseEntries,
+        lastStateBuildMilliseconds,
+        lastStateTransferMilliseconds,
+        static_cast<double>(lastStatePayloadBytes) / 1024.0,
+        lastStatePayloadTexels,
+        lastFrameDraws,
+        lastGPUVerticesSubmitted,
+        lastGPUTrianglesSubmitted,
+        static_cast<double>(lastVboUploadBytes) / 1024.0,
+        frameNumber,
+        lastFrameMilliseconds,
+        lastFrameMilliseconds > 0.f ? 1000.f / lastFrameMilliseconds : 0.f,
+        layerNodes.size(),
+        activeLayerCount,
+        missingLayerNodeCount,
+        lastFrameLayerVisits
+    );
 
     updateStartupDiagnostic(status + "\n" + detail);
 }
@@ -332,18 +356,95 @@ void IOSGPURenderer::beginFrame() {
     layerVisitsThisFrame = 0;
     drawAttemptsThisFrame = 0;
     drawsThisFrame = 0;
+    gameLayerUpdateMillisecondsThisFrame = 0.f;
+    sceneUpdateMillisecondsThisFrame = 0.f;
+    stateBuildMillisecondsThisFrame = 0.f;
+    stateTransferMillisecondsThisFrame = 0.f;
+    blendRefreshMillisecondsThisFrame = 0.f;
+    drawSubmitMillisecondsThisFrame = 0.f;
+    spritesScannedThisFrame = 0;
+    spritesChangedThisFrame = 0;
+    groupStateRecordsThisFrame = 0;
+    pulseEntriesThisFrame = 0;
+    statePayloadTexelsThisFrame = 0;
+    statePayloadBytesThisFrame = 0;
+    vboUploadBytesThisFrame = 0;
+    gpuVerticesSubmittedThisFrame = 0;
+    gpuTrianglesSubmittedThisFrame = 0;
+    frameStartTime = std::chrono::steady_clock::now();
 }
 
 void IOSGPURenderer::finishFrame() {
+    const auto frameEndTime = std::chrono::steady_clock::now();
+    if (frameStartTime.time_since_epoch().count() != 0) {
+        lastFrameMilliseconds = std::chrono::duration<float, std::milli>(
+            frameEndTime - frameStartTime
+        ).count();
+    }
+    ++frameNumber;
     lastFrameLayerVisits = layerVisitsThisFrame;
     lastFrameDrawAttempts = drawAttemptsThisFrame;
     lastFrameDraws = drawsThisFrame;
+    lastGameLayerUpdateMilliseconds = gameLayerUpdateMillisecondsThisFrame;
+    lastSceneUpdateMilliseconds = sceneUpdateMillisecondsThisFrame;
+    lastStateBuildMilliseconds = stateBuildMillisecondsThisFrame;
+    lastStateTransferMilliseconds = stateTransferMillisecondsThisFrame;
+    lastBlendRefreshMilliseconds = blendRefreshMillisecondsThisFrame;
+    lastDrawSubmitMilliseconds = drawSubmitMillisecondsThisFrame;
+    lastSpritesScanned = spritesScannedThisFrame;
+    lastSpritesChanged = spritesChangedThisFrame;
+    lastGroupStateRecords = groupStateRecordsThisFrame;
+    lastPulseEntries = pulseEntriesThisFrame;
+    lastStatePayloadTexels = statePayloadTexelsThisFrame;
+    lastStatePayloadBytes = statePayloadBytesThisFrame;
+    lastVboUploadBytes = vboUploadBytesThisFrame;
+    lastGPUVerticesSubmitted = gpuVerticesSubmittedThisFrame;
+    lastGPUTrianglesSubmitted = gpuTrianglesSubmittedThisFrame;
     hasFinishedFrame = true;
-    updateDebugOverlay();
+
+    // CCLabelTTF::setString regenerates a text texture. Keep counters per-frame,
+    // but refresh the visible label at 10 Hz to avoid making the HUD itself costly.
+    overlayRefreshElapsedMilliseconds += lastFrameMilliseconds;
+    if (overlayRefreshElapsedMilliseconds >= 100.f) {
+        overlayRefreshElapsedMilliseconds = 0.f;
+        updateDebugOverlay();
+    }
+}
+
+void IOSGPURenderer::recordGameLayerUpdate(float milliseconds) {
+    gameLayerUpdateMillisecondsThisFrame += milliseconds;
+}
+
+void IOSGPURenderer::recordSceneUpdate(float milliseconds) {
+    sceneUpdateMillisecondsThisFrame += milliseconds;
+    if (!sceneData.isReady() || !sceneData.getPlayLayer() ||
+        sceneData.getPlayLayer()->m_isPaused)
+        return;
+
+    const auto& batch = sceneData.getObjectBatch();
+    const auto& groupManager = sceneData.getGroupManager();
+    const auto& tables = sceneData.getGPUStateTables();
+    spritesScannedThisFrame += batch.getLastAppearanceSpritesScanned();
+    spritesChangedThisFrame += batch.getLastAppearanceSpritesChanged();
+    groupStateRecordsThisFrame += groupManager.getGroupStates().size();
+    pulseEntriesThisFrame += groupManager.getPulseEntries().size();
+    stateBuildMillisecondsThisFrame += tables.getLastBuildMilliseconds();
+    stateTransferMillisecondsThisFrame += tables.getLastTransferMilliseconds();
+    statePayloadTexelsThisFrame += tables.getLastPayloadTexels();
+    statePayloadBytesThisFrame += tables.getLastPayloadBytes();
+}
+
+void IOSGPURenderer::recordBlendRefresh(float milliseconds) {
+    blendRefreshMillisecondsThisFrame += milliseconds;
 }
 
 IOSGPURenderer* IOSGPURenderer::create(PlayLayer* playLayer) {
     updateStartupDiagnostic("BISMUTH iOS GPU STARTUP\nRenderer create: ENTERED");
+    crashBreadcrumb(fmt::format(
+        "IOSGPURenderer::create ENTER layer={:p} objects={}",
+        static_cast<void*>(playLayer),
+        playLayer && playLayer->m_objects ? playLayer->m_objects->count() : 0
+    ));
 
     if (currentRenderer && currentRenderer->getPlayLayer() != playLayer) {
         auto previous = currentRenderer;
@@ -541,6 +642,7 @@ bool IOSGPURenderer::uploadOrderedVertices() {
         return false;
     }
 
+    vboUploadBytesThisFrame += byteCount;
     uploadedOrderRevision = sceneData.getObjectBatch().getOrderRevision();
     uploadedGeometryRevision = sceneData.getObjectBatch().getGeometryRevision();
     sceneData.getObjectBatch().clearDirtyVertexRanges();
@@ -582,11 +684,13 @@ bool IOSGPURenderer::uploadDirtyVertexRanges() {
     while (glGetError() != GL_NO_ERROR) {}
     glBindBuffer(GL_ARRAY_BUFFER, vertexBuffer);
 
+    usize uploadedBytes = 0;
     for (const auto& range : ranges) {
         const usize byteOffset =
             static_cast<usize>(range.firstVertex) * sizeof(ObjectVertex);
         const usize byteCount =
             static_cast<usize>(range.vertexCount) * sizeof(ObjectVertex);
+        uploadedBytes += byteCount;
         glBufferSubData(
             GL_ARRAY_BUFFER,
             static_cast<GLintptr>(byteOffset),
@@ -602,6 +706,7 @@ bool IOSGPURenderer::uploadDirtyVertexRanges() {
         return false;
     }
 
+    vboUploadBytesThisFrame += uploadedBytes;
     uploadedGeometryRevision = batch.getGeometryRevision();
     batch.clearDirtyVertexRanges();
     return true;
@@ -699,6 +804,7 @@ bool IOSGPURenderer::initForPlayLayer(PlayLayer* playLayer) {
     if (!queryAndValidateCapabilities())
         return false;
     updateStartupDiagnostic("BISMUTH iOS GPU STARTUP\nOpenGL ES capability validation: PASS");
+    crashBreadcrumb("IOSGPURenderer::initForPlayLayer capabilities PASS; SceneData::init BEGIN");
 
     if (!sceneData.init(layer)) {
         const auto& reason = sceneData.getFailureReason();
@@ -707,6 +813,7 @@ bool IOSGPURenderer::initForPlayLayer(PlayLayer* playLayer) {
             : reason);
         return false;
     }
+    crashBreadcrumb("IOSGPURenderer::initForPlayLayer SceneData::init PASS");
 
     updateStartupDiagnostic(
         "BISMUTH iOS GPU STARTUP\nScene extraction/state tables: PASS\nSprites: " +
@@ -715,12 +822,16 @@ bool IOSGPURenderer::initForPlayLayer(PlayLayer* playLayer) {
         std::to_string(sceneData.getObjectBatch().getOrderedVertices().size())
     );
 
+    crashBreadcrumb("IOSGPURenderer::initForPlayLayer shader creation BEGIN");
     if (!createShaderProgram())
         return false;
+    crashBreadcrumb("IOSGPURenderer::initForPlayLayer shader creation PASS");
     updateStartupDiagnostic("BISMUTH iOS GPU STARTUP\nShader compile/link: PASS");
 
+    crashBreadcrumb("IOSGPURenderer::initForPlayLayer VBO creation/upload BEGIN");
     if (!createVertexBuffer())
         return false;
+    crashBreadcrumb("IOSGPURenderer::initForPlayLayer VBO creation/upload PASS");
     updateStartupDiagnostic("BISMUTH iOS GPU STARTUP\nVertex buffer upload: PASS");
 
     // PlayLayer::resetLevel() creates/rebuilds the stock Z-order containers
@@ -808,6 +919,7 @@ void IOSGPURenderer::drawLayer(const LayerKey& key) {
     const auto& gameState = sceneData.getGameState();
     const auto& tableLayout = sceneData.getGPUStateTables().getLayout();
 
+    const auto submitStart = std::chrono::steady_clock::now();
     IOSGLStateSnapshot savedGLState;
 
     while (glGetError() != GL_NO_ERROR) {}
@@ -900,6 +1012,11 @@ void IOSGPURenderer::drawLayer(const LayerKey& key) {
     }
 
     ++drawsThisFrame;
+    gpuVerticesSubmittedThisFrame += range.vertexCount;
+    gpuTrianglesSubmittedThisFrame += range.vertexCount / 3;
+    drawSubmitMillisecondsThisFrame += std::chrono::duration<float, std::milli>(
+        std::chrono::steady_clock::now() - submitStart
+    ).count();
 }
 
 } // namespace IOSUpstream

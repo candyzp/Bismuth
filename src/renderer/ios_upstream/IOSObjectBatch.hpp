@@ -49,6 +49,8 @@ public:
     bool isBuilt() const { return built; }
     u64 getOrderRevision() const { return orderRevision; }
     u64 getGeometryRevision() const { return geometryRevision; }
+    u64 getLastAppearanceSpritesScanned() const { return lastAppearanceSpritesScanned; }
+    u64 getLastAppearanceSpritesChanged() const { return lastAppearanceSpritesChanged; }
     const std::vector<VertexRange>& getDirtyVertexRanges() const { return dirtyVertexRanges; }
     void clearDirtyVertexRanges() { dirtyVertexRanges.clear(); }
 
@@ -137,6 +139,8 @@ private:
 
     u64 orderRevision = 0;
     u64 geometryRevision = 0;
+    u64 lastAppearanceSpritesScanned = 0;
+    u64 lastAppearanceSpritesChanged = 0;
     bool built = false;
 };
 

@@ -15,6 +15,7 @@
 #include <decomp/GJBaseGameLayer.hpp>
 #include <Geode/binding/CheckpointObject.hpp>
 #include <optional>
+#include <chrono>
 #endif
 
 using namespace geode::prelude;
@@ -247,7 +248,14 @@ class $modify(RendererPlayLayer, PlayLayer) {
             // frame uses the same draw-range map.
             if (auto gpuRenderer = IOSUpstream::IOSGPURenderer::getCurrent();
                 gpuRenderer && gpuRenderer->getPlayLayer() == this) {
-                if (!scene->refreshBlendOrder())
+                const auto blendRefreshStart = std::chrono::steady_clock::now();
+                const bool blendRefreshOK = scene->refreshBlendOrder();
+                gpuRenderer->recordBlendRefresh(
+                    std::chrono::duration<float, std::milli>(
+                        std::chrono::steady_clock::now() - blendRefreshStart
+                    ).count()
+                );
+                if (!blendRefreshOK)
                     gpuRenderer->reportFailure(
                         "could not refresh the live blend-state draw schedule"
                     );
@@ -285,7 +293,11 @@ static void removeDecoObjects(CCArray* array) {
 class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
     void update(float dt) {
         auto timer = BProfiler::start("GJBaseGameLayer::update");
+        const auto gameLayerUpdateStart = std::chrono::steady_clock::now();
         GJBaseGameLayer::update(dt);
+        const float gameLayerUpdateMilliseconds = std::chrono::duration<float, std::milli>(
+            std::chrono::steady_clock::now() - gameLayerUpdateStart
+        ).count();
         timer.end();
 
         auto renderer = Renderer::get();
@@ -296,11 +308,22 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
 
         auto scene = IOSUpstream::SceneData::getCurrent();
         auto gpuRenderer = IOSUpstream::IOSGPURenderer::getCurrent();
+        if (gpuRenderer &&
+            static_cast<GJBaseGameLayer*>(gpuRenderer->getPlayLayer()) == this)
+            gpuRenderer->recordGameLayerUpdate(gameLayerUpdateMilliseconds);
+
         if (scene && scene->isReady() && gpuRenderer &&
             gpuRenderer->isReadyForDrawing() &&
             gpuRenderer->getPlayLayer() == scene->getPlayLayer() &&
             static_cast<GJBaseGameLayer*>(scene->getPlayLayer()) == this) {
-            if (!scene->update(dt)) {
+            const auto sceneUpdateStart = std::chrono::steady_clock::now();
+            const bool sceneUpdateOK = scene->update(dt);
+            gpuRenderer->recordSceneUpdate(
+                std::chrono::duration<float, std::milli>(
+                    std::chrono::steady_clock::now() - sceneUpdateStart
+                ).count()
+            );
+            if (!sceneUpdateOK) {
                 gpuRenderer->reportFailure(
                     "scene update or GPU state upload failed"
                 );
@@ -593,29 +616,11 @@ class $modify(RendererCheckpointObject, CheckpointObject) {
 #include <Geode/modify/GameObject.hpp>
 class $modify(RendererTrackedGameObject, GameObject) {
     void activateObject() {
-        if (IOSUpstream::crashDiagnosticsEnabled()) {
-            const auto children = this->getChildren();
-            IOSUpstream::crashBreadcrumb(fmt::format(
-                "GameObject::activateObject ENTER id={} ptr={:p} start=({:.2f},{:.2f}) activated={} mainColor={} detailColor={} glow={:p} colorSprite={:p} children={}",
-                m_objectID,
-                static_cast<void*>(this),
-                m_startPosition.x,
-                m_startPosition.y,
-                m_isActivated,
-                m_activeMainColorID,
-                m_activeDetailColorID,
-                static_cast<void*>(m_glowSprite),
-                static_cast<void*>(m_colorSprite),
-                children ? children->count() : 0
-            ));
-        }
+        // Do not emit one log record per GameObject. Large levels can contain
+        // hundreds of thousands of objects, and this used to bury the renderer
+        // lifecycle breadcrumbs (the EXIT record was also accidentally
+        // unconditional when detailed diagnostics were disabled).
         GameObject::activateObject();
-        IOSUpstream::crashBreadcrumb(fmt::format(
-            "GameObject::activateObject EXIT id={} ptr={:p} activated={}",
-            m_objectID,
-            static_cast<void*>(this),
-            m_isActivated
-        ));
 
         if (Renderer::get()) {
             if (auto resolved = ResolvedStateLayer::getCurrent())
@@ -624,22 +629,7 @@ class $modify(RendererTrackedGameObject, GameObject) {
     }
 
     void deactivateObject(bool value) {
-        if (IOSUpstream::crashDiagnosticsEnabled()) {
-            IOSUpstream::crashBreadcrumb(fmt::format(
-                "GameObject::deactivateObject ENTER id={} ptr={:p} value={} activated={}",
-                m_objectID,
-                static_cast<void*>(this),
-                value,
-                m_isActivated
-            ));
-        }
         GameObject::deactivateObject(value);
-        IOSUpstream::crashBreadcrumb(fmt::format(
-            "GameObject::deactivateObject EXIT id={} ptr={:p} activated={}",
-            m_objectID,
-            static_cast<void*>(this),
-            m_isActivated
-        ));
 
         if (Renderer::get()) {
             if (auto resolved = ResolvedStateLayer::getCurrent())

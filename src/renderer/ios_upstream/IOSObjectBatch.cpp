@@ -1,6 +1,7 @@
 #ifdef GEODE_IS_IOS
 
 #include "IOSObjectBatch.hpp"
+#include "IOSCrashDiagnostics.hpp"
 
 #include <Geode/Enums.hpp>
 #include <Geode/binding/RingObject.hpp>
@@ -116,6 +117,8 @@ void ObjectBatch::clear() {
     currentSpriteIndex = 0;
     orderRevision = 0;
     geometryRevision = 0;
+    lastAppearanceSpritesScanned = 0;
+    lastAppearanceSpritesChanged = 0;
     built = false;
 }
 
@@ -132,7 +135,18 @@ bool ObjectBatch::buildObjectInfo(const std::vector<GameObject*>& objects) {
 
     constexpr usize MAX_EXACT_ES2_FLOAT_INDEX = 1u << 24;
 
+    const bool diagnosticsEnabled = crashDiagnosticsEnabled();
+    usize visited = 0;
     for (auto object : objects) {
+        ++visited;
+        if (diagnosticsEnabled && visited % 50000u == 0) {
+            crashBreadcrumb(fmt::format(
+                "ObjectBatch::buildObjectInfo progress visited={}/{} objectRecords={}",
+                visited,
+                objects.size(),
+                objectInfos.size()
+            ));
+        }
         if (!object || object->isTrigger() || object->m_isHide ||
             object->m_objectID == IOS_GUIDE_OBJECT_ID)
             continue;
@@ -632,10 +646,24 @@ bool ObjectBatch::build(
     clear();
     resolveTexture = textureCallback;
 
+    crashBreadcrumb(fmt::format("ObjectBatch::build BEGIN objects={}", objects.size()));
     if (!buildObjectInfo(objects))
         return false;
+    crashBreadcrumb(fmt::format("ObjectBatch::buildObjectInfo COMPLETE records={}", objectInfos.size()));
 
+    const bool diagnosticsEnabled = crashDiagnosticsEnabled();
+    usize visited = 0;
     for (auto object : objects) {
+        ++visited;
+        if (diagnosticsEnabled && visited % 25000u == 0) {
+            crashBreadcrumb(fmt::format(
+                "ObjectBatch sprite extraction progress visited={}/{} sprites={} sourceVertices={}",
+                visited,
+                objects.size(),
+                sourceInputSprites.size(),
+                sourceVertices.size()
+            ));
+        }
         if (!object || object->isTrigger() || object->m_isHide ||
             object->m_objectID == IOS_GUIDE_OBJECT_ID)
             continue;
@@ -645,17 +673,23 @@ bool ObjectBatch::build(
         }
     }
 
+    crashBreadcrumb(fmt::format("ObjectBatch sprite extraction COMPLETE sprites={} sourceVertices={}",
+        sourceInputSprites.size(), sourceVertices.size()));
+    crashBreadcrumb("ObjectBatch::finalizeSortedGeometry BEGIN");
     if (!finalizeSortedGeometry(blendStates)) {
         log::error("Bismuth iOS upstream batch could not finalize sorted geometry");
         clear();
         return false;
     }
+    crashBreadcrumb(fmt::format("ObjectBatch::finalizeSortedGeometry COMPLETE orderedVertices={}", orderedVertices.size()));
 
     built = true;
     return true;
 }
 
 void ObjectBatch::refreshSpriteAppearances() {
+    lastAppearanceSpritesScanned = 0;
+    lastAppearanceSpritesChanged = 0;
     if (!built || sourceSpritePointers.size() != sourceSpriteAppearances.size() ||
         sourceInputSprites.size() != sourceSpriteAppearances.size() ||
         sourceVertexPoints.size() != sourceVertices.size() ||
@@ -664,6 +698,7 @@ void ObjectBatch::refreshSpriteAppearances() {
 
     bool geometryChanged = false;
     for (usize i = 0; i < sourceSpritePointers.size(); ++i) {
+        ++lastAppearanceSpritesScanned;
         auto& source = sourceSpritePointers[i];
         const auto& input = sourceInputSprites[i];
         const bool directTint =
@@ -752,6 +787,7 @@ void ObjectBatch::refreshSpriteAppearances() {
         source.lastFlipX = currentFlipX;
         source.lastFlipY = currentFlipY;
         dirtyVertexRanges.push_back({orderedFirstVertex, vertexCount});
+        ++lastAppearanceSpritesChanged;
         geometryChanged = true;
     }
 

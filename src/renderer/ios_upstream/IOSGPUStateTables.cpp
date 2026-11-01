@@ -6,6 +6,7 @@
 #include "../ios/DataTexture.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <limits>
 
 using namespace geode::prelude;
@@ -235,15 +236,30 @@ bool GPUStateTables::initialize(const SceneData& scene) {
 
 bool GPUStateTables::upload(const SceneData& scene) {
     ready = false;
+    lastPayloadTexels = 0;
+    lastPayloadBytes = 0;
+    lastBuildMilliseconds = 0.f;
+    lastTransferMilliseconds = 0.f;
     if (!scene.isReady())
         return false;
 
     if (!validatePulseSegments(scene))
         return false;
 
+    const auto buildStart = std::chrono::steady_clock::now();
     buildObjectTexels(scene);
     buildGroupTexels(scene);
     buildByteTexels(scene);
+    lastBuildMilliseconds = std::chrono::duration<float, std::milli>(
+        std::chrono::steady_clock::now() - buildStart
+    ).count();
+    lastPayloadTexels = static_cast<u64>(objectTexels.size()) +
+        static_cast<u64>(groupTexels.size()) +
+        static_cast<u64>(byteTexels.size());
+    lastPayloadBytes =
+        static_cast<u64>(objectTexels.size()) * sizeof(glm::vec4) +
+        static_cast<u64>(groupTexels.size()) * sizeof(glm::vec4) +
+        static_cast<u64>(byteTexels.size()) * sizeof(RGBA8);
 
     // Keep all shader-indexed values exactly representable by ES2 highp float.
     constexpr usize MAX_EXACT_FLOAT_INTEGER = 1u << 24;
@@ -260,6 +276,7 @@ bool GPUStateTables::upload(const SceneData& scene) {
         return false;
     }
 
+    const auto transferStart = std::chrono::steady_clock::now();
     const bool objectOK = objectTexture->upload(
         objectTexels.empty() ? nullptr : objectTexels.data(),
         objectTexels.size()
@@ -272,6 +289,9 @@ bool GPUStateTables::upload(const SceneData& scene) {
         byteTexels.empty() ? nullptr : byteTexels.data(),
         byteTexels.size()
     );
+    lastTransferMilliseconds = std::chrono::duration<float, std::milli>(
+        std::chrono::steady_clock::now() - transferStart
+    ).count();
 
     if (!(objectOK && groupOK && byteOK)) {
         log::error(

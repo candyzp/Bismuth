@@ -1,6 +1,7 @@
 #ifdef GEODE_IS_IOS
 
 #include "IOSGroupManager.hpp"
+#include "IOSCrashDiagnostics.hpp"
 
 #include <Geode/Enums.hpp>
 #include <Geode/binding/EffectGameObject.hpp>
@@ -199,7 +200,20 @@ bool GroupManager::initWithObjects(PlayLayer* playLayer, cocos2d::CCArray* objec
     addGroupCombination(emptyCombination, 0);
     GroupCombinationIndex nextCombinationIndex = 1;
 
+    const bool diagnosticsEnabled = crashDiagnosticsEnabled();
+    const usize objectCount = static_cast<usize>(objects->count());
+    usize visited = 0;
+    crashBreadcrumb(fmt::format("GroupManager::initWithObjects first scan BEGIN objects={}", objectCount));
     for (auto object : CCArrayExt<GameObject*>(objects)) {
+        ++visited;
+        if (diagnosticsEnabled && visited % 50000u == 0) {
+            crashBreadcrumb(fmt::format(
+                "GroupManager first scan progress visited={}/{} uniqueCombinations={}",
+                visited,
+                objectCount,
+                groupCombinationIndices.size()
+            ));
+        }
         if (!object)
             continue;
 
@@ -221,12 +235,25 @@ bool GroupManager::initWithObjects(PlayLayer* playLayer, cocos2d::CCArray* objec
     }
 
     groupCombinationCount = nextCombinationIndex;
+    crashBreadcrumb(fmt::format("GroupManager first scan COMPLETE combinations={}", groupCombinationCount));
     alphaIndicesPerGroupCombinationIndex.resize(groupCombinationCount);
 
     u32 nextTransformIndex = 0;
     u32 nextAlphaIndex = 0;
 
+    visited = 0;
+    crashBreadcrumb("GroupManager second scan BEGIN");
     for (auto object : CCArrayExt<GameObject*>(objects)) {
+        ++visited;
+        if (diagnosticsEnabled && visited % 50000u == 0) {
+            crashBreadcrumb(fmt::format(
+                "GroupManager second scan progress visited={}/{} transformCombinations={} alphaCombinations={}",
+                visited,
+                objectCount,
+                transformCombinationIndices.size(),
+                alphaIndices.size()
+            ));
+        }
         if (!object)
             continue;
 
@@ -271,8 +298,10 @@ bool GroupManager::initWithObjects(PlayLayer* playLayer, cocos2d::CCArray* objec
     groupStates.assign(groupCombinationCount, GroupCombinationState{});
     isGroupToggledOn.assign(static_cast<usize>(maxGroupId) + 1, true);
 
+    crashBreadcrumb(fmt::format("GroupManager second scan COMPLETE transformCombinations={} alphaCombinations={}", transformCombinationCount, alphaIndicesCount));
     fetchVanillaRotateGroups();
     updateGroupStateBuffer();
+    crashBreadcrumb("GroupManager::initWithObjects COMPLETE");
     return true;
 }
 
