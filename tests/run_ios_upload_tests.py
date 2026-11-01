@@ -55,6 +55,13 @@ int main() {
     for(usize i=1021;i<3075;++i) assert(gpu[i].x==float(i));
     assert(!texture.uploadRange(cpu.data(),std::numeric_limits<usize>::max(),2));
     assert(!texture.uploadRanges(cpu.data(),cpu.size(),{{32764,8}}));
+    const int queriesBeforeEmptyRanges = queries;
+    const int transfersBeforeEmptyRanges = transfers;
+    error = 0x502; // A no-op range list must not touch or consume GL state.
+    assert(texture.uploadRanges(cpu.data(),cpu.size(),{{0,0},{1024,0}}));
+    assert(queries == queriesBeforeEmptyRanges && transfers == transfersBeforeEmptyRanges);
+    assert(bound == 99 && error == 0x502);
+    error = 0;
     std::vector<usize> records;
     for(usize i=0;i<4000;++i) records.push_back(i*4); // 4,000 separated dirty records.
     ResolvedStateLayer::Stats stats;
