@@ -1,6 +1,7 @@
 #ifdef GEODE_IS_IOS
 
 #include "IOSGPURenderer.hpp"
+#include "IOSCrashDiagnostics.hpp"
 
 #include "../Shader.hpp"
 #include <Geode/cocos/CCDirector.h>
@@ -304,6 +305,29 @@ void IOSGPURenderer::updateDebugOverlay() {
     updateStartupDiagnostic(status + "\n" + detail);
 }
 
+std::string IOSGPURenderer::getCrashDiagnosticSnapshot() const {
+    const auto& batch = sceneData.getObjectBatch();
+    return fmt::format(
+        "PlayLayer={:p} renderer={:p} status={} sceneReady={} sprites={} sourceVertices={} orderedVertices={} gpuNodes={} activeRanges={} missingNodes={} frameVisits={} drawAttempts={} draws={} shader={} vbo={} failure='{}'",
+        static_cast<void*>(layer),
+        static_cast<const void*>(this),
+        failed ? "FAILED" : initialized ? "READY" : "STARTING",
+        sceneData.isReady(),
+        batch.getSpriteCount(),
+        batch.getVertices().size(),
+        batch.getOrderedVertices().size(),
+        layerNodes.size(),
+        activeLayerCount,
+        missingLayerNodeCount,
+        lastFrameLayerVisits,
+        lastFrameDrawAttempts,
+        lastFrameDraws,
+        shader ? "ready" : "missing",
+        vertexBuffer ? "ready" : "missing",
+        failureReason
+    );
+}
+
 void IOSGPURenderer::beginFrame() {
     layerVisitsThisFrame = 0;
     drawAttemptsThisFrame = 0;
@@ -358,6 +382,7 @@ void IOSGPURenderer::fail(const std::string& reason) {
     if (failed)
         return;
 
+    crashBreadcrumb(fmt::format("GPU renderer failure: {}", reason));
     failed = true;
     initialized = false;
     failureReason = reason;
@@ -457,6 +482,8 @@ bool IOSGPURenderer::createVertexBuffer() {
     // owns that scene; it simply has no vertex buffer or layer submissions.
     if (sceneData.getObjectBatch().getOrderedVertices().empty()) {
         uploadedOrderRevision = sceneData.getObjectBatch().getOrderRevision();
+        uploadedGeometryRevision = sceneData.getObjectBatch().getGeometryRevision();
+        sceneData.getObjectBatch().clearDirtyVertexRanges();
         return true;
     }
 
@@ -476,6 +503,8 @@ bool IOSGPURenderer::uploadOrderedVertices() {
     const auto& vertices = sceneData.getObjectBatch().getOrderedVertices();
     if (vertices.empty()) {
         uploadedOrderRevision = sceneData.getObjectBatch().getOrderRevision();
+        uploadedGeometryRevision = sceneData.getObjectBatch().getGeometryRevision();
+        sceneData.getObjectBatch().clearDirtyVertexRanges();
         return true;
     }
     if (!vertexBuffer)
@@ -513,6 +542,68 @@ bool IOSGPURenderer::uploadOrderedVertices() {
     }
 
     uploadedOrderRevision = sceneData.getObjectBatch().getOrderRevision();
+    uploadedGeometryRevision = sceneData.getObjectBatch().getGeometryRevision();
+    sceneData.getObjectBatch().clearDirtyVertexRanges();
+    return true;
+}
+
+bool IOSGPURenderer::uploadDirtyVertexRanges() {
+    if (!sceneData.isReady())
+        return false;
+
+    auto& batch = sceneData.getObjectBatch();
+    const auto& vertices = batch.getOrderedVertices();
+    const auto& ranges = batch.getDirtyVertexRanges();
+
+    if (ranges.empty()) {
+        uploadedGeometryRevision = batch.getGeometryRevision();
+        return true;
+    }
+    if (!vertexBuffer)
+        return false;
+
+    for (const auto& range : ranges) {
+        const usize endVertex =
+            static_cast<usize>(range.firstVertex) + range.vertexCount;
+        const usize byteOffset =
+            static_cast<usize>(range.firstVertex) * sizeof(ObjectVertex);
+        const usize byteCount =
+            static_cast<usize>(range.vertexCount) * sizeof(ObjectVertex);
+        if (range.vertexCount == 0 || endVertex > vertices.size() ||
+            byteOffset > static_cast<usize>(std::numeric_limits<GLintptr>::max()) ||
+            byteCount > static_cast<usize>(std::numeric_limits<GLsizeiptr>::max())) {
+            fail("animated sprite update produced an invalid VBO subrange");
+            return false;
+        }
+    }
+
+    GLint previousBuffer = 0;
+    glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &previousBuffer);
+    while (glGetError() != GL_NO_ERROR) {}
+    glBindBuffer(GL_ARRAY_BUFFER, vertexBuffer);
+
+    for (const auto& range : ranges) {
+        const usize byteOffset =
+            static_cast<usize>(range.firstVertex) * sizeof(ObjectVertex);
+        const usize byteCount =
+            static_cast<usize>(range.vertexCount) * sizeof(ObjectVertex);
+        glBufferSubData(
+            GL_ARRAY_BUFFER,
+            static_cast<GLintptr>(byteOffset),
+            static_cast<GLsizeiptr>(byteCount),
+            vertices.data() + range.firstVertex
+        );
+    }
+
+    const GLenum error = glGetError();
+    glBindBuffer(GL_ARRAY_BUFFER, static_cast<GLuint>(previousBuffer));
+    if (error != GL_NO_ERROR) {
+        fail(fmt::format("animated sprite VBO update failed (GL error 0x{:X})", error));
+        return false;
+    }
+
+    uploadedGeometryRevision = batch.getGeometryRevision();
+    batch.clearDirtyVertexRanges();
     return true;
 }
 
@@ -677,7 +768,7 @@ void IOSGPURenderer::drawLayer(const LayerKey& key) {
     // Blend-state selection is refreshed once in PlayLayer::updateVisibility,
     // before Cocos visits the per-layer GPU nodes. Every node in this frame
     // therefore consumes one stable sorted batch and matching draw ranges.
-    const auto& batch = sceneData.getObjectBatch();
+    auto& batch = sceneData.getObjectBatch();
     const auto rangeIt = batch.getSortedBatch().layerRanges.find(key);
     if (rangeIt == batch.getSortedBatch().layerRanges.end())
         return;
@@ -691,9 +782,14 @@ void IOSGPURenderer::drawLayer(const LayerKey& key) {
         return;
     }
 
-    if (batch.getOrderRevision() != uploadedOrderRevision &&
-        !uploadOrderedVertices()) {
-        fail("could not upload updated blend-order vertex stream");
+    if (batch.getOrderRevision() != uploadedOrderRevision) {
+        if (!uploadOrderedVertices()) {
+            fail("could not upload updated blend-order vertex stream");
+            return;
+        }
+    } else if (batch.getGeometryRevision() != uploadedGeometryRevision &&
+        !uploadDirtyVertexRanges()) {
+        fail("could not upload animated sprite vertex updates");
         return;
     }
 

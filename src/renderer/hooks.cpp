@@ -10,6 +10,7 @@
 #include "ios_upstream/IOSGPUCapabilities.hpp"
 #include "ios_upstream/IOSSceneData.hpp"
 #include "ios_upstream/IOSGPURenderer.hpp"
+#include "ios_upstream/IOSCrashDiagnostics.hpp"
 #include <Geode/utils/cocos.hpp>
 #include <decomp/GJBaseGameLayer.hpp>
 #include <Geode/binding/CheckpointObject.hpp>
@@ -99,6 +100,12 @@ class $modify(RendererPlayLayer, PlayLayer) {
                 "BISMUTH iOS GPU STARTUP\nPlayLayer::resetLevel hook: ENTERED\nrenderer create: PENDING"
             );
             log::info("Bismuth iOS GPU lifecycle: PlayLayer::resetLevel new-layer hook entered");
+            IOSUpstream::crashBreadcrumb(fmt::format(
+                "PlayLayer::resetLevel ENTER layer={:p} objects={} stockBatches={}",
+                static_cast<void*>(this),
+                m_objects ? m_objects->count() : 0,
+                m_batchNodes ? m_batchNodes->count() : 0
+            ));
 
             // Exclusive ownership is intentional: no stock Cocos batches may
             // become visible even when GPU renderer construction fails.
@@ -586,7 +593,29 @@ class $modify(RendererCheckpointObject, CheckpointObject) {
 #include <Geode/modify/GameObject.hpp>
 class $modify(RendererTrackedGameObject, GameObject) {
     void activateObject() {
+        if (IOSUpstream::crashDiagnosticsEnabled()) {
+            const auto children = this->getChildren();
+            IOSUpstream::crashBreadcrumb(fmt::format(
+                "GameObject::activateObject ENTER id={} ptr={:p} start=({:.2f},{:.2f}) activated={} mainColor={} detailColor={} glow={:p} colorSprite={:p} children={}",
+                m_objectID,
+                static_cast<void*>(this),
+                m_startPosition.x,
+                m_startPosition.y,
+                m_isActivated,
+                m_activeMainColorID,
+                m_activeDetailColorID,
+                static_cast<void*>(m_glowSprite),
+                static_cast<void*>(m_colorSprite),
+                children ? children->count() : 0
+            ));
+        }
         GameObject::activateObject();
+        IOSUpstream::crashBreadcrumb(fmt::format(
+            "GameObject::activateObject EXIT id={} ptr={:p} activated={}",
+            m_objectID,
+            static_cast<void*>(this),
+            m_isActivated
+        ));
 
         if (Renderer::get()) {
             if (auto resolved = ResolvedStateLayer::getCurrent())
@@ -595,7 +624,22 @@ class $modify(RendererTrackedGameObject, GameObject) {
     }
 
     void deactivateObject(bool value) {
+        if (IOSUpstream::crashDiagnosticsEnabled()) {
+            IOSUpstream::crashBreadcrumb(fmt::format(
+                "GameObject::deactivateObject ENTER id={} ptr={:p} value={} activated={}",
+                m_objectID,
+                static_cast<void*>(this),
+                value,
+                m_isActivated
+            ));
+        }
         GameObject::deactivateObject(value);
+        IOSUpstream::crashBreadcrumb(fmt::format(
+            "GameObject::deactivateObject EXIT id={} ptr={:p} activated={}",
+            m_objectID,
+            static_cast<void*>(this),
+            m_isActivated
+        ));
 
         if (Renderer::get()) {
             if (auto resolved = ResolvedStateLayer::getCurrent())
@@ -640,11 +684,18 @@ class $modify(RendererInterleavedSpriteBatchNode, cocos2d::CCSpriteBatchNode) {
         // transition; it must not suppress the incoming scene's setup draws.
         if (auto gpuRenderer = IOSUpstream::IOSGPURenderer::getCurrent();
             gpuRenderer && gpuRenderer->isReadyForDrawing()) {
+            auto owner = gpuRenderer->getPlayLayer();
             cocos2d::CCNode* ancestor = this;
-            auto owner = static_cast<cocos2d::CCNode*>(gpuRenderer->getPlayLayer());
             while (ancestor && ancestor != owner)
                 ancestor = ancestor->getParent();
-            if (owner && ancestor == owner)
+
+            // Only PlayLayer::m_batchNodes contain the stock GameObject atlases
+            // replaced by GPU layer nodes. Ground/background batches are not
+            // part of that object stream and must continue through Cocos draw.
+            const bool isStockObjectBatch =
+                owner && ancestor == owner && owner->m_batchNodes &&
+                owner->m_batchNodes->indexOfObject(this) != UINT_MAX;
+            if (isStockObjectBatch)
                 return;
         }
 
@@ -715,8 +766,16 @@ class $modify(RendererCCDisplayLinkDirector, CCDisplayLinkDirector) {
 
         // Re-acquire after the scene tick: a PlayLayer transition may destroy
         // the renderer that was current at frame start.
-        if (auto currentGPU = IOSUpstream::IOSGPURenderer::getCurrent())
+        if (auto currentGPU = IOSUpstream::IOSGPURenderer::getCurrent()) {
             currentGPU->finishFrame();
+            static u64 crashDiagnosticFrame = 0;
+            if (IOSUpstream::crashDiagnosticsEnabled() &&
+                (++crashDiagnosticFrame % 60u) == 0u) {
+                IOSUpstream::crashBreadcrumb(
+                    currentGPU->getCrashDiagnosticSnapshot()
+                );
+            }
+        }
 
         BProfiler::frameEnd();
 #else

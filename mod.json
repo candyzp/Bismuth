@@ -38,6 +38,12 @@
 			"type": "bool",
 			"default": false,
 			"description": "Shows resolved-state classification, dirty-state activity, GPU state uploads, and the current stock/GPU-assist status. Detailed probing adds diagnostic CPU overhead and should be disabled for normal play."
+		},
+		"crash_diagnostics": {
+			"name": "Detailed crash diagnostics",
+			"type": "bool",
+			"default": false,
+			"description": "Adds object activation, renderer, draw and frame breadcrumbs to Geode's native crash report. No on-screen debugger or second crash handler is installed."
 		}
 	}
 }

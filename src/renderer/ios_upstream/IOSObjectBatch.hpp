@@ -15,6 +15,11 @@ namespace IOSUpstream {
 
 class ObjectBatch {
 public:
+    struct VertexRange {
+        u32 firstVertex = 0;
+        u32 vertexCount = 0;
+    };
+
     ~ObjectBatch();
     using TextureResolver = std::function<cocos2d::CCTexture2D*(SpriteSheet)>;
 
@@ -43,12 +48,21 @@ public:
     u32 getObjectIndex(GameObject* object) const;
     bool isBuilt() const { return built; }
     u64 getOrderRevision() const { return orderRevision; }
+    u64 getGeometryRevision() const { return geometryRevision; }
+    const std::vector<VertexRange>& getDirtyVertexRanges() const { return dirtyVertexRanges; }
+    void clearDirtyVertexRanges() { dirtyVertexRanges.clear(); }
 
 private:
     struct SpriteSource {
         GameObject* object = nullptr;
         cocos2d::CCSprite* sprite = nullptr;
         SpriteType type = SpriteType::BASE;
+        cocos2d::CCAffineTransform transform {};
+        cocos2d::CCRect lastTextureRect {};
+        cocos2d::CCTexture2D* lastTexture = nullptr;
+        bool lastTextureRectRotated = false;
+        bool lastFlipX = false;
+        bool lastFlipY = false;
     };
 
     struct SpriteVertexTransforms {
@@ -93,6 +107,9 @@ private:
 
     // Initial object order, before the owner-style layer/sheet/blend sort.
     std::vector<ObjectVertex> sourceVertices;
+    // Keep the normalized mesh points so an animated atlas frame can rebuild
+    // only that sprite's vertices without traversing the entire level.
+    std::vector<glm::vec2> sourceVertexPoints;
     std::vector<InputSprite> sourceInputSprites;
     std::vector<SpriteAppearance> sourceSpriteAppearances;
     std::vector<SpriteSource> sourceSpritePointers;
@@ -101,6 +118,9 @@ private:
     // sprite/object/group indices continue to address the source-order metadata
     // tables above, avoiding copies of the InputSprite/appearance/pointer arrays.
     std::vector<ObjectVertex> orderedVertices;
+    // Source sprite index -> first vertex in the scheduler-ordered VBO stream.
+    std::vector<u32> orderedVertexStarts;
+    std::vector<VertexRange> dirtyVertexRanges;
 
     std::set<LayerKey> usedLayerKeys;
     SortedObjectBatch sortedBatch;
@@ -116,6 +136,7 @@ private:
     u32 currentSpriteIndex = 0;
 
     u64 orderRevision = 0;
+    u64 geometryRevision = 0;
     bool built = false;
 };
 

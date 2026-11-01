@@ -35,12 +35,14 @@ public:
     bool isFailed() const { return failed; }
     bool isReadyForDrawing() const { return initialized && !failed; }
     const char* getFailureReason() const { return failureReason.c_str(); }
+    std::string getCrashDiagnosticSnapshot() const;
 
 private:
     bool queryAndValidateCapabilities();
     bool createShaderProgram();
     bool createVertexBuffer();
     bool uploadOrderedVertices();
+    bool uploadDirtyVertexRanges();
     bool createLayerNodes();
     void hideStockBatches();
     void updateDebugOverlay();
@@ -54,6 +56,7 @@ private:
     Shader* shader = nullptr;
     u32 vertexBuffer = 0;
     u64 uploadedOrderRevision = 0;
+    u64 uploadedGeometryRevision = 0;
     std::vector<cocos2d::CCNode*> layerNodes;
     std::set<LayerKey> layerNodeKeys;
 

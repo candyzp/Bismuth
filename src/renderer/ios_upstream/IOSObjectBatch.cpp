@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <utility>
 
 using namespace geode::prelude;
@@ -101,16 +102,20 @@ void ObjectBatch::clear() {
     objectInfos.clear();
     objectIndices.clear();
     sourceVertices.clear();
+    sourceVertexPoints.clear();
     sourceInputSprites.clear();
     sourceSpriteAppearances.clear();
     sourceSpritePointers.clear();
     orderedVertices.clear();
+    orderedVertexStarts.clear();
+    dirtyVertexRanges.clear();
     usedLayerKeys.clear();
     sortedBatch = {};
     appliedBlendStates = {};
     hasAppliedBlendStates = false;
     currentSpriteIndex = 0;
     orderRevision = 0;
+    geometryRevision = 0;
     built = false;
 }
 
@@ -281,6 +286,7 @@ void ObjectBatch::writeSpriteVertex(
     );
     vertex.objectStartPosition = objectStartPosition;
     sourceVertices.push_back(vertex);
+    sourceVertexPoints.push_back(point);
 }
 
 bool ObjectBatch::addSprite(
@@ -382,7 +388,17 @@ bool ObjectBatch::addSprite(
     // never dereferences a destroyed orb/object root after gameplay activation.
     sprite->retain();
     object->retain();
-    sourceSpritePointers.push_back({object, sprite, type});
+    SpriteSource source;
+    source.object = object;
+    source.sprite = sprite;
+    source.type = type;
+    source.transform = transform;
+    source.lastTextureRect = sprite->getTextureRect();
+    source.lastTexture = sprite->getTexture();
+    source.lastTextureRectRotated = sprite->isTextureRectRotated();
+    source.lastFlipX = sprite->isFlipX();
+    source.lastFlipY = sprite->isFlipY();
+    sourceSpritePointers.push_back(source);
 
     workGroupScheduler.addSprite(
         object, sprite, type, currentSpriteIndex, triangleCount, groupCombinationIndex
@@ -455,6 +471,10 @@ bool ObjectBatch::applySortedBatch(const SortedObjectBatch& newSortedBatch) {
 
     std::vector<u8> seen(sourceInputSprites.size(), 0);
     std::vector<ObjectVertex> newOrderedVertices;
+    std::vector<u32> newOrderedVertexStarts(
+        sourceInputSprites.size(),
+        std::numeric_limits<u32>::max()
+    );
     newOrderedVertices.reserve(sourceVertices.size());
 
     for (u32 sourceIndex : newSortedBatch.inputSpriteIndices) {
@@ -466,9 +486,12 @@ bool ObjectBatch::applySortedBatch(const SortedObjectBatch& newSortedBatch) {
         const usize firstVertex = static_cast<usize>(input.indexStart) * 3;
         const usize vertexCount = static_cast<usize>(input.indexCount) * 3;
         if (firstVertex > sourceVertices.size() ||
-            vertexCount > sourceVertices.size() - firstVertex)
+            vertexCount > sourceVertices.size() - firstVertex ||
+            newOrderedVertices.size() > std::numeric_limits<u32>::max())
             return false;
 
+        newOrderedVertexStarts[sourceIndex] =
+            static_cast<u32>(newOrderedVertices.size());
         newOrderedVertices.insert(
             newOrderedVertices.end(),
             sourceVertices.begin() + firstVertex,
@@ -555,6 +578,8 @@ bool ObjectBatch::applySortedBatch(const SortedObjectBatch& newSortedBatch) {
     // GPU batch while the game continues running.
     sortedBatch = newSortedBatch;
     orderedVertices = std::move(newOrderedVertices);
+    orderedVertexStarts = std::move(newOrderedVertexStarts);
+    dirtyVertexRanges.clear();
     ++orderRevision;
     return true;
 }
@@ -632,15 +657,139 @@ bool ObjectBatch::build(
 
 void ObjectBatch::refreshSpriteAppearances() {
     if (!built || sourceSpritePointers.size() != sourceSpriteAppearances.size() ||
-        sourceInputSprites.size() != sourceSpriteAppearances.size())
+        sourceInputSprites.size() != sourceSpriteAppearances.size() ||
+        sourceVertexPoints.size() != sourceVertices.size() ||
+        orderedVertexStarts.size() != sourceInputSprites.size())
         return;
 
+    bool geometryChanged = false;
     for (usize i = 0; i < sourceSpritePointers.size(); ++i) {
-        const auto& source = sourceSpritePointers[i];
+        auto& source = sourceSpritePointers[i];
+        const auto& input = sourceInputSprites[i];
         const bool directTint =
-            (sourceInputSprites[i].colorChannelFlags & IOS_COLOR_CHANNEL_DIRECT_FLAG) != 0;
+            (input.colorChannelFlags & IOS_COLOR_CHANNEL_DIRECT_FLAG) != 0;
         sourceSpriteAppearances[i] = captureSpriteAppearance(source.sprite, directTint);
+
+        if (!source.sprite || !source.object)
+            continue;
+
+        const CCRect currentRect = source.sprite->getTextureRect();
+        auto* currentTexture = source.sprite->getTexture();
+        const bool currentRotated = source.sprite->isTextureRectRotated();
+        const bool currentFlipX = source.sprite->isFlipX();
+        const bool currentFlipY = source.sprite->isFlipY();
+
+        // Cocos continues to advance animated CCSprite frames, but the GPU
+        // vertex stream is static unless we refresh the sprite's atlas mapping.
+        const bool frameChanged =
+            currentRect.origin.x != source.lastTextureRect.origin.x ||
+            currentRect.origin.y != source.lastTextureRect.origin.y ||
+            currentRect.size.width != source.lastTextureRect.size.width ||
+            currentRect.size.height != source.lastTextureRect.size.height ||
+            currentTexture != source.lastTexture ||
+            currentRotated != source.lastTextureRectRotated ||
+            currentFlipX != source.lastFlipX ||
+            currentFlipY != source.lastFlipY;
+        if (!frameChanged)
+            continue;
+
+        const SpriteSheet sheet = ObjectUtils::getSpritesheetOfObject(
+            source.object, source.type
+        );
+        auto texture = resolveTexture ? resolveTexture(sheet) : nullptr;
+        if (!texture)
+            texture = currentTexture;
+        if (!texture)
+            continue;
+
+        const auto transforms = getSpriteVertexTransform(
+            source.sprite, source.transform, texture
+        );
+        const glm::vec2 objectStartPosition =
+            ccPointToGLM(source.object->m_startPosition);
+        const u32 firstSourceVertex = input.indexStart * 3u;
+        const u32 vertexCount = input.indexCount * 3u;
+        const u32 orderedFirstVertex = orderedVertexStarts[i];
+
+        if (firstSourceVertex > sourceVertices.size() ||
+            vertexCount > sourceVertices.size() - firstSourceVertex ||
+            firstSourceVertex > sourceVertexPoints.size() ||
+            vertexCount > sourceVertexPoints.size() - firstSourceVertex ||
+            orderedFirstVertex == std::numeric_limits<u32>::max() ||
+            orderedFirstVertex > orderedVertices.size() ||
+            vertexCount > orderedVertices.size() - orderedFirstVertex) {
+            log::error(
+                "Bismuth iOS animation refresh rejected sprite {}: source/ordered vertex range is invalid",
+                i
+            );
+            continue;
+        }
+
+        for (u32 vertexOffset = 0; vertexOffset < vertexCount; ++vertexOffset) {
+            const usize sourceIndex =
+                static_cast<usize>(firstSourceVertex) + vertexOffset;
+            const glm::vec2 point = sourceVertexPoints[sourceIndex];
+
+            auto& sourceVertex = sourceVertices[sourceIndex];
+            sourceVertex.positionOffset =
+                transforms.positionRight * point.x +
+                transforms.positionUp * point.y +
+                transforms.positionBottomLeft - objectStartPosition;
+            sourceVertex.texCoord =
+                transforms.texCoordRight * point.x +
+                transforms.texCoordUp * point.y +
+                transforms.texCoordBottomLeft;
+
+            auto& orderedVertex =
+                orderedVertices[static_cast<usize>(orderedFirstVertex) + vertexOffset];
+            orderedVertex.positionOffset = sourceVertex.positionOffset;
+            orderedVertex.texCoord = sourceVertex.texCoord;
+        }
+
+        source.lastTextureRect = currentRect;
+        source.lastTexture = currentTexture;
+        source.lastTextureRectRotated = currentRotated;
+        source.lastFlipX = currentFlipX;
+        source.lastFlipY = currentFlipY;
+        dirtyVertexRanges.push_back({orderedFirstVertex, vertexCount});
+        geometryChanged = true;
     }
+
+    if (!geometryChanged)
+        return;
+
+    std::sort(
+        dirtyVertexRanges.begin(),
+        dirtyVertexRanges.end(),
+        [](const VertexRange& lhs, const VertexRange& rhs) {
+            return lhs.firstVertex < rhs.firstVertex;
+        }
+    );
+
+    std::vector<VertexRange> mergedRanges;
+    mergedRanges.reserve(dirtyVertexRanges.size());
+    for (const auto& range : dirtyVertexRanges) {
+        if (mergedRanges.empty()) {
+            mergedRanges.push_back(range);
+            continue;
+        }
+
+        auto& previous = mergedRanges.back();
+        const u64 previousEnd =
+            static_cast<u64>(previous.firstVertex) + previous.vertexCount;
+        const u64 currentEnd =
+            static_cast<u64>(range.firstVertex) + range.vertexCount;
+        if (range.firstVertex <= previousEnd) {
+            const u64 mergedEnd = std::max(previousEnd, currentEnd);
+            previous.vertexCount =
+                static_cast<u32>(mergedEnd - previous.firstVertex);
+        } else {
+            mergedRanges.push_back(range);
+        }
+    }
+
+    dirtyVertexRanges = std::move(mergedRanges);
+    ++geometryRevision;
 }
 
 } // namespace IOSUpstream
