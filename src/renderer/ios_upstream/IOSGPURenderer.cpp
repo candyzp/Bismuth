@@ -388,8 +388,12 @@ void IOSGPURenderer::enforceGPUOwnership() {
     // Re-assert exclusive GPU ownership after Geometry Dash performs its level
     // reset, including the failure case. There is never a stock draw fallback.
     hideStockBatches();
-    if (isReadyForDrawing())
+    if (isReadyForDrawing()) {
+        // Z-order containers are rebuilt by PlayLayer::resetLevel(). Do not
+        // assume they exist during initForPlayLayer(); synchronize only after
+        // the base reset has completed and keep retrying on later resets.
         syncLayerNodes();
+    }
     updateDebugOverlay();
 }
 
@@ -572,9 +576,10 @@ bool IOSGPURenderer::syncLayerNodes() {
             ++attachedActiveLayerCount;
     }
 
-    if (activeLayerCount != 0 && attachedActiveLayerCount == 0) {
+    if (activeLayerCount != attachedActiveLayerCount) {
         fail(fmt::format(
-            "GPU batch has {} active layers, but none has a drawable Z-order node ({} missing)",
+            "GPU layer attachment incomplete after PlayLayer reset: {} of {} active ranges attached ({} missing Z-order nodes)",
+            attachedActiveLayerCount,
             activeLayerCount,
             missingLayerNodeCount
         ));
@@ -627,16 +632,14 @@ bool IOSGPURenderer::initForPlayLayer(PlayLayer* playLayer) {
         return false;
     updateStartupDiagnostic("BISMUTH iOS GPU STARTUP\nVertex buffer upload: PASS");
 
-    if (!createLayerNodes())
-        return false;
-    updateStartupDiagnostic(
-        "BISMUTH iOS GPU STARTUP\nGPU layer nodes: " +
-        std::to_string(layerNodes.size()) +
-        " | Active ranges: " + std::to_string(activeLayerCount) +
-        " | Missing: " + std::to_string(missingLayerNodeCount)
-    );
-
+    // PlayLayer::resetLevel() creates/rebuilds the stock Z-order containers
+    // referenced by parentForZLayer(). The strict GPU layer nodes are attached
+    // by enforceGPUOwnership() after that reset returns, not during extraction.
     initialized = true;
+    updateStartupDiagnostic(
+        "BISMUTH iOS GPU STARTUP\nGPU core initialized: YES\n"
+        "Waiting for PlayLayer reset to finish before attaching GPU layer nodes"
+    );
 
     log::info(
         "Bismuth iOS GPU-only renderer initialized: {} sprites, {} layer nodes, {} group combinations",

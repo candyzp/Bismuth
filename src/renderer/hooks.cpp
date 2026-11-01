@@ -119,7 +119,6 @@ class $modify(RendererPlayLayer, PlayLayer) {
             // objects are prepared but before the final PlayLayer reset.
             auto gpuRenderer = IOSUpstream::IOSGPURenderer::create(this);
             if (gpuRenderer) {
-                batchLayer->addChild(gpuRenderer, -100000);
                 if (gpuRenderer->isFailed()) {
                     IOSUpstream::IOSGPURenderer::updateStartupDiagnostic(
                         std::string("BISMUTH iOS GPU: FAILED\\nrenderer create: RETURNED\\n") +
@@ -139,10 +138,25 @@ class $modify(RendererPlayLayer, PlayLayer) {
             }
 
             PlayLayer::resetLevel();
-            if (gpuRenderer)
+
+            // The base reset creates the owner Z-order batch containers. Attach
+            // the GPU renderer only afterwards so reset cannot detach it, then
+            // construct its sibling GPU draw nodes against the live containers.
+            batchLayer = this->m_objectLayer;
+            if (gpuRenderer && batchLayer) {
+                if (gpuRenderer->getParent() != batchLayer) {
+                    if (gpuRenderer->getParent())
+                        gpuRenderer->removeFromParentAndCleanup(false);
+                    batchLayer->addChild(gpuRenderer, -100000);
+                }
                 gpuRenderer->enforceGPUOwnership();
-            else
+            } else {
+                if (gpuRenderer)
+                    gpuRenderer->reportFailure(
+                        "PlayLayer reset completed without a valid object layer for GPU renderer attachment"
+                    );
                 hideStockPlayLayerBatches(this);
+            }
             return;
         }
 
