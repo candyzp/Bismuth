@@ -1,6 +1,9 @@
 name: Build iOS Geode Mod
 
 on:
+  push:
+    branches:
+      - 'rework/ios-gpu-v2'
   workflow_dispatch:
   pull_request:
     paths:

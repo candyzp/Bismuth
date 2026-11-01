@@ -9,8 +9,6 @@
 #include <string>
 #include <vector>
 
-namespace cocos2d { class CCLabelBMFont; }
-
 class Shader;
 
 namespace IOSUpstream {
@@ -22,6 +20,7 @@ public:
 
     static IOSGPURenderer* create(PlayLayer* layer);
     static IOSGPURenderer* getCurrent();
+    static void updateStartupDiagnostic(const std::string& message);
 
     bool initForPlayLayer(PlayLayer* layer);
     void reset();
@@ -44,7 +43,6 @@ private:
     bool uploadOrderedVertices();
     bool createLayerNodes();
     void hideStockBatches();
-    void createDebugOverlay();
     void updateDebugOverlay();
     void fail(const std::string& reason);
 
@@ -61,15 +59,17 @@ private:
 
     IOSGPU::Capabilities capabilities;
     std::string failureReason;
-    cocos2d::CCLabelBMFont* debugOverlay = nullptr;
     u32 layerVisitsThisFrame = 0;
     u32 lastFrameLayerVisits = 0;
+    u32 drawAttemptsThisFrame = 0;
+    u32 lastFrameDrawAttempts = 0;
     u32 drawsThisFrame = 0;
     u32 lastFrameDraws = 0;
     u32 activeLayerCount = 0;
     u32 missingLayerNodeCount = 0;
     bool initialized = false;
     bool failed = false;
+    bool hasFinishedFrame = false;
     bool reportedDrawFailure = false;
 };
 

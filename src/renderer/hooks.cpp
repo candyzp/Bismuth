@@ -21,6 +21,8 @@ using namespace geode::prelude;
 static bool newPlayLayer = false;
 
 #ifdef GEODE_IS_IOS
+static bool resetLevelHookSeenDuringSetup = false;
+
 static void hideStockPlayLayerBatches(PlayLayer* layer) {
     if (!layer || !layer->m_batchNodes)
         return;
@@ -35,6 +37,13 @@ static void hideStockPlayLayerBatches(PlayLayer* layer) {
 class $modify(RendererPlayLayer, PlayLayer) {
     void setupHasCompleted() {
         newPlayLayer = true;
+#ifdef GEODE_IS_IOS
+        resetLevelHookSeenDuringSetup = false;
+        IOSUpstream::IOSGPURenderer::updateStartupDiagnostic(
+            "BISMUTH iOS GPU STARTUP\nPlayLayer::setupHasCompleted: ENTERED\nresetLevel hook: WAITING"
+        );
+        log::info("Bismuth iOS GPU lifecycle: PlayLayer::setupHasCompleted entered");
+#endif
         PlayLayer::setupHasCompleted();
 #ifdef GEODE_IS_IOS
         static bool loggedGPUCapabilities = false;
@@ -46,6 +55,38 @@ class $modify(RendererPlayLayer, PlayLayer) {
                 log::error("Bismuth iOS could not query the active OpenGL ES context");
             loggedGPUCapabilities = true;
         }
+
+        if (!resetLevelHookSeenDuringSetup) {
+            IOSUpstream::IOSGPURenderer::updateStartupDiagnostic(
+                "BISMUTH iOS GPU: FAILED TO REACH RESET HOOK\n"
+                "setupHasCompleted: RETURNED\n"
+                "resetLevel: NOT OBSERVED\n"
+                "renderer create/init: NOT REACHED"
+            );
+        } else if (auto gpuRenderer = IOSUpstream::IOSGPURenderer::getCurrent()) {
+            if (gpuRenderer->isFailed()) {
+                IOSUpstream::IOSGPURenderer::updateStartupDiagnostic(
+                    std::string("BISMUTH iOS GPU: FAILED\nsetupHasCompleted: RETURNED\nresetLevel: OBSERVED\n") +
+                    gpuRenderer->getFailureReason()
+                );
+            } else if (gpuRenderer->isReadyForDrawing()) {
+                IOSUpstream::IOSGPURenderer::updateStartupDiagnostic(
+                    "BISMUTH iOS GPU: ACTIVE\nsetupHasCompleted: RETURNED\nresetLevel: OBSERVED\nstock batches: HIDDEN"
+                );
+            } else {
+                IOSUpstream::IOSGPURenderer::updateStartupDiagnostic(
+                    "BISMUTH iOS GPU: STARTING\nsetupHasCompleted: RETURNED\nresetLevel: OBSERVED\nrenderer not ready"
+                );
+            }
+        } else {
+            IOSUpstream::IOSGPURenderer::updateStartupDiagnostic(
+                "BISMUTH iOS GPU: FAILED\nsetupHasCompleted: RETURNED\nresetLevel: OBSERVED\nrenderer owner missing"
+            );
+        }
+        log::info(
+            "Bismuth iOS GPU lifecycle: setupHasCompleted returned; resetLevel hook {}",
+            resetLevelHookSeenDuringSetup ? "was reached" : "was not reached"
+        );
 #endif
         newPlayLayer = false;
     }
@@ -53,6 +94,12 @@ class $modify(RendererPlayLayer, PlayLayer) {
     void resetLevel() {
 #ifdef GEODE_IS_IOS
         if (newPlayLayer) {
+            resetLevelHookSeenDuringSetup = true;
+            IOSUpstream::IOSGPURenderer::updateStartupDiagnostic(
+                "BISMUTH iOS GPU STARTUP\nPlayLayer::resetLevel hook: ENTERED\nrenderer create: PENDING"
+            );
+            log::info("Bismuth iOS GPU lifecycle: PlayLayer::resetLevel new-layer hook entered");
+
             // Exclusive ownership is intentional: no stock Cocos batches may
             // become visible even when GPU renderer construction fails.
             hideStockPlayLayerBatches(this);
@@ -60,6 +107,9 @@ class $modify(RendererPlayLayer, PlayLayer) {
             auto batchLayer = this->m_objectLayer;
             if (!batchLayer) {
                 log::error("Bismuth GPU-only beta FAILED: object layer not found");
+                IOSUpstream::IOSGPURenderer::updateStartupDiagnostic(
+                    "BISMUTH iOS GPU: FAILED\nresetLevel hook: ENTERED\nobject layer: MISSING\nstock batches: HIDDEN"
+                );
                 PlayLayer::resetLevel();
                 hideStockPlayLayerBatches(this);
                 return;
@@ -68,10 +118,25 @@ class $modify(RendererPlayLayer, PlayLayer) {
             // Match the owner's lifecycle: create the renderer after level
             // objects are prepared but before the final PlayLayer reset.
             auto gpuRenderer = IOSUpstream::IOSGPURenderer::create(this);
-            if (gpuRenderer)
+            if (gpuRenderer) {
                 batchLayer->addChild(gpuRenderer, -100000);
-            else
+                if (gpuRenderer->isFailed()) {
+                    IOSUpstream::IOSGPURenderer::updateStartupDiagnostic(
+                        std::string("BISMUTH iOS GPU: FAILED\\nrenderer create: RETURNED\\n") +
+                        gpuRenderer->getFailureReason()
+                    );
+                } else {
+                    IOSUpstream::IOSGPURenderer::updateStartupDiagnostic(
+                        "BISMUTH iOS GPU STARTUP\\nrenderer create: RETURNED\\nrenderer initialized: " +
+                        std::string(gpuRenderer->isReadyForDrawing() ? "YES" : "NO")
+                    );
+                }
+            } else {
                 log::error("Bismuth GPU-only beta FAILED: renderer owner creation failed");
+                IOSUpstream::IOSGPURenderer::updateStartupDiagnostic(
+                    "BISMUTH iOS GPU: FAILED\\nrenderer create returned null\\nstock batches: HIDDEN"
+                );
+            }
 
             PlayLayer::resetLevel();
             if (gpuRenderer)

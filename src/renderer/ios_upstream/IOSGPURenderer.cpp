@@ -4,7 +4,6 @@
 
 #include "../Shader.hpp"
 #include <Geode/cocos/CCDirector.h>
-#include <Geode/cocos/label_nodes/CCLabelBMFont.h>
 #include <Geode/cocos/label_nodes/CCLabelTTF.h>
 #include <Geode/cocos/sprite_nodes/CCSpriteBatchNode.h>
 #include <Geode/utils/cocos.hpp>
@@ -18,15 +17,11 @@ using namespace geode::prelude;
 
 namespace IOSUpstream {
 
+IOSGPURenderer* IOSGPURenderer::currentRenderer = nullptr;
+
 namespace {
 
-cocos2d::CCNode* resolveDebugParent(PlayLayer* layer) {
-    if (layer && layer->getParent())
-        return layer;
-    if (auto scene = CCDirector::get()->getRunningScene())
-        return scene;
-    return nullptr;
-}
+cocos2d::CCLabelTTF* startupDiagnosticLabel = nullptr;
 
 constexpr GLint OBJECT_DATA_TEXTURE_UNIT = 0;
 constexpr GLint GROUP_DATA_TEXTURE_UNIT = 1;
@@ -195,13 +190,6 @@ static bool isValidDrawRange(const LayerDrawRange& range, usize vertexCount) {
 } // namespace
 
 IOSGPURenderer::~IOSGPURenderer() {
-    if (debugOverlay) {
-        if (debugOverlay->getParent())
-            debugOverlay->removeFromParentAndCleanup(true);
-        debugOverlay->release();
-        debugOverlay = nullptr;
-    }
-
     // Layer nodes are siblings under PlayLayer::m_objectLayer. They resolve
     // their owner through getCurrent(), so they become inert as soon as this
     // renderer is destroyed and are released with their owning PlayLayer.
@@ -223,59 +211,59 @@ IOSGPURenderer* IOSGPURenderer::getCurrent() {
     return currentRenderer;
 }
 
-void IOSGPURenderer::createDebugOverlay() {
-    if (!layer || debugOverlay)
+void IOSGPURenderer::updateStartupDiagnostic(const std::string& message) {
+    auto director = CCDirector::get();
+    if (!director)
         return;
 
-    auto parent = resolveDebugParent(layer);
-    if (!parent) {
-        log::error("Bismuth iOS GPU: no scene parent available for startup debug overlay");
-        return;
-    }
-
-    auto label = cocos2d::CCLabelTTF::create(
-        "BISMUTH iOS GPU: STARTING",
-        "Arial",
-        20.0f
-    );
-    if (!label) {
-        log::error("Bismuth iOS GPU: failed to create the startup debug status label");
+    // Keep startup diagnostics outside PlayLayer so resetLevel cannot remove
+    // them, and so they exist before IOSGPURenderer construction succeeds.
+    auto scene = director->getRunningScene();
+    if (!scene) {
+        log::warn("Bismuth iOS GPU diagnostic: no running scene is available yet");
         return;
     }
 
-    debugOverlay = label;
-    debugOverlay->retain();
-    debugOverlay->setAnchorPoint(CCPoint(0.f, 1.f));
-    debugOverlay->setPosition(CCPoint(
-        8.f,
-        CCDirector::get()->getWinSize().height - 8.f
-    ));
-    debugOverlay->setScale(1.0f);
-    debugOverlay->setColor({255, 235, 90});
-    debugOverlay->setOpacity(240);
-    debugOverlay->setVisible(true);
-    parent->addChild(debugOverlay, 1000000);
-    updateDebugOverlay();
+    if (!startupDiagnosticLabel) {
+        startupDiagnosticLabel = cocos2d::CCLabelTTF::create(
+            "BISMUTH iOS GPU: STARTING",
+            "Arial",
+            14.0f
+        );
+        if (!startupDiagnosticLabel) {
+            log::error("Bismuth iOS GPU diagnostic: failed to create CCLabelTTF");
+            return;
+        }
+
+        startupDiagnosticLabel->retain();
+        startupDiagnosticLabel->setAnchorPoint(CCPoint(0.f, 1.f));
+        startupDiagnosticLabel->setScale(1.0f);
+        startupDiagnosticLabel->setOpacity(245);
+    }
+
+    if (startupDiagnosticLabel->getParent() != scene) {
+        if (startupDiagnosticLabel->getParent())
+            startupDiagnosticLabel->removeFromParentAndCleanup(false);
+        scene->addChild(startupDiagnosticLabel, 1000000);
+    }
+
+    const auto winSize = director->getWinSize();
+    startupDiagnosticLabel->setAnchorPoint(CCPoint(0.f, 1.f));
+    startupDiagnosticLabel->setPosition(CCPoint(8.f, winSize.height - 8.f));
+
+    ccColor3B color{255, 225, 90};
+    if (message.find("FAILED") != std::string::npos)
+        color = {255, 100, 100};
+    else if (message.find("ACTIVE") != std::string::npos)
+        color = {110, 255, 150};
+
+    startupDiagnosticLabel->setColor(color);
+    startupDiagnosticLabel->setString(message.c_str());
+    startupDiagnosticLabel->setVisible(true);
 }
 
 void IOSGPURenderer::updateDebugOverlay() {
-    if (!debugOverlay)
-        return;
-
-    auto parent = resolveDebugParent(layer);
-    if (!parent) {
-        log::warn("Bismuth iOS GPU: cannot reattach startup debug overlay; no scene parent is active");
-        return;
-    }
-
-    if (debugOverlay->getParent() != parent) {
-        if (debugOverlay->getParent())
-            debugOverlay->removeFromParentAndCleanup(false);
-        parent->addChild(debugOverlay, 1000000);
-    }
-
-    const auto winSize = CCDirector::get()->getWinSize();
-    debugOverlay->setPosition(CCPoint(8.f, winSize.height - 8.f));
+    const auto& batch = sceneData.getObjectBatch();
 
     std::string status = failed
         ? "BISMUTH iOS GPU: FAILED"
@@ -283,68 +271,536 @@ void IOSGPURenderer::updateDebugOverlay() {
             ? "BISMUTH iOS GPU: ACTIVE"
             : "BISMUTH iOS GPU: STARTING";
 
+    if (!failed && initialized) {
+        if (batch.getSpriteCount() == 0 || batch.getOrderedVertices().empty())
+            status = "BISMUTH iOS GPU: READY, ZERO GEOMETRY";
+        else if (activeLayerCount == 0)
+            status = "BISMUTH iOS GPU: READY, ZERO ACTIVE LAYERS";
+        else if (layerNodes.empty())
+            status = "BISMUTH iOS GPU: READY, NO GPU LAYER NODES";
+        else if (hasFinishedFrame && lastFrameLayerVisits == 0)
+            status = "BISMUTH iOS GPU: NO GPU LAYER VISITS";
+        else if (hasFinishedFrame && lastFrameDraws == 0)
+            status = "BISMUTH iOS GPU: VISITED, NO GPU DRAWS";
+    }
+
     std::string detail;
     if (failed) {
         detail = failureReason;
-        debugOverlay->setColor({255, 105, 105});
     } else {
-        const auto& batch = sceneData.getObjectBatch();
-        detail = "Sprites " + std::to_string(batch.getSpriteCount()) +
-            " | Vertices " + std::to_string(batch.getOrderedVertices().size()) +
-            " | GPU layers " + std::to_string(layerNodes.size()) + "/" +
-            std::to_string(activeLayerCount) +
-            " | Missing " + std::to_string(missingLayerNodeCount) +
-            " | Visits/frame " + std::to_string(lastFrameLayerVisits) +
-            " | GPU draws/frame " + std::to_string(lastFrameDraws);
-        if (batch.getSpriteCount() == 0 ||
-            batch.getOrderedVertices().empty() ||
-            (activeLayerCount != 0 && lastFrameDraws == 0)) {
-            debugOverlay->setColor({255, 190, 80});
-        } else {
-            debugOverlay->setColor({105, 255, 150});
-        }
-        debugOverlay->setColor(initialized
-            ? ccColor3B{105, 255, 150}
-            : ccColor3B{255, 235, 90});
+        detail =
+            "Sprites: " + std::to_string(batch.getSpriteCount()) +
+            " | Vertices: " + std::to_string(batch.getOrderedVertices().size()) +
+            "\nShader: " + std::string(shader ? "ready" : "missing") +
+            " | VBO: " + std::string(vertexBuffer ? "ready" : "missing") +
+            "\nGPU nodes: " + std::to_string(layerNodes.size()) +
+            " | Active ranges: " + std::to_string(activeLayerCount) +
+            " | Missing: " + std::to_string(missingLayerNodeCount) +
+            "\nVisits: " + std::to_string(lastFrameLayerVisits) +
+            " | Draw attempts: " + std::to_string(lastFrameDrawAttempts) +
+            " | Successful draws: " + std::to_string(lastFrameDraws);
     }
 
-    const std::string message = status + "\n" + detail;
-    debugOverlay->setString(message.c_str());
-    debugOverlay->setVisible(true);
+    updateStartupDiagnostic(status + "\n" + detail);
 }
 
 void IOSGPURenderer::beginFrame() {
     layerVisitsThisFrame = 0;
+    drawAttemptsThisFrame = 0;
     drawsThisFrame = 0;
 }
 
 void IOSGPURenderer::finishFrame() {
     lastFrameLayerVisits = layerVisitsThisFrame;
+    lastFrameDrawAttempts = drawAttemptsThisFrame;
     lastFrameDraws = drawsThisFrame;
+    hasFinishedFrame = true;
     updateDebugOverlay();
 }
 
 IOSGPURenderer* IOSGPURenderer::create(PlayLayer* playLayer) {
+    updateStartupDiagnostic("BISMUTH iOS GPU STARTUP\nRenderer create: ENTERED");
+
     if (currentRenderer && currentRenderer->getPlayLayer() != playLayer) {
         auto previous = currentRenderer;
         if (previous->getParent())
             previous->removeFromParentAndCleanup(true);
     }
-    if (currentRenderer && currentRenderer->getPlayLayer() == playLayer)
+    if (currentRenderer && currentRenderer->getPlayLayer() == playLayer) {
+        updateStartupDiagnostic(
+            currentRenderer->isReadyForDrawing()
+                ? "BISMUTH iOS GPU: ACTIVE\nRenderer create: REUSED EXISTING OWNER"
+                : currentRenderer->isFailed()
+                    ? std::string("BISMUTH iOS GPU: FAILED\n") + currentRenderer->getFailureReason()
+                    : "BISMUTH iOS GPU: STARTING\nRenderer create: REUSED EXISTING OWNER"
+        );
         return currentRenderer;
+    }
 
     auto ret = new IOSGPURenderer();
     if (!ret->cocos2d::CCNode::init()) {
         delete ret;
+        updateStartupDiagnostic("BISMUTH iOS GPU: FAILED\nRenderer CCNode::init returned false");
         return nullptr;
     }
 
     // Keep the owner node attached even when initialization fails so its
     // on-screen diagnostic remains available. Stock ownership is transferred
     // only after the complete GPU path is ready.
-    ret->initForPlayLayer(playLayer);
+    const bool initSucceeded = ret->initForPlayLayer(playLayer);
+    if (!initSucceeded)
+        ret->updateDebugOverlay();
     ret->autorelease();
     return ret;
+}
+
+void IOSGPURenderer::fail(const std::string& reason) {
+    if (failed)
+        return;
+
+    failed = true;
+    initialized = false;
+    failureReason = reason;
+    log::error("Bismuth iOS GPU-only beta FAILED: {}", failureReason);
+
+    for (auto node : layerNodes) {
+        if (node)
+            node->setVisible(false);
+    }
+
+    // GPU-only means stock Cocos batches stay suppressed even on failure.
+    // The on-screen status label reports why the GPU path stopped drawing.
+    hideStockBatches();
+    updateDebugOverlay();
+}
+
+void IOSGPURenderer::hideStockBatches() {
+    if (!layer || !layer->m_batchNodes)
+        return;
+
+    for (auto batch : CCArrayExt<cocos2d::CCNode*>(layer->m_batchNodes)) {
+        if (batch)
+            batch->setVisible(false);
+    }
+}
+
+void IOSGPURenderer::enforceGPUOwnership() {
+    // Re-assert exclusive GPU ownership after Geometry Dash performs its level
+    // reset, including the failure case. There is never a stock draw fallback.
+    hideStockBatches();
+    if (isReadyForDrawing())
+        syncLayerNodes();
+    updateDebugOverlay();
+}
+
+bool IOSGPURenderer::queryAndValidateCapabilities() {
+    if (!IOSGPU::queryCapabilities(capabilities)) {
+        fail("could not query active OpenGL ES context");
+        return false;
+    }
+    IOSGPU::logCapabilities(capabilities);
+
+    if (!capabilities.isOpenGLES) {
+        fail("active context is not OpenGL ES");
+        return false;
+    }
+    if (capabilities.maxVertexTextureUnits < 3 ||
+        !capabilities.hasVertexTextureSampling) {
+        fail("requires at least three vertex texture image units");
+        return false;
+    }
+    if (capabilities.maxCombinedTextureUnits < 4 ||
+        capabilities.maxFragmentTextureUnits < 1) {
+        fail("requires four combined texture units and one fragment texture unit");
+        return false;
+    }
+    if (capabilities.maxVertexAttribs < 5) {
+        fail("requires five vertex attributes");
+        return false;
+    }
+    if (!capabilities.hasFragmentHighpPrecision) {
+        fail("requires fragment highp precision for sprite atlas coordinates");
+        return false;
+    }
+    if (!capabilities.hasFloatTexture) {
+        fail("floating-point RGBA vertex data textures are unavailable");
+        return false;
+    }
+    if (capabilities.maxTextureSize < 128) {
+        fail("maximum texture size is too small for Bismuth state tables");
+        return false;
+    }
+    return true;
+}
+
+bool IOSGPURenderer::createShaderProgram() {
+    shader = Shader::create("object_es2.vert", "object_es2.frag");
+    if (!shader) {
+        fail("failed to compile or link owner-derived ES2 object shaders");
+        return false;
+    }
+    return true;
+}
+
+bool IOSGPURenderer::createVertexBuffer() {
+    if (vertexBuffer) {
+        glDeleteBuffers(1, &vertexBuffer);
+        vertexBuffer = 0;
+    }
+
+    // A valid level may contain no renderable sprites (for example, a blank
+    // level or one containing only gameplay triggers). The GPU renderer still
+    // owns that scene; it simply has no vertex buffer or layer submissions.
+    if (sceneData.getObjectBatch().getOrderedVertices().empty()) {
+        uploadedOrderRevision = sceneData.getObjectBatch().getOrderRevision();
+        return true;
+    }
+
+    glGenBuffers(1, &vertexBuffer);
+    if (!vertexBuffer) {
+        fail("glGenBuffers returned zero for ordered object vertex stream");
+        return false;
+    }
+
+    return uploadOrderedVertices();
+}
+
+bool IOSGPURenderer::uploadOrderedVertices() {
+    if (!sceneData.isReady())
+        return false;
+
+    const auto& vertices = sceneData.getObjectBatch().getOrderedVertices();
+    if (vertices.empty()) {
+        uploadedOrderRevision = sceneData.getObjectBatch().getOrderRevision();
+        return true;
+    }
+    if (!vertexBuffer)
+        return false;
+
+    if (vertices.size() >
+        static_cast<usize>(std::numeric_limits<GLsizei>::max())) {
+        fail("ordered object vertex count exceeds GLsizei");
+        return false;
+    }
+
+    const usize byteCount = vertices.size() * sizeof(ObjectVertex);
+    if (byteCount > static_cast<usize>(std::numeric_limits<GLsizeiptr>::max())) {
+        fail("ordered object vertex buffer exceeds GLsizeiptr");
+        return false;
+    }
+
+    GLint previousBuffer = 0;
+    glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &previousBuffer);
+
+    while (glGetError() != GL_NO_ERROR) {}
+    glBindBuffer(GL_ARRAY_BUFFER, vertexBuffer);
+    glBufferData(
+        GL_ARRAY_BUFFER,
+        static_cast<GLsizeiptr>(byteCount),
+        vertices.data(),
+        GL_DYNAMIC_DRAW
+    );
+    const GLenum error = glGetError();
+
+    glBindBuffer(GL_ARRAY_BUFFER, static_cast<GLuint>(previousBuffer));
+    if (error != GL_NO_ERROR) {
+        fail(fmt::format("ordered vertex-buffer upload failed (GL error 0x{:X})", error));
+        return false;
+    }
+
+    uploadedOrderRevision = sceneData.getObjectBatch().getOrderRevision();
+    return true;
+}
+
+bool IOSGPURenderer::createLayerNodes() {
+    return syncLayerNodes();
+}
+
+bool IOSGPURenderer::syncLayerNodes() {
+    if (failed)
+        return false;
+    if (!layer || !layer->m_objectLayer || !layer->m_batchNodes) {
+        fail("PlayLayer object layer or stock batch-node array is missing");
+        return false;
+    }
+
+    // Match Renderer::generateBatchNodes(): attach a draw node for each
+    // active owner-derived layer key that has a Geometry Dash Z-order container.
+    const auto& batch = sceneData.getObjectBatch();
+    const auto& ranges = batch.getSortedBatch().layerRanges;
+    activeLayerCount = 0;
+    missingLayerNodeCount = 0;
+    for (const auto& [key, range] : ranges) {
+        if (range.vertexCount != 0)
+            ++activeLayerCount;
+    }
+
+    for (const auto& key : batch.getUsedLayerKeys()) {
+        if (layerNodeKeys.contains(key))
+            continue;
+
+        cocos2d::CCNode* stockNode = layer->parentForZLayer(
+            static_cast<i32>(key.zlayer),
+            key.blending,
+            static_cast<i32>(key.spriteSheet),
+            false
+        );
+
+        if (!stockNode || layer->m_batchNodes->indexOfObject(stockNode) == UINT_MAX) {
+            const auto activeRange = ranges.find(key);
+            if (activeRange != ranges.end() && activeRange->second.vertexCount != 0)
+                ++missingLayerNodeCount;
+            continue;
+        }
+
+        auto node = new IOSGPULayerNode(layer, key);
+        if (!node->init()) {
+            delete node;
+            fail("failed to initialize a GPU layer node");
+            return false;
+        }
+
+        node->autorelease();
+        layer->m_objectLayer->addChild(node, stockNode->getZOrder());
+        layerNodes.push_back(node);
+        layerNodeKeys.insert(key);
+    }
+
+    u32 attachedActiveLayerCount = 0;
+    for (const auto& [key, range] : ranges) {
+        if (range.vertexCount != 0 && layerNodeKeys.contains(key))
+            ++attachedActiveLayerCount;
+    }
+
+    if (activeLayerCount != 0 && attachedActiveLayerCount == 0) {
+        fail(fmt::format(
+            "GPU batch has {} active layers, but none has a drawable Z-order node ({} missing)",
+            activeLayerCount,
+            missingLayerNodeCount
+        ));
+        return false;
+    }
+
+    return true;
+}
+
+bool IOSGPURenderer::initForPlayLayer(PlayLayer* playLayer) {
+    layer = playLayer;
+    currentRenderer = this;
+    updateStartupDiagnostic("BISMUTH iOS GPU STARTUP\ninitForPlayLayer: ENTERED");
+
+    if (!layer) {
+        fail("PlayLayer is null");
+        return false;
+    }
+
+    updateStartupDiagnostic("BISMUTH iOS GPU STARTUP\nPlayLayer hook: ENTERED\nRenderer init: ENTERED");
+
+    // Strict GPU-only ownership: stock batches are hidden before initialization.
+    // This remains true in every failure case; there is no CPU visual fallback.
+    hideStockBatches();
+
+    if (!queryAndValidateCapabilities())
+        return false;
+    updateStartupDiagnostic("BISMUTH iOS GPU STARTUP\nOpenGL ES capability validation: PASS");
+
+    if (!sceneData.init(layer)) {
+        const auto& reason = sceneData.getFailureReason();
+        fail(reason.empty()
+            ? "scene extraction or GPU state-table initialization failed"
+            : reason);
+        return false;
+    }
+
+    updateStartupDiagnostic(
+        "BISMUTH iOS GPU STARTUP\nScene extraction/state tables: PASS\nSprites: " +
+        std::to_string(sceneData.getObjectBatch().getSpriteCount()) +
+        " | Vertices: " +
+        std::to_string(sceneData.getObjectBatch().getOrderedVertices().size())
+    );
+
+    if (!createShaderProgram())
+        return false;
+    updateStartupDiagnostic("BISMUTH iOS GPU STARTUP\nShader compile/link: PASS");
+
+    if (!createVertexBuffer())
+        return false;
+    updateStartupDiagnostic("BISMUTH iOS GPU STARTUP\nVertex buffer upload: PASS");
+
+    if (!createLayerNodes())
+        return false;
+    updateStartupDiagnostic(
+        "BISMUTH iOS GPU STARTUP\nGPU layer nodes: " +
+        std::to_string(layerNodes.size()) +
+        " | Active ranges: " + std::to_string(activeLayerCount) +
+        " | Missing: " + std::to_string(missingLayerNodeCount)
+    );
+
+    initialized = true;
+
+    log::info(
+        "Bismuth iOS GPU-only renderer initialized: {} sprites, {} layer nodes, {} group combinations",
+        sceneData.getObjectBatch().getSpriteCount(),
+        layerNodes.size(),
+        sceneData.getGroupManager().getGroupCombinationCount()
+    );
+    updateDebugOverlay();
+    return true;
+}
+
+void IOSGPURenderer::reset() {
+    if (failed || !sceneData.isReady())
+        return;
+
+    sceneData.reset();
+    if (!sceneData.getGPUStateTables().isReady()) {
+        fail("GPU state-table reset upload failed");
+        return;
+    }
+    if (sceneData.getObjectBatch().getOrderRevision() != uploadedOrderRevision &&
+        !uploadOrderedVertices()) {
+        fail("ordered vertex upload failed during reset");
+        return;
+    }
+    syncLayerNodes();
+}
+
+void IOSGPURenderer::drawLayer(const LayerKey& key) {
+    ++layerVisitsThisFrame;
+    if (failed || !sceneData.isReady() || !shader || !vertexBuffer)
+        return;
+    ++drawAttemptsThisFrame;
+
+    // Blend-state selection is refreshed once in PlayLayer::updateVisibility,
+    // before Cocos visits the per-layer GPU nodes. Every node in this frame
+    // therefore consumes one stable sorted batch and matching draw ranges.
+    const auto& batch = sceneData.getObjectBatch();
+    const auto rangeIt = batch.getSortedBatch().layerRanges.find(key);
+    if (rangeIt == batch.getSortedBatch().layerRanges.end())
+        return;
+
+    const auto& range = rangeIt->second;
+    if (range.vertexCount == 0)
+        return;
+
+    if (!isValidDrawRange(range, batch.getOrderedVertices().size())) {
+        fail("scheduler returned an invalid GPU draw range");
+        return;
+    }
+
+    if (batch.getOrderRevision() != uploadedOrderRevision &&
+        !uploadOrderedVertices()) {
+        fail("could not upload updated blend-order vertex stream");
+        return;
+    }
+
+    auto spriteSheet = sceneData.getSpriteSheetTexture(key.spriteSheet);
+    if (!spriteSheet) {
+        fail("sprite sheet texture required by GPU layer is missing");
+        return;
+    }
+
+    if (!sceneData.getGPUStateTables().isReady()) {
+        fail("GPU state tables are not ready at draw time");
+        return;
+    }
+
+    sceneData.prepareForDraw();
+    const auto& gameState = sceneData.getGameState();
+    const auto& tableLayout = sceneData.getGPUStateTables().getLayout();
+
+    IOSGLStateSnapshot savedGLState;
+
+    while (glGetError() != GL_NO_ERROR) {}
+    shader->use();
+
+    sceneData.getGPUStateTables().bind(
+        OBJECT_DATA_TEXTURE_UNIT,
+        GROUP_DATA_TEXTURE_UNIT,
+        BYTE_DATA_TEXTURE_UNIT
+    );
+    shader->setInt("u_objectDataTexture", OBJECT_DATA_TEXTURE_UNIT);
+    shader->setInt("u_groupDataTexture", GROUP_DATA_TEXTURE_UNIT);
+    shader->setInt("u_byteDataTexture", BYTE_DATA_TEXTURE_UNIT);
+    shader->setTexture(
+        "u_spriteSheetTexture",
+        SPRITE_SHEET_TEXTURE_UNIT,
+        spriteSheet
+    );
+
+    shader->setVec2("u_objectDataTextureSize", tableLayout.objectTextureSize);
+    shader->setVec2("u_groupDataTextureSize", tableLayout.groupTextureSize);
+    shader->setVec2("u_byteDataTextureSize", tableLayout.byteTextureSize);
+
+    shader->setFloat("u_colorChannelsOffset", static_cast<float>(tableLayout.colorChannelsOffset));
+    shader->setFloat("u_objectHSVOffset", static_cast<float>(tableLayout.objectHSVOffset));
+    shader->setFloat("u_pulseEntriesOffset", static_cast<float>(tableLayout.pulseEntriesOffset));
+    shader->setFloat("u_spriteAppearanceOffset", static_cast<float>(tableLayout.spriteAppearanceOffset));
+
+    shader->setMatrix4("u_mvp", glm::value_ptr(gameState.mvp));
+    shader->setFloat("u_timer", gameState.timer);
+    shader->setFloat("u_audioScale", gameState.audioScale);
+    shader->setVec2("u_cameraViewSize", gameState.cameraViewSize);
+    shader->setVec2("u_cameraPosition", gameState.cameraPosition);
+    shader->setVec2("u_cameraRight", gameState.cameraRight);
+    shader->setVec2("u_cameraUp", gameState.cameraUp);
+    shader->setVec2("u_cameraSize", gameState.cameraSize);
+    shader->setVec2("u_winSize", gameState.windowSize);
+    shader->setFloat("u_screenRight", gameState.screenRight);
+    shader->setFloat("u_cameraUnzoomedX", gameState.cameraUnzoomedX);
+    shader->setVec3("u_specialLightBGColor", gameState.specialLightBGColor);
+    shader->setFloat("u_gameStateFlags", static_cast<float>(gameState.gameStateFlags));
+
+    glBindBuffer(GL_ARRAY_BUFFER, vertexBuffer);
+    const GLsizei stride = static_cast<GLsizei>(sizeof(ObjectVertex));
+
+    glVertexAttribPointer(
+        0, 2, GL_FLOAT, GL_FALSE, stride,
+        reinterpret_cast<const void*>(offsetof(ObjectVertex, positionOffset))
+    );
+    glVertexAttribPointer(
+        1, 2, GL_FLOAT, GL_FALSE, stride,
+        reinterpret_cast<const void*>(offsetof(ObjectVertex, texCoord))
+    );
+    glVertexAttribPointer(
+        2, 2, GL_FLOAT, GL_FALSE, stride,
+        reinterpret_cast<const void*>(offsetof(ObjectVertex, objectAndGroupIndex))
+    );
+    glVertexAttribPointer(
+        3, 2, GL_FLOAT, GL_FALSE, stride,
+        reinterpret_cast<const void*>(offsetof(ObjectVertex, spriteAndMeta))
+    );
+    glVertexAttribPointer(
+        4, 2, GL_FLOAT, GL_FALSE, stride,
+        reinterpret_cast<const void*>(offsetof(ObjectVertex, objectStartPosition))
+    );
+
+    for (GLuint index = 0; index < 5; ++index)
+        glEnableVertexAttribArray(index);
+
+    glEnable(GL_BLEND);
+    glBlendEquation(GL_FUNC_ADD);
+    if (key.blending || key.spriteSheet == SpriteSheet::GLOW)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+    else
+        glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+
+    glDrawArrays(
+        GL_TRIANGLES,
+        static_cast<GLint>(range.firstVertex),
+        static_cast<GLsizei>(range.vertexCount)
+    );
+
+    // Restore Cocos' GL state before checking the submission result so
+    // failures in either drawing or restoration are reported consistently.
+    savedGLState.restore();
+    const GLenum drawError = glGetError();
+    if (drawError != GL_NO_ERROR) {
+        fail(fmt::format("GPU layer draw/state restore failed (GL error 0x{:X})", drawError));
+        return;
+    }
+
+    ++drawsThisFrame;
 }
 
 } // namespace IOSUpstream
