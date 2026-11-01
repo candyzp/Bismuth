@@ -6,6 +6,7 @@
 #include "IOSGPUStateTables.hpp"
 #include <array>
 #include <string>
+#include <vector>
 
 namespace IOSUpstream {
 
@@ -22,6 +23,15 @@ public:
     bool refreshBlendOrder();
     void prepareForDraw();
 
+    // Keep object-owned animation and particle effects alive while the GPU
+    // renderer replaces PlayLayer's stock per-object visibility pass.
+    void updateObjectParticles();
+    void releaseObjectParticles();
+    usize getAnimatedObjectCount() const { return animatedObjects.size(); }
+    usize getLastAnimatedObjectsUpdated() const { return lastAnimatedObjectsUpdated; }
+    usize getParticleObjectCount() const { return particleObjects.size(); }
+    usize getClaimedParticleCount() const { return claimedParticleCount; }
+
     GroupManager& getGroupManager() { return groupManager; }
     const GroupManager& getGroupManager() const { return groupManager; }
     ObjectBatch& getObjectBatch() { return objectBatch; }
@@ -37,10 +47,24 @@ public:
     const std::string& getFailureReason() const { return failureReason; }
 
 private:
+    struct AnimatedObject {
+        GameObject* object = nullptr;
+        bool syncedAnimation = false;
+        bool rotateAction = false;
+        bool updateChildColor = false;
+        bool interactiveHover = false;
+    };
+    struct ParticleObject {
+        GameObject* object = nullptr;
+        bool claimed = false;
+    };
+
     bool buildSortedObjectList(std::vector<GameObject*>& objects) const;
     void fetchBlendingStates(ColorChannelBlendStates& states) const;
     void updateColorChannelTable();
     void updateGameState();
+    void initializeLiveObjectTracking();
+    void updateAnimatedObjects(float dt);
 
 private:
     PlayLayer* layer = nullptr;
@@ -51,6 +75,10 @@ private:
     GameState gameState {};
     ColorChannelTable colorChannels {};
     ColorChannelBlendStates blendStates {};
+    std::vector<AnimatedObject> animatedObjects;
+    std::vector<ParticleObject> particleObjects;
+    usize lastAnimatedObjectsUpdated = 0;
+    usize claimedParticleCount = 0;
     float gameTimer = 0.f;
     std::string failureReason;
     bool ready = false;

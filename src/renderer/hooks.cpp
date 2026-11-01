@@ -240,6 +240,9 @@ class $modify(RendererPlayLayer, PlayLayer) {
             // visual updates, enter effects, audio scale, colors and particles
             // advancing while omitting the expensive per-object stock
             // visibility walk; the GPU renderer owns final sprite visibility.
+            // Reclaim only nearby object particle systems before the optimized
+            // path advances PlayLayer::updateParticles(dt).
+            scene->updateObjectParticles();
             ((decomp_PlayLayer*)this)->optimized_updateVisibility(dt);
 
             // Upstream refreshes channel blend flags and requests its sorted
@@ -264,6 +267,8 @@ class $modify(RendererPlayLayer, PlayLayer) {
             }
             return;
         }
+        if (scene && scene->getPlayLayer() == this)
+            scene->releaseObjectParticles();
         PlayLayer::updateVisibility(dt);
 #else
         auto renderer = Renderer::get();
@@ -634,6 +639,39 @@ class $modify(RendererTrackedGameObject, GameObject) {
         if (Renderer::get()) {
             if (auto resolved = ResolvedStateLayer::getCurrent())
                 resolved->onObjectDeactivated(this);
+        }
+    }
+};
+
+#include <Geode/modify/RingObject.hpp>
+class $modify(RendererTrackedRingObject, RingObject) {
+    void triggerActivated(float xPosition) {
+        auto gpuRenderer = IOSUpstream::IOSGPURenderer::getCurrent();
+        const bool track = gpuRenderer && gpuRenderer->getPlayLayer();
+        const auto position = this->getPosition();
+        if (track) {
+            IOSUpstream::crashBreadcrumb(fmt::format(
+                "RingObject::triggerActivated ENTER object={:p} id={} x={} position=({}, {}) activated={} groupDisabled={} particle={}",
+                static_cast<void*>(this),
+                this->m_objectID,
+                xPosition,
+                position.x,
+                position.y,
+                this->m_isActivated,
+                this->m_isGroupDisabled,
+                this->m_particle != nullptr
+            ));
+        }
+
+        RingObject::triggerActivated(xPosition);
+
+        if (track) {
+            IOSUpstream::crashBreadcrumb(fmt::format(
+                "RingObject::triggerActivated EXIT object={:p} id={} particle={}",
+                static_cast<void*>(this),
+                this->m_objectID,
+                this->m_particle != nullptr
+            ));
         }
     }
 };

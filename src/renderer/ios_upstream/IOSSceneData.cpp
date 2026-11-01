@@ -5,6 +5,9 @@
 
 #include <Geode/Enums.hpp>
 #include <Geode/binding/GJBaseGameLayer.hpp>
+#include <Geode/binding/AnimatedGameObject.hpp>
+#include <Geode/binding/EffectGameObject.hpp>
+#include <Geode/binding/EnhancedGameObject.hpp>
 #include <Geode/cocos/CCDirector.h>
 #include <Geode/cocos/kazmath/include/kazmath/mat4.h>
 #include <Geode/cocos/textures/CCTextureCache.h>
@@ -35,9 +38,46 @@ void logSceneMemorySnapshot(usize objectCount, const char* stage) {
         static_cast<u64>(availableBytes) / (1024u * 1024u)
     ));
 }
+
+bool getObjectLayerCameraBounds(
+    PlayLayer* layer,
+    float padding,
+    float& minX,
+    float& maxX,
+    float& minY,
+    float& maxY
+) {
+    auto director = cocos2d::CCDirector::get();
+    if (!layer || !layer->m_objectLayer || !director)
+        return false;
+
+    const auto windowSize = director->getWinSize();
+    const cocos2d::CCPoint corners[] = {
+        layer->m_objectLayer->convertToNodeSpace({0.f, 0.f}),
+        layer->m_objectLayer->convertToNodeSpace({windowSize.width, 0.f}),
+        layer->m_objectLayer->convertToNodeSpace({0.f, windowSize.height}),
+        layer->m_objectLayer->convertToNodeSpace({windowSize.width, windowSize.height})
+    };
+
+    minX = maxX = corners[0].x;
+    minY = maxY = corners[0].y;
+    for (const auto& corner : corners) {
+        minX = std::min(minX, corner.x);
+        maxX = std::max(maxX, corner.x);
+        minY = std::min(minY, corner.y);
+        maxY = std::max(maxY, corner.y);
+    }
+
+    minX -= padding;
+    maxX += padding;
+    minY -= padding;
+    maxY += padding;
+    return true;
+}
 }
 
 SceneData::~SceneData() {
+    releaseObjectParticles();
     if (g_currentSceneData == this)
         g_currentSceneData = nullptr;
 }
@@ -51,6 +91,157 @@ cocos2d::CCTexture2D* SceneData::getSpriteSheetTexture(SpriteSheet sheet) const 
     if (index < 0 || index >= static_cast<i32>(spriteSheets.size()))
         return nullptr;
     return spriteSheets[static_cast<usize>(index)];
+}
+
+void SceneData::initializeLiveObjectTracking() {
+    animatedObjects.clear();
+    particleObjects.clear();
+    lastAnimatedObjectsUpdated = 0;
+    claimedParticleCount = 0;
+
+    if (!layer || !layer->m_objects)
+        return;
+
+    animatedObjects.reserve(64);
+    particleObjects.reserve(32);
+    for (auto object : CCArrayExt<GameObject*>(layer->m_objects)) {
+        if (!object)
+            continue;
+
+        if (object->m_hasParticles && !object->m_hasNoParticles &&
+            !object->m_isHide && !object->m_particleString.empty()) {
+            particleObjects.push_back({object, false});
+        }
+
+        const bool syncedAnimation = object->getHasSyncedAnimation();
+        const bool rotateAction = object->getHasRotateAction();
+        const bool updateChildColor = object->m_unk367;
+        const bool interactiveHover =
+            object->getType() == GameObjectType::Collectible;
+        if (syncedAnimation || rotateAction || updateChildColor || interactiveHover) {
+            animatedObjects.push_back({
+                object,
+                syncedAnimation,
+                rotateAction,
+                updateChildColor,
+                interactiveHover
+            });
+        }
+    }
+
+    crashBreadcrumb(fmt::format(
+        "SceneData live object tracking READY animated={} particleObjects={}",
+        animatedObjects.size(),
+        particleObjects.size()
+    ));
+}
+
+void SceneData::updateObjectParticles() {
+    if (!ready || !layer || layer->m_isPaused || particleObjects.empty())
+        return;
+
+    float minX = 0.f;
+    float maxX = 0.f;
+    float minY = 0.f;
+    float maxY = 0.f;
+    if (!getObjectLayerCameraBounds(layer, 150.f, minX, maxX, minY, maxY))
+        return;
+
+    for (auto& entry : particleObjects) {
+        auto object = entry.object;
+        if (!object)
+            continue;
+
+        bool wanted = !object->m_isGroupDisabled;
+        if (wanted) {
+            const auto position = object->getRealPosition();
+            wanted = position.x >= minX && position.x <= maxX &&
+                position.y >= minY && position.y <= maxY;
+        }
+
+        if (wanted && !entry.claimed) {
+            // Match the upstream renderer: claim an object's cached particle
+            // only while it is near the camera, rather than activating every
+            // GameObject through the stock visibility loop.
+            if (!object->m_particle)
+                object->claimParticle();
+            entry.claimed = true;
+            ++claimedParticleCount;
+        } else if (!wanted && entry.claimed) {
+            if (object->m_particle)
+                object->unclaimParticle();
+            entry.claimed = false;
+            if (claimedParticleCount > 0)
+                --claimedParticleCount;
+        }
+    }
+}
+
+void SceneData::releaseObjectParticles() {
+    for (auto& entry : particleObjects) {
+        if (!entry.claimed)
+            continue;
+        if (entry.object && entry.object->m_particle)
+            entry.object->unclaimParticle();
+        entry.claimed = false;
+    }
+    claimedParticleCount = 0;
+}
+
+void SceneData::updateAnimatedObjects(float dt) {
+    lastAnimatedObjectsUpdated = 0;
+    if (!ready || !layer || layer->m_isPaused || animatedObjects.empty())
+        return;
+
+    float minX = 0.f;
+    float maxX = 0.f;
+    float minY = 0.f;
+    float maxY = 0.f;
+    if (!getObjectLayerCameraBounds(layer, 150.f, minX, maxX, minY, maxY))
+        return;
+
+    const auto backgroundColor = layer->m_background
+        ? layer->m_background->getColor()
+        : cocos2d::ccColor3B{255, 255, 255};
+    const auto brightBackgroundColor =
+        GameToolbox::transformColor(backgroundColor, 0.0, -0.3, 0.4);
+    const float totalTime = layer->m_gameState.m_totalTime;
+    const float hoverY = layer->m_hoverNode
+        ? layer->m_hoverNode->getPosition().y
+        : 0.f;
+
+    for (const auto& entry : animatedObjects) {
+        auto object = entry.object;
+        if (!object || object->m_isGroupDisabled)
+            continue;
+
+        const auto position = object->getRealPosition();
+        const bool nearCamera =
+            position.x >= minX && position.x <= maxX &&
+            position.y >= minY && position.y <= maxY;
+        if (!nearCamera)
+            continue;
+
+        // These are the object-specific visual updates skipped by
+        // optimized_updateVisibility(). Keep them on the CPU before the GPU
+        // batch captures the new sprite frame/appearance below.
+        if (entry.syncedAnimation) {
+            static_cast<EnhancedGameObject*>(object)->updateSyncedAnimation(totalTime, -1);
+        }
+        if (entry.rotateAction) {
+            static_cast<EnhancedGameObject*>(object)->updateRotateAction(dt);
+        }
+        if (entry.updateChildColor) {
+            static_cast<AnimatedGameObject*>(object)->updateChildSpriteColor(
+                brightBackgroundColor
+            );
+        }
+        if (entry.interactiveHover && layer->m_hoverNode) {
+            static_cast<EffectGameObject*>(object)->updateInteractiveHover(hoverY);
+        }
+
+        ++lastAnimatedObjectsUpdated;
+    }
 }
 
 bool SceneData::buildSortedObjectList(std::vector<GameObject*>& objects) const {
@@ -115,9 +306,11 @@ void SceneData::fetchBlendingStates(ColorChannelBlendStates& states) const {
 }
 
 bool SceneData::init(PlayLayer* playLayer) {
+    releaseObjectParticles();
     ready = false;
     failureReason.clear();
     layer = playLayer;
+    initializeLiveObjectTracking();
     spriteSheets.fill(nullptr);
     if (!layer || !layer->m_objects || !layer->m_effectManager) {
         failureReason = "PlayLayer, level objects, or effect manager is missing";
@@ -376,6 +569,7 @@ bool SceneData::update(float dt) {
     if (layer->m_isPaused)
         return true;
 
+    updateAnimatedObjects(dt);
     updateColorChannelTable();
     groupManager.updateGroupStateBuffer();
     objectBatch.refreshSpriteAppearances();

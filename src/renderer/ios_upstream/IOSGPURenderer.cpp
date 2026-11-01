@@ -332,7 +332,7 @@ void IOSGPURenderer::updateDebugOverlay() {
 std::string IOSGPURenderer::getCrashDiagnosticSnapshot() const {
     const auto& batch = sceneData.getObjectBatch();
     return fmt::format(
-        "PlayLayer={:p} renderer={:p} status={} sceneReady={} sprites={} sourceVertices={} orderedVertices={} gpuNodes={} activeRanges={} missingNodes={} frameVisits={} drawAttempts={} draws={} shader={} vbo={} failure='{}'",
+        "PlayLayer={:p} renderer={:p} status={} sceneReady={} sprites={} sourceVertices={} orderedVertices={} gpuNodes={} activeRanges={} missingNodes={} frameVisits={} drawAttempts={} draws={} animatedObjects={} animatedUpdated={} particleObjects={} particlesClaimed={} shader={} vbo={} failure='{}'",
         static_cast<void*>(layer),
         static_cast<const void*>(this),
         failed ? "FAILED" : initialized ? "READY" : "STARTING",
@@ -346,6 +346,10 @@ std::string IOSGPURenderer::getCrashDiagnosticSnapshot() const {
         lastFrameLayerVisits,
         lastFrameDrawAttempts,
         lastFrameDraws,
+        sceneData.getAnimatedObjectCount(),
+        sceneData.getLastAnimatedObjectsUpdated(),
+        sceneData.getParticleObjectCount(),
+        sceneData.getClaimedParticleCount(),
         shader ? "ready" : "missing",
         vertexBuffer ? "ready" : "missing",
         failureReason
