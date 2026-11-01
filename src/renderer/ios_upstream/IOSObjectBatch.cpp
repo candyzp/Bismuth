@@ -61,6 +61,68 @@ u32 packDisplayedColor(cocos2d::CCSprite* sprite) {
         (alpha << 24);
 }
 
+bool isInNodeSubtree(cocos2d::CCNode* node, cocos2d::CCNode* root) {
+    for (auto current = node; current; current = current->getParent()) {
+        if (current == root)
+            return true;
+    }
+    return false;
+}
+
+cocos2d::CCNode* getSpriteTransformRoot(
+    GameObject* object,
+    cocos2d::CCSprite* sprite
+) {
+    if (!object || !sprite)
+        return nullptr;
+
+    // ObjectUtils::unpackObjectIntoSprites() extracts glow and detached
+    // color trees separately, even when they are also attached below the
+    // GameObject. Preserve that same transform root and draw order here.
+    if (object->m_glowSprite &&
+        isInNodeSubtree(sprite, object->m_glowSprite)) {
+        return object->m_glowSprite;
+    }
+
+    if (object->m_colorSprite &&
+        object->m_colorSprite->getParent() != object &&
+        isInNodeSubtree(sprite, object->m_colorSprite)) {
+        return object->m_colorSprite;
+    }
+
+    return isInNodeSubtree(sprite, object) ? object : nullptr;
+}
+
+bool buildTransformFromRoot(
+    cocos2d::CCNode* root,
+    cocos2d::CCNode* node,
+    CCAffineTransform& result
+) {
+    if (!root || !node)
+        return false;
+
+    if (node == root) {
+        result = node->nodeToParentTransform();
+        return true;
+    }
+
+    auto parent = node->getParent();
+    if (!parent || !buildTransformFromRoot(root, parent, result))
+        return false;
+
+    result = CCAffineTransformConcat(node->nodeToParentTransform(), result);
+    return true;
+}
+
+bool didAffineTransformChange(
+    const CCAffineTransform& lhs,
+    const CCAffineTransform& rhs
+) {
+    return lhs.a != rhs.a || lhs.b != rhs.b ||
+        lhs.c != rhs.c || lhs.d != rhs.d ||
+        lhs.tx != rhs.tx || lhs.ty != rhs.ty;
+}
+
 SpriteAppearance captureSpriteAppearance(
     cocos2d::CCSprite* sprite,
     bool usesDirectTint
@@ -407,6 +469,9 @@ bool ObjectBatch::addSprite(
     source.sprite = sprite;
     source.type = type;
     source.transform = transform;
+    source.refreshTransform =
+        object->getHasRotateAction() ||
+        object->getType() == GameObjectType::Collectible;
     source.lastTextureRect = sprite->getTextureRect();
     source.lastTexture = sprite->getTexture();
     source.lastTextureRectRotated = sprite->isTextureRectRotated();
@@ -714,8 +779,11 @@ void ObjectBatch::refreshSpriteAppearances() {
         const bool currentFlipX = source.sprite->isFlipX();
         const bool currentFlipY = source.sprite->isFlipY();
 
-        // Cocos continues to advance animated CCSprite frames, but the GPU
-        // vertex stream is static unless we refresh the sprite's atlas mapping.
+        // Cocos advances animated CCSprite frames, and the GPU vertex stream
+        // must refresh its atlas mapping when the frame changes. A smaller set
+        // of visual objects also changes child-node transforms every frame
+        // (rotate actions and collectible hover); those transforms are not
+        // represented by the static object/group data in the GPU vertex stream.
         const bool frameChanged =
             currentRect.origin.x != source.lastTextureRect.origin.x ||
             currentRect.origin.y != source.lastTextureRect.origin.y ||
@@ -725,7 +793,21 @@ void ObjectBatch::refreshSpriteAppearances() {
             currentRotated != source.lastTextureRectRotated ||
             currentFlipX != source.lastFlipX ||
             currentFlipY != source.lastFlipY;
-        if (!frameChanged)
+
+        CCAffineTransform currentTransform = source.transform;
+        bool transformChanged = false;
+        if (source.refreshTransform) {
+            if (auto root = getSpriteTransformRoot(source.object, source.sprite)) {
+                CCAffineTransform liveTransform;
+                if (buildTransformFromRoot(root, source.sprite, liveTransform)) {
+                    transformChanged =
+                        didAffineTransformChange(source.transform, liveTransform);
+                    currentTransform = liveTransform;
+                }
+            }
+        }
+
+        if (!frameChanged && !transformChanged)
             continue;
 
         const SpriteSheet sheet = ObjectUtils::getSpritesheetOfObject(
@@ -738,7 +820,7 @@ void ObjectBatch::refreshSpriteAppearances() {
             continue;
 
         const auto transforms = getSpriteVertexTransform(
-            source.sprite, source.transform, texture
+            source.sprite, currentTransform, texture
         );
         const glm::vec2 objectStartPosition =
             ccPointToGLM(source.object->m_startPosition);
@@ -781,6 +863,7 @@ void ObjectBatch::refreshSpriteAppearances() {
             orderedVertex.texCoord = sourceVertex.texCoord;
         }
 
+        source.transform = currentTransform;
         source.lastTextureRect = currentRect;
         source.lastTexture = currentTexture;
         source.lastTextureRectRotated = currentRotated;

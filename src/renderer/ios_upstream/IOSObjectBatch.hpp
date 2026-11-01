@@ -60,6 +60,10 @@ private:
         cocos2d::CCSprite* sprite = nullptr;
         SpriteType type = SpriteType::BASE;
         cocos2d::CCAffineTransform transform {};
+        // Some gameplay animations rotate/move child nodes rather than
+        // changing the GameObject root. Refresh these sources from live Cocos
+        // node transforms instead of leaving the initial transform frozen.
+        bool refreshTransform = false;
         cocos2d::CCRect lastTextureRect {};
         cocos2d::CCTexture2D* lastTexture = nullptr;
         bool lastTextureRectRotated = false;
