@@ -130,7 +130,11 @@ bool DataTexture::uploadRanges(
         if (range.startTexel > texelCount || range.texelCount > texelCount - range.startTexel)
             return false;
     }
-    if (ranges.empty())
+    // A populated list may still contain only zero-length dirty ranges. Keep
+    // that no-op path off the GL driver (including its state/error queries).
+    if (ranges.empty() || std::none_of(
+            ranges.begin(), ranges.end(),
+            [](const Range& range) { return range.texelCount != 0; }))
         return true;
     GLint previousTexture = 0;
     glGetIntegerv(GL_TEXTURE_BINDING_2D, &previousTexture);
