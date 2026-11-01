@@ -168,6 +168,12 @@ class $modify(RendererPlayLayer, PlayLayer) {
             return;
         }
 
+        // The level reset can discard/recreate GameObject particle systems.
+        // Release our claims while the old object array is still alive.
+        if (auto scene = IOSUpstream::SceneData::getCurrent();
+            scene && scene->getPlayLayer() == this)
+            scene->releaseObjectParticles();
+
         auto gpuRenderer = IOSUpstream::IOSGPURenderer::getCurrent();
         if (gpuRenderer && gpuRenderer->getPlayLayer() == this)
             gpuRenderer->reset();

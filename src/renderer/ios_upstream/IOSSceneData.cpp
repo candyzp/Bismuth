@@ -165,8 +165,11 @@ void SceneData::updateObjectParticles() {
             // GameObject through the stock visibility loop.
             if (!object->m_particle)
                 object->claimParticle();
-            entry.claimed = true;
-            ++claimedParticleCount;
+            // If the layer has no cached system available yet, retry on the
+            // next frame instead of recording a particle that was never claimed.
+            entry.claimed = object->m_particle != nullptr;
+            if (entry.claimed)
+                ++claimedParticleCount;
         } else if (!wanted && entry.claimed) {
             if (object->m_particle)
                 object->unclaimParticle();
