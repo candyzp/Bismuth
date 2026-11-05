@@ -16,10 +16,10 @@ jobs:
           os: windows-latest
 
         - name: macOS
-          os: macos-latest
+          os: macos-15-intel
 
         - name: iOS
-          os: macos-latest
+          os: macos-15-intel
           target: iOS
 
         - name: Android32
