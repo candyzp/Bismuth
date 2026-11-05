@@ -1,4 +1,7 @@
 #include <algorithm>
+#if defined(__APPLE__)
+#   include <TargetConditionals.h>
+#endif
 #include "Renderer.hpp"
 #include "Geode/cocos/CCDirector.h"
 #include "Geode/cocos/kazmath/include/kazmath/mat4.h"
@@ -390,10 +393,7 @@ void Renderer::generateBatchNodes() {
     }
 }
 
-void Renderer::terminate() {
-    if (currentRenderer != this)
-        return;
-
+void Renderer::releaseSharedTargets() {
     auto& device = gfx::Device::get();
     auto* interop = device.getInterop();
     if (interop && !device.isHostContextLost()) {
@@ -404,13 +404,23 @@ void Renderer::terminate() {
                 retiring.push_back(&target);
         }
         interop->destroyTargets(retiring);
-    } else if (interop) {
+    } else if (interop && !sharedTargets.empty()) {
         // The host GL context is no longer ours to use. Device::shutdown()
         // deliberately abandons the interop object in this case.
         log::warn("Bismuth: abandoning shared targets because the host GL context was lost");
     }
-    sharedTargets.clear();
 
+    sharedTargets.clear();
+    sharedTargetWidth = 0;
+    sharedTargetHeight = 0;
+    nativeFrameSubmitted = false;
+}
+
+void Renderer::terminate() {
+    if (currentRenderer != this)
+        return;
+
+    releaseSharedTargets();
     overdrawView.releaseResources();
     batchRenderer.shutdown();
 
@@ -426,8 +436,9 @@ void Renderer::deactivate(const char* reason) {
     setEnabled(false);
     active = false;
 
-    // Resources are released with the renderer; with a lost GL context they're
-    // abandoned by gfx::Device::shutdown at the next level.
+    // Release partially-created or no-longer-needed native targets now. If the
+    // host context was lost, releaseSharedTargets intentionally abandons them.
+    releaseSharedTargets();
 }
 
 void Renderer::prepareGameState() {
@@ -597,22 +608,32 @@ i32 Renderer::getGroupOfNode(ObjectBatchNode* node) const {
 }
 
 bool Renderer::ensureSharedTargets(u32 count, u32 width, u32 height) {
-    auto interop = gfx::Device::get().getInterop();
+    auto* interop = gfx::Device::get().getInterop();
     if (!interop)
         return false;
 
     if (width != sharedTargetWidth || height != sharedTargetHeight) {
-        std::vector<gfx::SharedTarget*> retiring;
-        retiring.reserve(sharedTargets.size());
-        for (auto& target : sharedTargets) {
-            if (target.platform)
-                retiring.push_back(&target);
-        }
-        interop->destroyTargets(retiring);
-        sharedTargets.clear();
+        releaseSharedTargets();
         sharedTargetWidth = width;
         sharedTargetHeight = height;
     }
+
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+    // Every iOS target is a full-resolution BGRA8 shared texture. At the
+    // renderer's 24-group limit this can otherwise consume hundreds of MiB.
+    constexpr u64 kMaxIosSharedTargetBytes = 128ull * 1024ull * 1024ull;
+    const u32 retainedCount = std::max(count, (u32)sharedTargets.size());
+    const u64 estimatedBytes = (u64)width * (u64)height * 4ull * (u64)retainedCount;
+    if (estimatedBytes > kMaxIosSharedTargetBytes) {
+        log::warn(
+            "Bismuth: {} full-resolution shared targets at {}x{} need {:.1f} MiB; "
+            "the iOS safety limit is 128 MiB, falling back to Geometry Dash rendering",
+            retainedCount, width, height,
+            (double)estimatedBytes / (1024.0 * 1024.0)
+        );
+        return false;
+    }
+#endif
 
     while (sharedTargets.size() < count) {
         sharedTargets.emplace_back();
