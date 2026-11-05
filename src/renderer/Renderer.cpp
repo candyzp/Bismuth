@@ -394,10 +394,20 @@ void Renderer::terminate() {
     if (currentRenderer != this)
         return;
 
-    auto interop = gfx::Device::get().getInterop();
-    for (auto& target : sharedTargets) {
-        if (interop && target.platform)
-            interop->destroyTarget(target);
+    auto& device = gfx::Device::get();
+    auto* interop = device.getInterop();
+    if (interop && !device.isHostContextLost()) {
+        std::vector<gfx::SharedTarget*> retiring;
+        retiring.reserve(sharedTargets.size());
+        for (auto& target : sharedTargets) {
+            if (target.platform)
+                retiring.push_back(&target);
+        }
+        interop->destroyTargets(retiring);
+    } else if (interop) {
+        // The host GL context is no longer ours to use. Device::shutdown()
+        // deliberately abandons the interop object in this case.
+        log::warn("Bismuth: abandoning shared targets because the host GL context was lost");
     }
     sharedTargets.clear();
 
@@ -592,8 +602,13 @@ bool Renderer::ensureSharedTargets(u32 count, u32 width, u32 height) {
         return false;
 
     if (width != sharedTargetWidth || height != sharedTargetHeight) {
-        for (auto& target : sharedTargets)
-            interop->destroyTarget(target);
+        std::vector<gfx::SharedTarget*> retiring;
+        retiring.reserve(sharedTargets.size());
+        for (auto& target : sharedTargets) {
+            if (target.platform)
+                retiring.push_back(&target);
+        }
+        interop->destroyTargets(retiring);
         sharedTargets.clear();
         sharedTargetWidth = width;
         sharedTargetHeight = height;
