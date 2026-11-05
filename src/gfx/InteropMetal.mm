@@ -38,6 +38,7 @@ namespace {
 
 struct MetalTargetData {
     id<MTLTexture> texture = nil;
+    GLuint glTextureName = 0;
 #if TARGET_OS_IPHONE
     CVPixelBufferRef pixelBuffer = nullptr;
     CVMetalTextureRef metalTexture = nullptr;
@@ -65,6 +66,11 @@ public:
             error = "no current EAGL context";
             return false;
         }
+        if ((__bridge void*)context != host.nativeContext) {
+            error = "current EAGL context does not match Geometry Dash's host context";
+            return false;
+        }
+        eaglContext = [context retain];
         if (CVMetalTextureCacheCreate(kCFAllocatorDefault, nullptr, device, nullptr, &metalCache) != kCVReturnSuccess
         ||  CVOpenGLESTextureCacheCreate(kCFAllocatorDefault, nullptr, context, nullptr, &glCache) != kCVReturnSuccess) {
             error = "failed to create CoreVideo texture caches";
@@ -81,17 +87,31 @@ public:
     }
 
     ~InteropMetal() override {
-        for (auto& target : targets) {
+        std::vector<SharedTarget*> remaining;
+        for (auto* target : targets) {
             if (target)
-                destroyTarget(*target);
+                remaining.push_back(target);
         }
+        destroyTargets(remaining);
 #if TARGET_OS_IPHONE
         if (metalCache) CFRelease(metalCache);
         if (glCache)    CFRelease(glCache);
+        if (eaglContext) [eaglContext release];
 #endif
     }
 
     bool createTarget(SharedTarget& target, u32 width, u32 height) override {
+#if TARGET_OS_IPHONE
+        if ([EAGLContext currentContext] != eaglContext) {
+            logf(LogLevel::Error, "Bismuth: refusing to create a shared target without the host EAGL context current");
+            return false;
+        }
+#else
+        if (CGLGetCurrentContext() != cglContext) {
+            logf(LogLevel::Error, "Bismuth: refusing to create a shared target without the host CGL context current");
+            return false;
+        }
+#endif
         destroyTarget(target);
 
         auto* data = new MetalTargetData();
@@ -141,6 +161,7 @@ public:
 
             target.glTarget = CVOpenGLESTextureGetTarget(data->glTexture);
             target.glTexture = CVOpenGLESTextureGetName(data->glTexture);
+            data->glTextureName = target.glTexture;
             glBindTexture(target.glTarget, target.glTexture);
             glTexParameteri(target.glTarget, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
             glTexParameteri(target.glTarget, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
@@ -172,6 +193,7 @@ public:
             GLStateGuard guard(*host);
             target.glTarget = gl::TEXTURE_RECTANGLE;
             glGenTextures(1, &target.glTexture);
+            data->glTextureName = target.glTexture;
             glBindTexture(GL_TEXTURE_RECTANGLE_ARB, target.glTexture);
             CGLError err = CGLTexImageIOSurface2D(cglContext, GL_TEXTURE_RECTANGLE_ARB, GL_RGBA,
                 (GLsizei)width, (GLsizei)height, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, data->surface, 0);
@@ -190,12 +212,16 @@ public:
             (u16)width, (u16)height, false, 1, bgfx::TextureFormat::BGRA8,
             BGFX_TEXTURE_RT | BGFX_SAMPLER_POINT | BGFX_SAMPLER_UVW_CLAMP
         );
+        if (!bgfx::isValid(target.texture))
+            return fail("bgfx::createTexture2D failed for a shared Metal target");
         bgfx::frame();
 
         if (0 == bgfx::overrideInternal(target.texture, (uintptr_t)data->texture))
             return fail("bgfx::overrideInternal failed for a shared Metal texture");
 
         target.framebuffer = bgfx::createFrameBuffer(1, &target.texture, false);
+        if (!bgfx::isValid(target.framebuffer))
+            return fail("bgfx::createFrameBuffer failed for a shared Metal target");
         bgfx::frame();
 
         registerTarget(&target);
@@ -203,64 +229,161 @@ public:
     }
 
     void destroyTarget(SharedTarget& target) override {
-        auto* data = static_cast<MetalTargetData*>(target.platform);
-        unregisterTarget(&target);
+        std::vector<SharedTarget*> batch { &target };
+        destroyTargets(batch);
+    }
 
-        if (bgfx::isValid(target.framebuffer))
-            bgfx::destroy(target.framebuffer);
-        if (bgfx::isValid(target.texture))
-            bgfx::destroy(target.texture); // shared textures aren't released by bgfx
-
-        if (data) {
+    void destroyTargets(const std::vector<SharedTarget*>& batch) override {
+        // Re-enter the exact GL context that created the shared texture wrappers.
+        // This also lets teardown synchronize any outstanding compositor reads.
+        bool contextReady = true;
 #if TARGET_OS_IPHONE
-            if (data->glTexture)    CFRelease(data->glTexture);
-            if (data->metalTexture) CFRelease(data->metalTexture);
-            if (data->pixelBuffer)  CVPixelBufferRelease(data->pixelBuffer);
+        EAGLContext* previousContext = [EAGLContext currentContext];
+        const bool switchedContext = previousContext != eaglContext;
+        if (switchedContext && ![EAGLContext setCurrentContext:eaglContext])
+            contextReady = false;
 #else
-            if (target.glTexture) {
-                GLStateGuard guard(*host);
-                glDeleteTextures(1, &target.glTexture);
-            }
-            if (data->surface) CFRelease(data->surface);
+        CGLContextObj previousContext = CGLGetCurrentContext();
+        const bool switchedContext = previousContext != cglContext;
+        if (switchedContext && (!cglContext || CGLSetCurrentContext(cglContext) != kCGLNoError))
+            contextReady = false;
 #endif
-            if (data->texture) [data->texture release];
-            delete data;
+
+        if (!contextReady) {
+            logf(LogLevel::Warn, "Bismuth: host GL context unavailable while retiring Metal targets; retaining shared backing memory");
+            for (auto* target : batch) {
+                if (!target)
+                    continue;
+                unregisterTarget(target);
+                *target = SharedTarget();
+            }
+#if TARGET_OS_IPHONE
+            if (switchedContext)
+                [EAGLContext setCurrentContext:previousContext];
+#else
+            if (switchedContext)
+                CGLSetCurrentContext(previousContext);
+#endif
+            return; // backing objects are intentionally leaked rather than released while GL may use them
         }
 
-        target = SharedTarget();
+        if (glReadPending) {
+            // GL may still be sampling the IOSurface from the preceding game frame.
+            glFinish();
+            glReadPending = false;
+        }
+
+        if (!metalFrameComplete) {
+            bgfx::mtlWaitForLastFrame(true);
+            metalFrameComplete = true;
+        }
+        hostReadPrepared = false;
+
+        std::vector<MetalTargetData*> retired;
+        retired.reserve(batch.size());
+        bool hasBgfxResources = false;
+        for (auto* target : batch) {
+            if (!target)
+                continue;
+
+            auto* data = static_cast<MetalTargetData*>(target->platform);
+            unregisterTarget(target);
+
+            if (bgfx::isValid(target->framebuffer)) {
+                bgfx::destroy(target->framebuffer);
+                hasBgfxResources = true;
+            }
+            if (bgfx::isValid(target->texture)) {
+                bgfx::destroy(target->texture); // shared texture backing is owned here
+                hasBgfxResources = true;
+            }
+
+            if (data)
+                retired.push_back(data);
+            else if (target->glTexture) {
+                GLStateGuard guard(*host);
+                glDeleteTextures(1, &target->glTexture);
+            }
+            *target = SharedTarget();
+        }
+
+        // Flush every queued BGFX destroy in one frame, then wait until Metal is
+        // finished with the external textures before releasing their backing store.
+        if (hasBgfxResources) {
+            bgfx::frame();
+            bgfx::mtlWaitForLastFrame(true);
+            metalFrameComplete = true;
+        }
+
+#if TARGET_OS_IPHONE
+        for (auto* data : retired) {
+            if (data->glTexture)
+                CFRelease(data->glTexture);
+            if (data->metalTexture)
+                CFRelease(data->metalTexture);
+            if (data->pixelBuffer)
+                CVPixelBufferRelease(data->pixelBuffer);
+            if (data->texture)
+                [data->texture release];
+            delete data;
+        }
+        if (!retired.empty() && glCache)
+            CVOpenGLESTextureCacheFlush(glCache, 0);
+#else
+        for (auto* data : retired) {
+            if (data->glTextureName) {
+                GLStateGuard guard(*host);
+                glDeleteTextures(1, &data->glTextureName);
+            }
+            if (data->surface)
+                CFRelease(data->surface);
+            if (data->texture)
+                [data->texture release];
+            delete data;
+        }
+#endif
+
+#if TARGET_OS_IPHONE
+        if (switchedContext)
+            [EAGLContext setCurrentContext:previousContext];
+#else
+        if (switchedContext)
+            CGLSetCurrentContext(previousContext);
+#endif
     }
 
     void beforeNativeFrame() override {
         // The GL compositor reads the same IOSurface that Metal renders into.
-        // glFlush only submits GL commands; it does not ensure those reads have
-        // finished before the next Metal frame writes to the surface.
+        // glFlush only submits GL commands; wait until those reads have finished
+        // before allowing Metal to overwrite the shared backing store.
         if (glReadPending) {
             glFinish();
             glReadPending = false;
         }
+        hostReadPrepared = false;
     }
 
     void afterNativeFrame() override {
-        // Make sure the command buffer has been scheduled. Wait for completion
-        // lazily in beforeHostRead(), immediately before GL samples its IOSurface.
+        // Record the end-of-frame command buffer. Completion is deferred until
+        // the host is actually about to sample one of the shared textures.
         bgfx::mtlWaitForLastFrame(false);
         metalFrameComplete = false;
+        hostReadPrepared = false;
     }
 
     void beforeHostRead() override {
         if (!metalFrameComplete) {
-            // Scheduling is not completion: GL must not sample the IOSurface
-            // until the Metal render pass has actually finished.
             bgfx::mtlWaitForLastFrame(true);
             metalFrameComplete = true;
-#if TARGET_OS_IPHONE
-            CVOpenGLESTextureCacheFlush(glCache, 0);
-#endif
         }
+        hostReadPrepared = true;
     }
 
     void afterHostRead() override {
-        glReadPending = true;
+        // A frame with no compositor reads must not force a glFinish next frame.
+        if (hostReadPrepared)
+            glReadPending = true;
+        hostReadPrepared = false;
     }
 
     const char* describe() const override {
@@ -276,7 +399,9 @@ private:
     id<MTLDevice> device = nil;
     bool glReadPending = false;
     bool metalFrameComplete = true;
+    bool hostReadPrepared = false;
 #if TARGET_OS_IPHONE
+    EAGLContext* eaglContext = nil;
     CVMetalTextureCacheRef metalCache = nullptr;
     CVOpenGLESTextureCacheRef glCache = nullptr;
 #else
