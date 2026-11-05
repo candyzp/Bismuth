@@ -117,10 +117,19 @@ public:
                                 (CFDictionaryRef)attributes, &data->pixelBuffer) != kCVReturnSuccess)
             return fail("CVPixelBufferCreate failed");
 
-        if (CVMetalTextureCacheCreateTextureFromImage(kCFAllocatorDefault, metalCache, data->pixelBuffer, nullptr,
-                MTLPixelFormatBGRA8Unorm, width, height, 0, &data->metalTexture) != kCVReturnSuccess)
+        // Core Video defaults kCVMetalTextureUsage to MTLTextureUsageUnknown.
+        // BGFX attaches this texture as a render target, so request the required
+        // usages explicitly instead of relying on driver-specific defaults.
+        NSDictionary* metalTextureAttributes = @{
+            (NSString*)kCVMetalTextureUsage: @(MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead),
+        };
+        if (CVMetalTextureCacheCreateTextureFromImage(kCFAllocatorDefault, metalCache, data->pixelBuffer,
+                (CFDictionaryRef)metalTextureAttributes, MTLPixelFormatBGRA8Unorm,
+                width, height, 0, &data->metalTexture) != kCVReturnSuccess)
             return fail("CVMetalTextureCacheCreateTextureFromImage failed");
         data->texture = CVMetalTextureGetTexture(data->metalTexture);
+        if (!data->texture || !(data->texture.usage & MTLTextureUsageRenderTarget))
+            return fail("Core Video Metal texture is not render-target capable");
         [data->texture retain];
 
         {
@@ -222,21 +231,33 @@ public:
     }
 
     void beforeNativeFrame() override {
-        // GL's reads of the surfaces must be submitted before Metal overwrites them.
+        // The GL compositor reads the same IOSurface that Metal renders into.
+        // glFlush only submits GL commands; it does not ensure those reads have
+        // finished before the next Metal frame writes to the surface.
         if (glReadPending) {
-            glFlush();
+            glFinish();
             glReadPending = false;
         }
     }
 
     void afterNativeFrame() override {
+        // Make sure the command buffer has been scheduled. Wait for completion
+        // lazily in beforeHostRead(), immediately before GL samples its IOSurface.
         bgfx::mtlWaitForLastFrame(false);
-#if TARGET_OS_IPHONE
-        CVOpenGLESTextureCacheFlush(glCache, 0);
-#endif
+        metalFrameComplete = false;
     }
 
-    void beforeHostRead() override {}
+    void beforeHostRead() override {
+        if (!metalFrameComplete) {
+            // Scheduling is not completion: GL must not sample the IOSurface
+            // until the Metal render pass has actually finished.
+            bgfx::mtlWaitForLastFrame(true);
+            metalFrameComplete = true;
+#if TARGET_OS_IPHONE
+            CVOpenGLESTextureCacheFlush(glCache, 0);
+#endif
+        }
+    }
 
     void afterHostRead() override {
         glReadPending = true;
@@ -254,6 +275,7 @@ private:
     const HostGLInfo* host = nullptr;
     id<MTLDevice> device = nil;
     bool glReadPending = false;
+    bool metalFrameComplete = true;
 #if TARGET_OS_IPHONE
     CVMetalTextureCacheRef metalCache = nullptr;
     CVOpenGLESTextureCacheRef glCache = nullptr;
