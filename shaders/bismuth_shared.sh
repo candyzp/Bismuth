@@ -111,8 +111,8 @@
 // Object vertex buffer (uvec4 per vertex):
 //   (positionOffset.x bits, positionOffset.y bits, texCoord packed unorm16x2, spriteIndex)
 
-// Compute shader thread counts
-#define CULL_THREADS 1
+// Compute shader thread counts. One GPU cull lane handles one sprite.
+#define CULL_THREADS 64
 #define SCAN_THREADS 64
 #define COPY_THREADS 64
 

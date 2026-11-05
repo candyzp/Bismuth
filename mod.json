@@ -52,15 +52,7 @@
 				"GPU",
 				"CPU"
 			],
-			"description": "Where on-screen objects are found and transformed every frame.\n<cg>Auto</c>: GPU culling on validated backends; CPU culling on Metal until its compute path is validated.\n\nTakes effect when entering a level."
-		},
-		"gpu_core_count": {
-			"name": "GPU core count",
-			"type": "int",
-			"default": 0,
-			"max": 20000,
-			"min": 0,
-			"description": "Only used with GPU culling. Here, you can manually specify your GPU core count. If set at 0, Bismuth attempts to find the core count automatically (Windows only). You can also try different values to see how it affects performance."
+			"description": "Where on-screen objects are found and transformed every frame.\n<cg>Auto</c>: GPU culling when compute shaders and indirect draws are supported; otherwise CPU culling.\n\nTakes effect when entering a level."
 		},
 		"show_debug_overlay": {
 			"name": "Show debug overlay",

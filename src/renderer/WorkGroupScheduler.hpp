@@ -10,8 +10,6 @@
 #include <thread>
 #include <unordered_map>
 
-#define WORK_GROUPS_PER_GPU_CORES 2.5
-
 class Renderer;
 
 using ColorChannelBlendStates = std::array<bool, 1101>;
@@ -35,9 +33,11 @@ public:
     WorkGroupScheduler() = default;
     ~WorkGroupScheduler();
 
-    /// Upper bound of work groups per batch: ~2.5 per GPU core on the GPU path,
-    /// enough small chunks to balance the threads on the CPU path.
+    /// CPU path: target enough small groups to keep worker threads balanced.
     void setMaxWorkGroupCount(isize count) { maxWorkGroupCount = count; }
+
+    /// GPU path: one compute lane processes one sprite in a fixed-width group.
+    void setFixedSpritesPerWorkGroup(u32 count) { fixedSpritesPerWorkGroup = count ? count : 1; }
 
     void addSprite(
         GameObject* object,
@@ -100,6 +100,7 @@ private:
         ColorChannelBlendStates blendStates;
 
         isize maxWorkGroupCount = -1;
+        u32 fixedSpritesPerWorkGroup = 0;
 
         //// THREAD ////
         std::thread thread;
@@ -120,6 +121,7 @@ private:
     };
 
     isize maxWorkGroupCount = 8000;
+    u32 fixedSpritesPerWorkGroup = 0;
 
     std::map<ColorChannelBlendStates, UPtr<GenerationJob>> currentGenerationJobs;
 

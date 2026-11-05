@@ -88,6 +88,7 @@ void WorkGroupScheduler::addGenerationJob(const ColorChannelBlendStates& blendSt
 
     job->blendStates = blendStates;
     job->maxWorkGroupCount = std::clamp<isize>(maxWorkGroupCount, 1, 65535);
+    job->fixedSpritesPerWorkGroup = fixedSpritesPerWorkGroup;
 
     job->thread = std::thread(&GenerationJob::generateSortedBatchForBlendStates, job.get());
 
@@ -109,8 +110,16 @@ void WorkGroupScheduler::GenerationJob::generateSortedBatchForBlendStates() {
         loadAndSortSprites(scheduler.spriteEntries);
     }
 
-    u32 approxWorkGroupCount = std::max<u32>(std::min<u32>((u32)spriteCount, (u32)maxWorkGroupCount), 1);
-    u32 spritesPerWorkGroup = std::max<u32>((u32)spriteCount / approxWorkGroupCount, 1);
+    u32 approxWorkGroupCount = 1;
+    u32 spritesPerWorkGroup = 1;
+    if (fixedSpritesPerWorkGroup > 0) {
+        spritesPerWorkGroup = fixedSpritesPerWorkGroup;
+        approxWorkGroupCount = std::max<u32>(
+            (u32)((spriteCount + spritesPerWorkGroup - 1u) / spritesPerWorkGroup), 1u);
+    } else {
+        approxWorkGroupCount = std::max<u32>(std::min<u32>((u32)spriteCount, (u32)maxWorkGroupCount), 1);
+        spritesPerWorkGroup = std::max<u32>((u32)spriteCount / approxWorkGroupCount, 1);
+    }
 
     auto sortedBatch = std::make_unique<SortedObjectBatch>();
     auto& data = sortedBatch->data;

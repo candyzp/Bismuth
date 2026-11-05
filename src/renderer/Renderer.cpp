@@ -289,14 +289,12 @@ bool Renderer::init(PlayLayer* layer, CCArray* levelObjects) {
     u32 groupCombCount = groupManager.getGroupCombinationCount();
     log::info("{} group combinations detected", groupCombCount);
 
-    // Work group sizing for culling.
-    if (device.getCullingPath() == gfx::CullingPath::Gpu) {
-        isize cores = getGPUCoreCount();
-        objectBatch.getScheduler().setMaxWorkGroupCount(cores > 0 ? (isize)(cores * WORK_GROUPS_PER_GPU_CORES) : 8000);
-    } else {
-        // Small chunks so the CPU culling threads stay balanced.
+    // GPU culling uses 64 lanes per group, one sprite per lane. CPU culling
+    // keeps smaller jobs sized for the worker pool.
+    if (device.getCullingPath() == gfx::CullingPath::Gpu)
+        objectBatch.getScheduler().setFixedSpritesPerWorkGroup(CULL_THREADS);
+    else
         objectBatch.getScheduler().setMaxWorkGroupCount(4096);
-    }
 
     log::info("Generating vertex buffer...");
 

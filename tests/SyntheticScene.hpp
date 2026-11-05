@@ -39,7 +39,7 @@ inline u32 makeHSV(float hue, float sat, float val, bool satAdd, bool valAdd) {
     return ret;
 }
 
-inline Scene makeScene(u32 width, u32 height, u32 objectCount, u32 seed, u32 spritesPerWorkGroup = 7) {
+inline Scene makeScene(u32 width, u32 height, u32 objectCount, u32 seed, u32 spritesPerWorkGroup = CULL_THREADS) {
     Scene scene;
     scene.width = width;
     scene.height = height;

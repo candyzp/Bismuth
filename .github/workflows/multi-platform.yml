@@ -7,7 +7,38 @@ on:
       - "**"
 
 jobs:
+  compile-shaders:
+    name: Compile embedded shader binaries
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shader build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ninja-build libgl-dev libegl-dev libx11-dev \
+            mesa-vulkan-drivers libgl1-mesa-dri xvfb
+
+      - name: Cache shaderc
+        uses: actions/cache@v4
+        with:
+          path: build-shaderc
+          key: shaderc-${{ hashFiles('tools/build_shaderc.sh') }}
+
+      - name: Compile shaders for all renderers
+        run: tools/build_shaderc.sh
+
+      - name: Upload generated shader headers
+        uses: actions/upload-artifact@v4
+        with:
+          name: generated-shaders
+          path: src/gfx/shaders/generated/
+          if-no-files-found: error
+          retention-days: 1
+
   build:
+    needs: compile-shaders
     strategy:
       fail-fast: false
       matrix:
@@ -36,6 +67,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Download generated shader headers
+        uses: actions/download-artifact@v4
+        with:
+          name: generated-shaders
+          path: src/gfx/shaders/generated
+
       - name: Build the mod
         uses: geode-sdk/build-geode-mod@main
         with:
@@ -44,30 +81,28 @@ jobs:
           # Same Geode version as mod.json.
           sdk: v5.11.2
 
-  # Rendering core tests on Mesa (llvmpipe OpenGL + lavapipe Vulkan): every
-  # backend / culling combination must render the same image. Also checks that
-  # the committed shader binaries match shaders/*.sc.
+  # Rendering core tests on Mesa (llvmpipe GL + lavapipe Vulkan): every
+  # backend / culling combination must render the same image. The shader
+  # compilation job above guarantees embedded binaries match shaders/*.sc.
   core-tests:
     name: Rendering core tests
+    needs: compile-shaders
     runs-on: ubuntu-24.04
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Download generated shader headers
+        uses: actions/download-artifact@v4
+        with:
+          name: generated-shaders
+          path: src/gfx/shaders/generated
+
+      - name: Install test dependencies
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq ninja-build libgl-dev libegl-dev libx11-dev \
             mesa-vulkan-drivers libgl1-mesa-dri xvfb
-
-      - name: Cache shaderc
-        uses: actions/cache@v4
-        with:
-          path: build-shaderc
-          key: shaderc-${{ hashFiles('tools/build_shaderc.sh') }}
-
-      - name: Check generated shaders
-        run: tools/build_shaderc.sh --check
 
       - name: Build tests
         run: |
