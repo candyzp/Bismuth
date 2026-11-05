@@ -68,7 +68,8 @@ public:
 
 protected:
     /// Registered textures (GL sync operations need the full list).
-    SharedTarget* targets[16] = {};
+    // Up to 24 composite groups plus the optional overdraw target may be registered.
+    SharedTarget* targets[32] = {};
     void registerTarget(SharedTarget* target);
     void unregisterTarget(SharedTarget* target);
 };
