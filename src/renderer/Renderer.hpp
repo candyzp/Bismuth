@@ -74,6 +74,7 @@ private:
     void computeCompositeGroups();
 
     bool ensureSharedTargets(u32 count, u32 width, u32 height);
+    void releaseSharedTargets();
 
     void drawGroupLayers(const CompositeGroup& group, bgfx::ViewId view, bool toSharedTarget);
 
