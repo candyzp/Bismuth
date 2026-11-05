@@ -283,6 +283,16 @@ void Device::chooseCullingPath(CullingPreference preference) {
         cullingReason = "compute or indirect drawing unsupported";
     }
 
+    // Metal advertises compute + indirect drawing, but this only proves that
+    // the API features exist. It does not validate Bismuth's Metal compute
+    // shaders, buffer bindings, or dispatch path on real Apple devices.
+    // Keep Auto on the well-tested CPU culler until that path has dedicated
+    // Metal/iOS runtime coverage. Explicit GPU mode remains an opt-in.
+    if (backend == Backend::Metal && preference == CullingPreference::Auto) {
+        gpuPossible = false;
+        cullingReason = "Metal GPU culling is not yet validated; Auto uses CPU culling";
+    }
+
     if (preference == CullingPreference::Cpu) {
         gpuPossible = false;
         cullingReason = "forced by settings";

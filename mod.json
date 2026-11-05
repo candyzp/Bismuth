@@ -52,7 +52,7 @@
 				"GPU",
 				"CPU"
 			],
-			"description": "Where on-screen objects are found and transformed every frame.\n<cg>Auto</c>: on the GPU (compute shaders) when supported, otherwise on the CPU (multithreaded).\n\nTakes effect when entering a level."
+			"description": "Where on-screen objects are found and transformed every frame.\n<cg>Auto</c>: GPU culling on validated backends; CPU culling on Metal until its compute path is validated.\n\nTakes effect when entering a level."
 		},
 		"gpu_core_count": {
 			"name": "GPU core count",
