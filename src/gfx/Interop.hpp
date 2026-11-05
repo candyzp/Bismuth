@@ -24,6 +24,7 @@
 #include <bgfx/bgfx.h>
 #include "HostGL.hpp"
 #include <string>
+#include <vector>
 
 namespace bismuth::gfx {
 
@@ -57,6 +58,15 @@ public:
     /// Creates a shared render target. May run bgfx::frame() internally.
     virtual bool createTarget(SharedTarget& target, u32 width, u32 height) = 0;
     virtual void destroyTarget(SharedTarget& target) = 0;
+
+    /// Retires a set of targets together. Backends with asynchronous GPU work
+    /// can synchronize once for the whole batch before releasing shared memory.
+    virtual void destroyTargets(const std::vector<SharedTarget*>& batch) {
+        for (auto* target : batch) {
+            if (target)
+                destroyTarget(*target);
+        }
+    }
 
     virtual void beforeNativeFrame() = 0;
     virtual void afterNativeFrame() = 0;
