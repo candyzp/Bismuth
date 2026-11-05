@@ -7,6 +7,7 @@
 #include "ObjectUtils.hpp"
 #include "OverdrawView.hpp"
 #include <array>
+#include <deque>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -234,7 +235,8 @@ private:
     //// COMPOSITE GROUPS ////
     std::vector<CompositeGroup> groups;
     std::unordered_map<ObjectBatchNode*, i32> groupOfNode;
-    std::vector<bismuth::gfx::SharedTarget> sharedTargets;
+    // Interop retains pointers to these entries; deque keeps addresses stable as targets are appended.
+    std::deque<bismuth::gfx::SharedTarget> sharedTargets;
     u32 sharedTargetWidth = 0;
     u32 sharedTargetHeight = 0;
     bool nativeFrameSubmitted = false;
