@@ -12,6 +12,7 @@
 #include <gfx/Device.hpp>
 #include <bgfx/bgfx.h>
 #include <unordered_map>
+#include <string>
 
 namespace bismuth {
 
@@ -39,10 +40,10 @@ public:
 
     void updateFrame(const FrameBatchData& frame, const GameStateUniforms& gameState);
 
-    /// Culls every sprite of the current batch. GPU path: compute dispatches on `computeView`.
-    /// CPU path: `uploadToBgfx` = false when the vertices are drawn without
-    /// bgfx (gfx::HostSpriteRenderer, see getCpuVertices / getCpuLayerRange).
-    void cull(bgfx::ViewId computeView, bool uploadToBgfx = true);
+    /// Culls every sprite of the current batch. Returns false before drawing
+    /// if a required buffer, shader or dispatch resource is unavailable.
+    bool cull(bgfx::ViewId computeView, bool uploadToBgfx = true);
+    const std::string& getResourceError() const { return resourceError; }
 
     /// CPU path: the last cull's vertices (CpuVertex) and per layer ranges.
     const std::vector<CpuVertex>& getCpuVertices() const { return cpuVertices; }
@@ -79,8 +80,9 @@ private:
 
     GpuBatch& getGpuBatch(const SortedBatchData* batch);
     void setGameStateUniform();
-    void ensureFrameBuffer(u32 elements);
-    void ensureCounterBuffer(u32 workGroups);
+    bool ensureFrameBuffer(u32 elements);
+    bool ensureCounterBuffer(u32 workGroups);
+    bool failResource(const char* message);
 
     gfx::CullingPath path = gfx::CullingPath::Cpu;
     bool initialized = false;
@@ -127,6 +129,7 @@ private:
 
     u64 staticBytes = 0;
     u64 frameBytes = 0;
+    std::string resourceError;
 };
 
 } // namespace bismuth

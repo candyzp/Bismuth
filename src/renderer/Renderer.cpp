@@ -312,7 +312,8 @@ bool Renderer::init(PlayLayer* layer, CCArray* levelObjects) {
     log::info("Sprite count: {}", objectBatch.getSpriteCount());
 
     if (!batchRenderer.init(std::move(staticData), device.getCullingPath(), device.getRendererType())) {
-        log::error("Bismuth: failed to create GPU resources");
+        const auto& error = batchRenderer.getResourceError();
+        log::error("Bismuth: failed to create renderer resources{}{}", error.empty() ? "" : ": ", error);
         return false;
     }
 
@@ -759,8 +760,15 @@ void Renderer::draw() {
             // bgfx: submitted with the first group's flush, as bgfx runs the
             // compute view before the draw views.
             auto timer = BProfiler::start("Bismuth culling");
-            batchRenderer.cull(RendererViews::Compute, !directHostDraw);
+            const bool cullingReady = batchRenderer.cull(RendererViews::Compute, !directHostDraw);
             timer.end();
+            if (!cullingReady) {
+                const auto& error = batchRenderer.getResourceError();
+                deactivate(error.empty() ? "culling resources are unavailable" : error.c_str());
+                renderingTimer.stop();
+                PROFILER_POP();
+                return;
+            }
             if (groups.empty() && !directHostDraw)
                 device.flushHost();
         }
@@ -789,8 +797,15 @@ void Renderer::draw() {
 
         if (needsCulling) {
             auto timer = BProfiler::start("Bismuth culling");
-            batchRenderer.cull(RendererViews::Compute);
+            const bool cullingReady = batchRenderer.cull(RendererViews::Compute);
             timer.end();
+            if (!cullingReady) {
+                const auto& error = batchRenderer.getResourceError();
+                deactivate(error.empty() ? "culling resources are unavailable" : error.c_str());
+                renderingTimer.stop();
+                PROFILER_POP();
+                return;
+            }
         }
 
         overdrawView.beginFrame(width, height);

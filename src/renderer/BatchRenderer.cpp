@@ -3,6 +3,7 @@
 #include <gfx/Programs.hpp>
 
 #include <algorithm>
+#include <limits>
 
 
 namespace {
@@ -41,8 +42,17 @@ BatchRenderer::~BatchRenderer() {
     shutdown();
 }
 
+bool BatchRenderer::failResource(const char* message) {
+    if (resourceError.empty()) {
+        resourceError = message;
+        logf(LogLevel::Error, "Bismuth: %s", message);
+    }
+    return false;
+}
+
 bool BatchRenderer::init(StaticBatchData staticData, gfx::CullingPath cullingPath, bgfx::RendererType::Enum renderer) {
     shutdown();
+    resourceError.clear();
 
     data = std::move(staticData);
     path = cullingPath;
@@ -71,29 +81,54 @@ bool BatchRenderer::init(StaticBatchData staticData, gfx::CullingPath cullingPat
         scanProgram     = gfx::loadComputeProgram("cs_scan", profile);
         copyProgram     = gfx::loadComputeProgram("cs_copy", profile);
 
-        if (!bgfx::isValid(cullProgram) || !bgfx::isValid(scanProgram) || !bgfx::isValid(copyProgram))
+        if (!bgfx::isValid(cullProgram) || !bgfx::isValid(scanProgram) || !bgfx::isValid(copyProgram)) {
+            failResource("BGFX could not create all GPU culling compute programs");
+            shutdown();
             return false;
+        }
 
-        // The CPU copies aren't needed after this: hand them to bgfx instead of
-        // copying them (they reach hundreds of MB on very large levels).
-        const u32 staticSize = (u32)(data.staticBuffer.size() * sizeof(UVec4));
-        staticBuffer = bgfx::createVertexBuffer(moveToBgfx(data.staticBuffer), uvec4Layout, BGFX_BUFFER_COMPUTE_READ);
+        // BGFX's resource sizes are 32-bit. Validate every large allocation
+        // before narrowing sizes or moving the level data into BGFX.
+        const u64 staticSize64 = (u64)data.staticBuffer.size() * sizeof(UVec4);
+        const u64 vertexSize64 = (u64)data.vertices.size() * sizeof(PackedVertex);
+        const u64 rawSpriteElements64 = (u64)std::max<u32>(data.inputSpriteCount, 1) * RAW_SPRITE_STRIDE;
+        const u64 triangleBytes64 = (u64)std::max<u32>(data.triangleCount, 1) * sizeof(u32);
+        const u64 rawSpriteBytes64 = rawSpriteElements64 * sizeof(UVec4);
+        if (staticSize64 > std::numeric_limits<u32>::max()
+            || vertexSize64 > std::numeric_limits<u32>::max()
+            || rawSpriteElements64 > std::numeric_limits<u32>::max()
+            || triangleBytes64 > std::numeric_limits<u32>::max()
+            || rawSpriteBytes64 > std::numeric_limits<u32>::max()) {
+            failResource("GPU batch exceeds BGFX's 32-bit buffer size limit");
+            shutdown();
+            return false;
+        }
 
-        const u32 vertexSize = (u32)(data.vertices.size() * sizeof(PackedVertex));
-        vertexBuffer = bgfx::createVertexBuffer(moveToBgfx(data.vertices), uvec4Layout, BGFX_BUFFER_COMPUTE_READ);
-
+        const u32 staticSize = (u32)staticSize64;
+        const u32 vertexSize = (u32)vertexSize64;
+        const u32 rawSpriteElements = (u32)rawSpriteElements64;
         const u32 triangles = std::max<u32>(data.triangleCount, 1);
+
+        staticBuffer = bgfx::createVertexBuffer(moveToBgfx(data.staticBuffer), uvec4Layout, BGFX_BUFFER_COMPUTE_READ);
+        vertexBuffer = bgfx::createVertexBuffer(moveToBgfx(data.vertices), uvec4Layout, BGFX_BUFFER_COMPUTE_READ);
         culledTris  = bgfx::createDynamicIndexBuffer(triangles, BGFX_BUFFER_INDEX32 | BGFX_BUFFER_COMPUTE_READ_WRITE);
         compactTris = bgfx::createDynamicIndexBuffer(triangles, BGFX_BUFFER_INDEX32 | BGFX_BUFFER_COMPUTE_READ_WRITE);
-        rawSprites  = bgfx::createDynamicVertexBuffer(
-            std::max<u32>(data.inputSpriteCount, 1) * RAW_SPRITE_STRIDE, uvec4Layout, BGFX_BUFFER_COMPUTE_READ_WRITE);
+        rawSprites  = bgfx::createDynamicVertexBuffer(rawSpriteElements, uvec4Layout, BGFX_BUFFER_COMPUTE_READ_WRITE);
 
-        staticBytes = staticSize + vertexSize + (u64)triangles * 8 + (u64)data.inputSpriteCount * RAW_SPRITE_STRIDE * 16;
+        if (!bgfx::isValid(staticBuffer) || !bgfx::isValid(vertexBuffer)
+            || !bgfx::isValid(culledTris) || !bgfx::isValid(compactTris)
+            || !bgfx::isValid(rawSprites)) {
+            failResource("BGFX could not allocate every GPU culling buffer for this level");
+            shutdown();
+            return false;
+        }
+
+        staticBytes = staticSize64 + vertexSize64 + triangleBytes64 * 2 + rawSpriteBytes64;
 
         logf(LogLevel::Info,
             "Bismuth: GPU buffers: objects %.1f MB, vertices %.1f MB, triangles 2 x %.1f MB, sprites %.1f MB",
             staticSize / 1048576.0, vertexSize / 1048576.0, triangles * 4 / 1048576.0,
-            (double)data.inputSpriteCount * RAW_SPRITE_STRIDE * 16 / 1048576.0);
+            (double)rawSpriteBytes64 / 1048576.0);
 
     } else {
         drawProgram     = gfx::loadProgram("vs_object_cpu", "fs_object", profile);
@@ -102,8 +137,12 @@ bool BatchRenderer::init(StaticBatchData staticData, gfx::CullingPath cullingPat
         staticBytes = data.staticBuffer.size() * sizeof(UVec4) + data.vertices.size() * sizeof(PackedVertex);
     }
 
-    if (!bgfx::isValid(drawProgram))
+    if (!bgfx::isValid(u_gameState) || !bgfx::isValid(u_mvp) || !bgfx::isValid(s_spriteSheet)
+        || !bgfx::isValid(drawProgram)) {
+        failResource("BGFX could not create the renderer programs or uniforms");
+        shutdown();
         return false;
+    }
 
     initialized = true;
     return true;
@@ -149,11 +188,23 @@ BatchRenderer::GpuBatch& BatchRenderer::getGpuBatch(const SortedBatchData* sorte
         return it->second;
 
     GpuBatch& gpuBatch = gpuBatches[sorted];
-    const u32 size = (u32)(sorted->buffer.size() * sizeof(UVec4));
-    gpuBatch.buffer = bgfx::createVertexBuffer(
-        bgfx::copy(sorted->buffer.data(), std::max<u32>(size, sizeof(UVec4))),
-        uvec4Layout, BGFX_BUFFER_COMPUTE_READ);
+    const u64 size64 = (u64)sorted->buffer.size() * sizeof(UVec4);
+    if (size64 > std::numeric_limits<u32>::max() || sorted->layerCount > std::numeric_limits<u16>::max()) {
+        failResource("Sorted GPU batch exceeds BGFX buffer or indirect-draw limits");
+        return gpuBatch;
+    }
+    const u32 size = (u32)size64;
+    const bgfx::Memory* sortedMemory = nullptr;
+    if (size == 0) {
+        sortedMemory = bgfx::alloc(sizeof(UVec4));
+        std::memset(sortedMemory->data, 0, sortedMemory->size);
+    } else {
+        sortedMemory = bgfx::copy(sorted->buffer.data(), size);
+    }
+    gpuBatch.buffer = bgfx::createVertexBuffer(sortedMemory, uvec4Layout, BGFX_BUFFER_COMPUTE_READ);
     gpuBatch.indirect = bgfx::createIndirectBuffer(std::max<u32>(sorted->layerCount, 1));
+    if (!bgfx::isValid(gpuBatch.buffer) || !bgfx::isValid(gpuBatch.indirect))
+        failResource("BGFX could not allocate a sorted sprite batch or indirect draw buffer");
     return gpuBatch;
 }
 
@@ -182,21 +233,29 @@ bool BatchRenderer::hasLayer(u32 layerIndex) const {
 
 //// FRAME ////
 
-void BatchRenderer::ensureFrameBuffer(u32 elements) {
+bool BatchRenderer::ensureFrameBuffer(u32 elements) {
     if (bgfx::isValid(frameBuffer) && frameBufferCapacity >= elements)
-        return;
+        return true;
     destroyHandle(frameBuffer);
-    frameBufferCapacity = std::max<u32>(elements + elements / 2, 1024);
+    const u64 capacity64 = std::max<u64>((u64)elements + elements / 2u, 1024u);
+    if (capacity64 * sizeof(UVec4) > std::numeric_limits<u32>::max())
+        return failResource("Per-frame GPU state buffer exceeds BGFX's size limit");
+    frameBufferCapacity = (u32)capacity64;
     frameBuffer = bgfx::createDynamicVertexBuffer(frameBufferCapacity, uvec4Layout, BGFX_BUFFER_COMPUTE_READ);
+    return bgfx::isValid(frameBuffer) || failResource("BGFX could not allocate the per-frame GPU state buffer");
 }
 
-void BatchRenderer::ensureCounterBuffer(u32 workGroups) {
-    const u32 needed = std::max<u32>(workGroups, 1) * WORK_GROUP_COUNTER_STRIDE;
+bool BatchRenderer::ensureCounterBuffer(u32 workGroups) {
+    const u64 needed64 = (u64)std::max<u32>(workGroups, 1) * WORK_GROUP_COUNTER_STRIDE;
+    if (needed64 * sizeof(u32) > std::numeric_limits<u32>::max())
+        return failResource("GPU workgroup counter buffer exceeds BGFX's size limit");
+    const u32 needed = (u32)needed64;
     if (bgfx::isValid(counters) && counterCapacity >= needed)
-        return;
+        return true;
     destroyHandle(counters);
     counterCapacity = needed;
     counters = bgfx::createDynamicIndexBuffer(counterCapacity, BGFX_BUFFER_INDEX32 | BGFX_BUFFER_COMPUTE_READ_WRITE);
+    return bgfx::isValid(counters) || failResource("BGFX could not allocate the GPU workgroup counter buffer");
 }
 
 void BatchRenderer::updateFrame(const FrameBatchData& frameData, const GameStateUniforms& state) {
@@ -206,9 +265,13 @@ void BatchRenderer::updateFrame(const FrameBatchData& frameData, const GameState
     frameBytes = frameData.buffer.size() * sizeof(UVec4);
 
     if (path == gfx::CullingPath::Gpu) {
-        const u32 elements = std::max<u32>((u32)frameData.buffer.size(), 1);
-        ensureFrameBuffer(elements);
-        bgfx::update(frameBuffer, 0, bgfx::copy(frameData.buffer.data(), elements * sizeof(UVec4)));
+        const u64 elements64 = std::max<u64>((u64)frameData.buffer.size(), 1u);
+        const u64 bytes64 = elements64 * sizeof(UVec4);
+        if (bytes64 > std::numeric_limits<u32>::max() || !ensureFrameBuffer((u32)elements64)) {
+            failResource("Per-frame GPU state upload is too large or unavailable");
+            return;
+        }
+        bgfx::update(frameBuffer, 0, bgfx::copy(frameData.buffer.data(), (u32)bytes64));
     } else {
         frame = &frameData;
     }
@@ -228,39 +291,57 @@ void BatchRenderer::setGameStateUniform() {
     bgfx::setUniform(u_gameState, values, GAME_STATE_VEC4S);
 }
 
-void BatchRenderer::cull(bgfx::ViewId computeView, bool uploadToBgfx) {
-    if (!initialized || !batch)
-        return;
+bool BatchRenderer::cull(bgfx::ViewId computeView, bool uploadToBgfx) {
+    if (!resourceError.empty() || !initialized || !batch)
+        return false;
 
     if (path == gfx::CullingPath::Cpu) {
         if (!frame)
-            return;
+            return failResource("CPU culling has no current frame data");
 
         culler->run(data, *batch, *frame, gameState, cpuVertices, cpuLayers);
         lastVisibleVertices = (u32)cpuVertices.size();
         if (!uploadToBgfx)
-            return;
+            return true;
 
-        const u32 count = std::max<u32>((u32)cpuVertices.size(), 1);
+        const u64 count64 = std::max<u64>((u64)cpuVertices.size(), 1u);
+        const u64 bytes64 = count64 * sizeof(CpuVertex);
+        if (count64 > std::numeric_limits<u32>::max() || bytes64 > std::numeric_limits<u32>::max())
+            return failResource("CPU-culler vertex upload exceeds BGFX's size limit");
+        const u32 count = (u32)count64;
         if (!bgfx::isValid(cpuVertexBuffer) || cpuVertexCapacity < count) {
             destroyHandle(cpuVertexBuffer);
-            cpuVertexCapacity = std::max<u32>(count + count / 2, 4096);
+            const u64 capacity64 = std::max<u64>(count64 + count64 / 2u, 4096u);
+            if (capacity64 * sizeof(CpuVertex) > std::numeric_limits<u32>::max())
+                return failResource("CPU-culler vertex buffer capacity exceeds BGFX's size limit");
+            cpuVertexCapacity = (u32)capacity64;
             cpuVertexBuffer = bgfx::createDynamicVertexBuffer(cpuVertexCapacity, cpuVertexLayout);
         }
+        if (!bgfx::isValid(cpuVertexBuffer))
+            return failResource("BGFX could not allocate the CPU-culler vertex upload buffer");
         if (!cpuVertices.empty()) {
             // The vector stays untouched until the next cull, after this frame is submitted.
-            bgfx::update(cpuVertexBuffer, 0, bgfx::makeRef(cpuVertices.data(), (u32)(cpuVertices.size() * sizeof(CpuVertex))));
+            bgfx::update(cpuVertexBuffer, 0, bgfx::makeRef(cpuVertices.data(), (u32)bytes64));
         }
-        return;
+        return true;
     }
 
     GpuBatch& gpuBatch = getGpuBatch(batch);
-    ensureCounterBuffer(batch->workGroupCount);
+    if (!resourceError.empty() || !bgfx::isValid(gpuBatch.buffer) || !bgfx::isValid(gpuBatch.indirect))
+        return failResource("GPU culling batch resources are unavailable");
+    if (!ensureCounterBuffer(batch->workGroupCount))
+        return false;
 
     if (batch->workGroupCount == 0)
-        return;
+        return true;
+    if (!bgfx::isValid(staticBuffer) || !bgfx::isValid(vertexBuffer)
+        || !bgfx::isValid(frameBuffer) || !bgfx::isValid(culledTris)
+        || !bgfx::isValid(compactTris) || !bgfx::isValid(rawSprites)
+        || !bgfx::isValid(counters) || !bgfx::isValid(cullProgram)
+        || !bgfx::isValid(scanProgram) || !bgfx::isValid(copyProgram))
+        return failResource("GPU culling stopped because one or more compute resources are invalid");
 
-    // Pass 1: cull + transform
+    // Pass 1: parallel cull + transform (one sprite per GPU lane).
     setGameStateUniform();
     bgfx::setBuffer(0, staticBuffer, bgfx::Access::Read);
     bgfx::setBuffer(1, gpuBatch.buffer, bgfx::Access::Read);
@@ -270,20 +351,21 @@ void BatchRenderer::cull(bgfx::ViewId computeView, bool uploadToBgfx) {
     bgfx::setBuffer(5, counters, bgfx::Access::Write);
     bgfx::dispatch(computeView, cullProgram, batch->workGroupCount, 1, 1);
 
-    // Pass 2: per-layer prefix sums + indirect draw commands
+    // Pass 2: per-layer prefix sums + indirect draw commands.
     setGameStateUniform();
     bgfx::setBuffer(0, gpuBatch.buffer, bgfx::Access::Read);
     bgfx::setBuffer(1, counters, bgfx::Access::ReadWrite);
     bgfx::setBuffer(2, gpuBatch.indirect, bgfx::Access::Write);
     bgfx::dispatch(computeView, scanProgram, std::max<u32>(batch->layerCount, 1), 1, 1);
 
-    // Pass 3: compaction
+    // Pass 3: compaction into per-layer contiguous index ranges.
     setGameStateUniform();
     bgfx::setBuffer(0, gpuBatch.buffer, bgfx::Access::Read);
     bgfx::setBuffer(1, counters, bgfx::Access::Read);
     bgfx::setBuffer(2, culledTris, bgfx::Access::Read);
     bgfx::setBuffer(3, compactTris, bgfx::Access::Write);
     bgfx::dispatch(computeView, copyProgram, batch->workGroupCount, 1, 1);
+    return true;
 }
 
 //// DRAWING ////
@@ -339,6 +421,9 @@ void BatchRenderer::drawLayer(
     }
 
     GpuBatch& gpuBatch = getGpuBatch(batch);
+    if (!resourceError.empty() || !bgfx::isValid(gpuBatch.buffer) || !bgfx::isValid(gpuBatch.indirect)
+        || !bgfx::isValid(compactTris) || !bgfx::isValid(rawSprites) || !bgfx::isValid(vertexBuffer))
+        return;
 
     bgfx::setUniform(u_mvp, gameState.mvp);
     bgfx::setTexture(0, s_spriteSheet, texture, BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP);
