@@ -633,13 +633,25 @@ bool Renderer::ensureSharedTargets(u32 count, u32 width, u32 height) {
     }
 #endif
 
-    while (sharedTargets.size() < count) {
-        sharedTargets.emplace_back();
-        if (!interop->createTarget(sharedTargets.back(), width, height)) {
-            sharedTargets.pop_back();
+    const usize existingCount = sharedTargets.size();
+    if (existingCount < count) {
+        std::vector<gfx::SharedTarget*> pending;
+        pending.reserve(count - existingCount);
+        while (sharedTargets.size() < count)
+            sharedTargets.emplace_back();
+        for (usize i = existingCount; i < sharedTargets.size(); i++)
+            pending.push_back(&sharedTargets[i]);
+
+        if (!interop->createTargets(pending, width, height)) {
+            // Backends own their partial-create rollback; this second call also
+            // handles default implementations that created earlier entries.
+            interop->destroyTargets(pending);
+            sharedTargets.resize(existingCount);
             return false;
         }
-        log::info("Bismuth: created shared render target {} ({}x{})", sharedTargets.size(), width, height);
+
+        for (usize i = existingCount; i < sharedTargets.size(); i++)
+            log::info("Bismuth: created shared render target {} ({}x{})", i + 1, width, height);
     }
     return true;
 }

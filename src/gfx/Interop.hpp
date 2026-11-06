@@ -57,6 +57,25 @@ public:
 
     /// Creates a shared render target. May run bgfx::frame() internally.
     virtual bool createTarget(SharedTarget& target, u32 width, u32 height) = 0;
+
+    /// Creates a set of same-sized targets as one resource transaction. Native
+    /// backends can batch their API submissions; the default keeps older
+    /// implementations source-compatible.
+    virtual bool createTargets(const std::vector<SharedTarget*>& batch, u32 width, u32 height) {
+        std::vector<SharedTarget*> created;
+        created.reserve(batch.size());
+        for (auto* target : batch) {
+            if (!target)
+                continue;
+            if (!createTarget(*target, width, height)) {
+                destroyTargets(created);
+                return false;
+            }
+            created.push_back(target);
+        }
+        return true;
+    }
+
     virtual void destroyTarget(SharedTarget& target) = 0;
 
     /// Retires a set of targets together. Backends with asynchronous GPU work

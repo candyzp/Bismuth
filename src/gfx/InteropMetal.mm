@@ -101,130 +101,165 @@ public:
     }
 
     bool createTarget(SharedTarget& target, u32 width, u32 height) override {
+        return createTargets({ &target }, width, height);
+    }
+
+    bool createTargets(const std::vector<SharedTarget*>& batch, u32 width, u32 height) override {
+        if (batch.empty())
+            return true;
+
 #if TARGET_OS_IPHONE
         if ([EAGLContext currentContext] != eaglContext) {
-            logf(LogLevel::Error, "Bismuth: refusing to create a shared target without the host EAGL context current");
+            logf(LogLevel::Error, "Bismuth: refusing to create shared targets without the host EAGL context current");
             return false;
         }
 #else
         if (CGLGetCurrentContext() != cglContext) {
-            logf(LogLevel::Error, "Bismuth: refusing to create a shared target without the host CGL context current");
+            logf(LogLevel::Error, "Bismuth: refusing to create shared targets without the host CGL context current");
             return false;
         }
 #endif
-        destroyTarget(target);
 
-        auto* data = new MetalTargetData();
-        target.platform = data;
-        target.width = width;
-        target.height = height;
-        // Metal's framebuffer row 0 is the top of the image, GL's texture row 0 is the bottom.
-        target.flipY = true;
+        // Retire replacements together. The normal level-start path supplies
+        // empty entries, but this also makes recreation transactional.
+        std::vector<SharedTarget*> replacing;
+        for (auto* target : batch) {
+            if (target && (target->platform || target->glTexture
+                || bgfx::isValid(target->texture) || bgfx::isValid(target->framebuffer)))
+                replacing.push_back(target);
+        }
+        if (!replacing.empty())
+            destroyTargets(replacing);
 
+        std::vector<SharedTarget*> prepared;
+        prepared.reserve(batch.size());
         auto fail = [&](const char* message) {
             logf(LogLevel::Error, "Bismuth: %s", message);
-            destroyTarget(target);
+            // This releases every partially-created CoreVideo/IOSurface and
+            // BGFX object from the transaction, not just the last target.
+            destroyTargets(prepared);
             return false;
         };
 
+        // Phase 1: allocate all shared backing stores and the two API views.
+        // No bgfx::frame() calls are made inside this loop.
+        for (auto* target : batch) {
+            if (!target)
+                continue;
+
+            auto* data = new MetalTargetData();
+            target->platform = data;
+            target->width = width;
+            target->height = height;
+            // Metal's framebuffer row 0 is the top of the image, GL's is bottom.
+            target->flipY = true;
+            prepared.push_back(target);
+
 #if TARGET_OS_IPHONE
-        NSDictionary* attributes = @{
-            (NSString*)kCVPixelBufferIOSurfacePropertiesKey: @{},
-            (NSString*)kCVPixelBufferMetalCompatibilityKey: @YES,
-            (NSString*)kCVPixelBufferOpenGLESCompatibilityKey: @YES,
-        };
-        if (CVPixelBufferCreate(kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA,
-                                (CFDictionaryRef)attributes, &data->pixelBuffer) != kCVReturnSuccess)
-            return fail("CVPixelBufferCreate failed");
+            NSDictionary* attributes = @{
+                (NSString*)kCVPixelBufferIOSurfacePropertiesKey: @{},
+                (NSString*)kCVPixelBufferMetalCompatibilityKey: @YES,
+                (NSString*)kCVPixelBufferOpenGLESCompatibilityKey: @YES,
+            };
+            if (CVPixelBufferCreate(kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA,
+                                    (CFDictionaryRef)attributes, &data->pixelBuffer) != kCVReturnSuccess)
+                return fail("CVPixelBufferCreate failed");
 
-        // Core Video defaults kCVMetalTextureUsage to MTLTextureUsageUnknown.
-        // BGFX attaches this texture as a render target, so request the required
-        // usages explicitly instead of relying on driver-specific defaults.
-        NSDictionary* metalTextureAttributes = @{
-            (NSString*)kCVMetalTextureUsage: @(MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead),
-        };
-        if (CVMetalTextureCacheCreateTextureFromImage(kCFAllocatorDefault, metalCache, data->pixelBuffer,
-                (CFDictionaryRef)metalTextureAttributes, MTLPixelFormatBGRA8Unorm,
-                width, height, 0, &data->metalTexture) != kCVReturnSuccess)
-            return fail("CVMetalTextureCacheCreateTextureFromImage failed");
-        data->texture = CVMetalTextureGetTexture(data->metalTexture);
-        if (!data->texture || !(data->texture.usage & MTLTextureUsageRenderTarget))
-            return fail("Core Video Metal texture is not render-target capable");
-        [data->texture retain];
+            NSDictionary* metalTextureAttributes = @{
+                (NSString*)kCVMetalTextureUsage: @(MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead),
+            };
+            if (CVMetalTextureCacheCreateTextureFromImage(kCFAllocatorDefault, metalCache, data->pixelBuffer,
+                    (CFDictionaryRef)metalTextureAttributes, MTLPixelFormatBGRA8Unorm,
+                    width, height, 0, &data->metalTexture) != kCVReturnSuccess)
+                return fail("CVMetalTextureCacheCreateTextureFromImage failed");
+            data->texture = CVMetalTextureGetTexture(data->metalTexture);
+            if (!data->texture || !(data->texture.usage & MTLTextureUsageRenderTarget))
+                return fail("Core Video Metal texture is not render-target capable");
+            [data->texture retain];
 
-        {
-            GLStateGuard guard(*host);
-            if (CVOpenGLESTextureCacheCreateTextureFromImage(kCFAllocatorDefault, glCache, data->pixelBuffer, nullptr,
-                    GL_TEXTURE_2D, GL_RGBA, (GLsizei)width, (GLsizei)height, GL_BGRA_EXT, GL_UNSIGNED_BYTE, 0,
-                    &data->glTexture) != kCVReturnSuccess)
-                return fail("CVOpenGLESTextureCacheCreateTextureFromImage failed");
+            {
+                GLStateGuard guard(*host);
+                if (CVOpenGLESTextureCacheCreateTextureFromImage(kCFAllocatorDefault, glCache, data->pixelBuffer, nullptr,
+                        GL_TEXTURE_2D, GL_RGBA, (GLsizei)width, (GLsizei)height, GL_BGRA_EXT, GL_UNSIGNED_BYTE, 0,
+                        &data->glTexture) != kCVReturnSuccess)
+                    return fail("CVOpenGLESTextureCacheCreateTextureFromImage failed");
 
-            target.glTarget = CVOpenGLESTextureGetTarget(data->glTexture);
-            target.glTexture = CVOpenGLESTextureGetName(data->glTexture);
-            data->glTextureName = target.glTexture;
-            glBindTexture(target.glTarget, target.glTexture);
-            glTexParameteri(target.glTarget, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-            glTexParameteri(target.glTarget, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-            glTexParameteri(target.glTarget, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-            glTexParameteri(target.glTarget, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        }
+                target->glTarget = CVOpenGLESTextureGetTarget(data->glTexture);
+                target->glTexture = CVOpenGLESTextureGetName(data->glTexture);
+                data->glTextureName = target->glTexture;
+                glBindTexture(target->glTarget, target->glTexture);
+                glTexParameteri(target->glTarget, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+                glTexParameteri(target->glTarget, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+                glTexParameteri(target->glTarget, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+                glTexParameteri(target->glTarget, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            }
 #else
-        NSDictionary* properties = @{
-            (NSString*)kIOSurfaceWidth: @(width),
-            (NSString*)kIOSurfaceHeight: @(height),
-            (NSString*)kIOSurfaceBytesPerElement: @4,
-            (NSString*)kIOSurfacePixelFormat: @((uint32_t)'BGRA'),
-        };
-        data->surface = IOSurfaceCreate((CFDictionaryRef)properties);
-        if (!data->surface)
-            return fail("IOSurfaceCreate failed");
+            NSDictionary* properties = @{
+                (NSString*)kIOSurfaceWidth: @(width),
+                (NSString*)kIOSurfaceHeight: @(height),
+                (NSString*)kIOSurfaceBytesPerElement: @4,
+                (NSString*)kIOSurfacePixelFormat: @((uint32_t)'BGRA'),
+            };
+            data->surface = IOSurfaceCreate((CFDictionaryRef)properties);
+            if (!data->surface)
+                return fail("IOSurfaceCreate failed");
 
-        MTLTextureDescriptor* desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
-                                                                                       width:width
-                                                                                      height:height
-                                                                                   mipmapped:NO];
-        desc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
-        desc.storageMode = MTLStorageModeManaged;
-        data->texture = [device newTextureWithDescriptor:desc iosurface:data->surface plane:0];
-        if (!data->texture)
-            return fail("newTextureWithDescriptor:iosurface: failed");
+            MTLTextureDescriptor* desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                                                                           width:width
+                                                                                          height:height
+                                                                                       mipmapped:NO];
+            desc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+            desc.storageMode = MTLStorageModeManaged;
+            data->texture = [device newTextureWithDescriptor:desc iosurface:data->surface plane:0];
+            if (!data->texture)
+                return fail("newTextureWithDescriptor:iosurface: failed");
 
-        {
-            GLStateGuard guard(*host);
-            target.glTarget = gl::TEXTURE_RECTANGLE;
-            glGenTextures(1, &target.glTexture);
-            data->glTextureName = target.glTexture;
-            glBindTexture(GL_TEXTURE_RECTANGLE_ARB, target.glTexture);
-            CGLError err = CGLTexImageIOSurface2D(cglContext, GL_TEXTURE_RECTANGLE_ARB, GL_RGBA,
-                (GLsizei)width, (GLsizei)height, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, data->surface, 0);
-            glTexParameteri(GL_TEXTURE_RECTANGLE_ARB, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-            glTexParameteri(GL_TEXTURE_RECTANGLE_ARB, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-            glTexParameteri(GL_TEXTURE_RECTANGLE_ARB, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-            glTexParameteri(GL_TEXTURE_RECTANGLE_ARB, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-            glBindTexture(GL_TEXTURE_RECTANGLE_ARB, 0);
-            if (err != kCGLNoError)
-                return fail("CGLTexImageIOSurface2D failed");
-        }
+            {
+                GLStateGuard guard(*host);
+                target->glTarget = gl::TEXTURE_RECTANGLE;
+                glGenTextures(1, &target->glTexture);
+                data->glTextureName = target->glTexture;
+                glBindTexture(GL_TEXTURE_RECTANGLE_ARB, target->glTexture);
+                CGLError err = CGLTexImageIOSurface2D(cglContext, GL_TEXTURE_RECTANGLE_ARB, GL_RGBA,
+                    (GLsizei)width, (GLsizei)height, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, data->surface, 0);
+                glTexParameteri(GL_TEXTURE_RECTANGLE_ARB, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+                glTexParameteri(GL_TEXTURE_RECTANGLE_ARB, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+                glTexParameteri(GL_TEXTURE_RECTANGLE_ARB, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+                glTexParameteri(GL_TEXTURE_RECTANGLE_ARB, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+                glBindTexture(GL_TEXTURE_RECTANGLE_ARB, 0);
+                if (err != kCGLNoError)
+                    return fail("CGLTexImageIOSurface2D failed");
+            }
 #endif
+        }
 
-        // bgfx needs its own texture object first; then it is pointed at our MTLTexture.
-        target.texture = bgfx::createTexture2D(
-            (u16)width, (u16)height, false, 1, bgfx::TextureFormat::BGRA8,
-            BGFX_TEXTURE_RT | BGFX_SAMPLER_POINT | BGFX_SAMPLER_UVW_CLAMP
-        );
-        if (!bgfx::isValid(target.texture))
-            return fail("bgfx::createTexture2D failed for a shared Metal target");
+        // Phase 2: create all BGFX texture handles, then materialize them in
+        // one frame. The old implementation submitted two frames per target.
+        for (auto* target : prepared) {
+            target->texture = bgfx::createTexture2D(
+                (u16)width, (u16)height, false, 1, bgfx::TextureFormat::BGRA8,
+                BGFX_TEXTURE_RT | BGFX_SAMPLER_POINT | BGFX_SAMPLER_UVW_CLAMP
+            );
+            if (!bgfx::isValid(target->texture))
+                return fail("bgfx::createTexture2D failed for a shared Metal target");
+        }
         bgfx::frame();
 
-        if (0 == bgfx::overrideInternal(target.texture, (uintptr_t)data->texture))
-            return fail("bgfx::overrideInternal failed for a shared Metal texture");
+        // Phase 3: redirect each BGFX texture to the CoreVideo / IOSurface MTL
+        // texture, then construct all framebuffers before the next frame.
+        for (auto* target : prepared) {
+            auto* data = static_cast<MetalTargetData*>(target->platform);
+            if (0 == bgfx::overrideInternal(target->texture, (uintptr_t)data->texture))
+                return fail("bgfx::overrideInternal failed for a shared Metal texture");
 
-        target.framebuffer = bgfx::createFrameBuffer(1, &target.texture, false);
-        if (!bgfx::isValid(target.framebuffer))
-            return fail("bgfx::createFrameBuffer failed for a shared Metal target");
+            target->framebuffer = bgfx::createFrameBuffer(1, &target->texture, false);
+            if (!bgfx::isValid(target->framebuffer))
+                return fail("bgfx::createFrameBuffer failed for a shared Metal target");
+        }
         bgfx::frame();
 
-        registerTarget(&target);
+        for (auto* target : prepared)
+            registerTarget(target);
         return true;
     }
 
