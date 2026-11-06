@@ -644,9 +644,8 @@ bool Renderer::ensureSharedTargets(u32 count, u32 width, u32 height) {
             pending.push_back(&sharedTargets[i]);
 
         if (!interop->createTargets(pending, width, height)) {
-            // Backends own their partial-create rollback; this second call also
-            // handles default implementations that created earlier entries.
-            interop->destroyTargets(pending);
+            // The batch API is transactional: each backend rolls back any
+            // partially-created targets before returning false.
             sharedTargets.resize(existingCount);
             return false;
         }
