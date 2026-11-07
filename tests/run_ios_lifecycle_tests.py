@@ -111,8 +111,8 @@ methods = '\n'.join(function(sig) for sig in [
 ])
 setup = source('src/renderer/hooks.cpp')
 setup = setup[setup.index('static bool newPlayLayer'):setup.index('    void updateVisibility')]+ '};'
-chunks = renderer[renderer.index('struct StandaloneObjectDesc'):renderer.index('struct IOSRendererState')]
-chunks += '\nconstexpr usize MAX_STANDALONE_BUFFER_SPRITES=16383;\n'
+limits = source('src/renderer/ios/AssistBufferLimits.hpp')
+chunks = limits + '\n' + renderer[renderer.index('struct StandaloneObjectDesc'):renderer.index('struct IOSRendererState')]
 chunks += function('static std::vector<StandaloneChunkDesc> buildStandaloneChunks(')
 implementation = r'''
 static std::vector<std::unique_ptr<Renderer>> allocated;
