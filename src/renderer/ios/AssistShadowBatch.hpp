@@ -4,6 +4,7 @@
 
 #include "ResolvedStateLayer.hpp"
 #include "LiveGeometry.hpp"
+#include "AssistBufferLimits.hpp"
 #include "../Buffer.hpp"
 #include "../Shader.hpp"
 #include <Geode/Geode.hpp>
@@ -14,6 +15,7 @@
 // submission; this node never draws an unordered sibling copy.
 class AssistShadowBatch : public cocos2d::CCNode {
 public:
+    static constexpr usize MaxSpritesPerBuffer = MAX_ASSIST_SPRITES_PER_BUFFER;
     struct Stats {
         usize eligibleSprites = 0;
         usize batchedSprites = 0;
@@ -32,7 +34,7 @@ public:
         ResolvedStateLayer* resolvedState,
         Shader* shader,
         cocos2d::CCSpriteBatchNode* stockBatch,
-        usize ownershipLimit = 16383
+        const std::vector<ResolvedStateLayer::ShadowCandidate>& candidates
     );
 
     void draw() override;
@@ -57,9 +59,9 @@ private:
         ResolvedStateLayer* resolvedState,
         Shader* shader,
         cocos2d::CCSpriteBatchNode* stockBatch,
-        usize ownershipLimit
+        const std::vector<ResolvedStateLayer::ShadowCandidate>& candidates
     );
-    bool buildGeometry(usize ownershipLimit);
+    bool buildGeometry(const std::vector<ResolvedStateLayer::ShadowCandidate>& candidates);
     void destroyGL();
 
 private:

@@ -6,6 +6,7 @@
 #include "AssistShadowBatch.hpp"
 #include "StandaloneAssistBatch.hpp"
 #include "AtlasInterleave.hpp"
+#include "AssistBufferLimits.hpp"
 #include "BackgroundGPU.hpp"
 #include "GPUTruth.hpp"
 
@@ -24,10 +25,6 @@
 using namespace geode::prelude;
 
 namespace {
-constexpr usize MAX_STANDALONE_BUFFER_SPRITES = 16383;
-constexpr usize MAX_PERSISTENT_GPU_SPRITES = 12288;
-constexpr usize MAX_IMMEDIATE_GPU_SPRITES = 9216;
-
 struct StandaloneObjectDesc {
     GameObject* root = nullptr;
     std::vector<ResolvedStateLayer::ShadowCandidate> candidates;
@@ -80,7 +77,6 @@ struct IOSRendererState {
     usize standaloneRootVisitsCurrentFrame = 0;
     usize standaloneRootVisitsLastFrame = 0;
     usize standaloneCPUObjects = 0;
-    usize persistentBudgetRejectedSprites = 0;
 
     usize deferredAtlasObjects = 0;
     usize deferredAtlasUnmapped = 0;
@@ -161,20 +157,24 @@ static std::vector<StandaloneChunkDesc> buildStandaloneChunks(
         if (!object.root || object.candidates.empty())
             continue;
 
-        if (object.candidates.size() > MAX_STANDALONE_BUFFER_SPRITES)
-            continue;
+        usize candidateOffset = 0;
+        while (candidateOffset < object.candidates.size()) {
+            if (current.candidates.size() == MAX_ASSIST_SPRITES_PER_BUFFER)
+                flush();
 
-        if (!current.candidates.empty() &&
-            current.candidates.size() + object.candidates.size() > MAX_STANDALONE_BUFFER_SPRITES) {
-            flush();
+            const usize room = MAX_ASSIST_SPRITES_PER_BUFFER - current.candidates.size();
+            const usize count = std::min(room, object.candidates.size() - candidateOffset);
+            current.roots.push_back(object.root);
+            current.candidates.insert(
+                current.candidates.end(),
+                object.candidates.begin() + candidateOffset,
+                object.candidates.begin() + candidateOffset + count
+            );
+            candidateOffset += count;
+
+            if (current.candidates.size() == MAX_ASSIST_SPRITES_PER_BUFFER)
+                flush();
         }
-
-        current.roots.push_back(object.root);
-        current.candidates.insert(
-            current.candidates.end(),
-            object.candidates.begin(),
-            object.candidates.end()
-        );
     }
 
     flush();
@@ -217,16 +217,13 @@ bool Renderer::init(PlayLayer* playLayer) {
             state->gpuCandidateSprites = candidates.size();
 
             std::unordered_set<cocos2d::CCSpriteBatchNode*> candidateBatches;
-            std::unordered_map<cocos2d::CCSpriteBatchNode*, usize> candidateBatchCounts;
+            std::unordered_map<cocos2d::CCSpriteBatchNode*, std::vector<ResolvedStateLayer::ShadowCandidate>> candidatesByBatch;
             std::unordered_map<GameObject*, std::vector<ResolvedStateLayer::ShadowCandidate>> candidatesByObject;
             std::unordered_map<cocos2d::CCSprite*, GameObject*> firstSpriteOwner;
             std::unordered_set<GameObject*> sharedVisualObjects;
             candidateBatches.reserve(64);
-            candidateBatchCounts.reserve(64);
-            candidatesByObject.reserve(std::min<usize>(
-                state->resolvedState->getStats().safeObjects,
-                MAX_PERSISTENT_GPU_SPRITES
-            ));
+            candidatesByBatch.reserve(64);
+            candidatesByObject.reserve(state->resolvedState->getStats().safeObjects);
             firstSpriteOwner.reserve(candidates.size());
 
             for (const auto& candidate : candidates) {
@@ -246,7 +243,7 @@ bool Renderer::init(PlayLayer* playLayer) {
                 if (auto batch = sprite->getBatchNode()) {
                     ++state->candidatesWithBatch;
                     candidateBatches.insert(batch);
-                    ++candidateBatchCounts[batch];
+                    candidatesByBatch[batch].push_back(candidate);
                 } else {
                     ++state->candidatesWithoutBatch;
                 }
@@ -436,74 +433,63 @@ bool Renderer::init(PlayLayer* playLayer) {
             );
             std::sort(rankedCandidateBatches.begin(), rankedCandidateBatches.end(),
                 [&](auto* a, auto* b) {
-                    const usize ac = a ? candidateBatchCounts[a] : 0;
-                    const usize bc = b ? candidateBatchCounts[b] : 0;
+                    const usize ac = a ? candidatesByBatch[a].size() : 0;
+                    const usize bc = b ? candidatesByBatch[b].size() : 0;
                     if (ac != bc)
                         return ac > bc;
                     return a < b;
                 });
 
-            for (usize batchIndex = 0; batchIndex < rankedCandidateBatches.size(); ++batchIndex) {
-                auto batch = rankedCandidateBatches[batchIndex];
+            for (auto batch : rankedCandidateBatches) {
                 if (!batch)
                     continue;
-
-                const usize estimatedSprites = candidateBatchCounts[batch];
-                const usize ownedNow = state->ownedSprites.size();
-                const usize immediateRemaining =
-                    ownedNow < MAX_IMMEDIATE_GPU_SPRITES
-                        ? MAX_IMMEDIATE_GPU_SPRITES - ownedNow
-                        : 0;
-                if (!estimatedSprites || !immediateRemaining) {
-                    state->persistentBudgetRejectedSprites += estimatedSprites;
-                    continue;
-                }
-
-                // Do not let the biggest Z-layer monopolize persistent GPU
-                // geometry. Give each remaining stock atlas a fair share so GPU
-                // ownership survives across different visual layers and later
-                // sections of the level.
-                const usize batchesLeft = rankedCandidateBatches.size() - batchIndex;
-                const usize fairShare = std::max<usize>(
-                    64,
-                    (immediateRemaining + batchesLeft - 1) / batchesLeft
-                );
-                const usize ownershipLimit = std::min<usize>({
-                    estimatedSprites,
-                    immediateRemaining,
-                    fairShare
-                });
-
                 auto parent = batch->getParent();
                 if (!parent) {
                     ++state->batchesWithoutParent;
                     continue;
                 }
 
-                auto gpuBatch = AssistShadowBatch::create(
-                    state->resolvedState.get(),
-                    state->assistShader,
-                    batch,
-                    ownershipLimit
-                );
-                if (!gpuBatch || !gpuBatch->getStats().ready || gpuBatch->getStats().batchedSprites == 0)
+                auto& batchCandidates = candidatesByBatch[batch];
+                if (batchCandidates.empty())
                     continue;
 
-                // Same Z is not enough. Preserve the stock sibling ordering by
-                // placing the GPU geometry directly after the exact atlas node it
-                // shadows. Later deferred chunks for this batch continue the chain.
-                parent->insertAfter(gpuBatch, batch);
-                gpuInsertionTails[batch] = gpuBatch;
-                state->gpuBatches.push_back(gpuBatch);
-                if (estimatedSprites > gpuBatch->getOwnedSprites().size())
-                    state->persistentBudgetRejectedSprites +=
-                        estimatedSprites - gpuBatch->getOwnedSprites().size();
-                for (auto sprite : gpuBatch->getOwnedSprites()) {
-                    if (!sprite)
-                        continue;
-                    state->batchOwnedSprites.insert(sprite);
-                    state->ownedSprites.insert(sprite);
-                }
+                // Keep Cocos atlas order, but split large stock batches into as
+                // many u16-safe persistent buffers as required. No atlas tail is
+                // discarded because another batch was processed first.
+                std::stable_sort(batchCandidates.begin(), batchCandidates.end(),
+                    [](const auto& a, const auto& b) {
+                        const auto ai = a.sprite ? a.sprite->getAtlasIndex() : UINT_MAX;
+                        const auto bi = b.sprite ? b.sprite->getAtlasIndex() : UINT_MAX;
+                        return ai < bi;
+                    });
+
+                cocos2d::CCNode* insertionAnchor = batch;
+                forEachAssistBufferChunk(batchCandidates, [&](usize offset, usize count) {
+                    std::vector<ResolvedStateLayer::ShadowCandidate> chunk(
+                        batchCandidates.begin() + offset,
+                        batchCandidates.begin() + offset + count
+                    );
+                    auto gpuBatch = AssistShadowBatch::create(
+                        state->resolvedState.get(),
+                        state->assistShader,
+                        batch,
+                        chunk
+                    );
+                    if (!gpuBatch || !gpuBatch->getStats().ready ||
+                        gpuBatch->getStats().batchedSprites == 0)
+                        return;
+
+                    parent->insertAfter(gpuBatch, insertionAnchor);
+                    insertionAnchor = gpuBatch;
+                    state->gpuBatches.push_back(gpuBatch);
+                    for (auto sprite : gpuBatch->getOwnedSprites()) {
+                        if (!sprite)
+                            continue;
+                        state->batchOwnedSprites.insert(sprite);
+                        state->ownedSprites.insert(sprite);
+                    }
+                });
+                gpuInsertionTails[batch] = insertionAnchor;
             }
 
             // Parentless-at-init roots are not really standalone. Build their
@@ -529,16 +515,6 @@ bool Renderer::init(PlayLayer* playLayer) {
                 for (const auto& chunk : chunks) {
                     if (chunk.candidates.empty())
                         continue;
-
-                    const usize ownedNow = state->ownedSprites.size();
-                    const usize remaining =
-                        ownedNow < MAX_PERSISTENT_GPU_SPRITES
-                            ? MAX_PERSISTENT_GPU_SPRITES - ownedNow
-                            : 0;
-                    if (chunk.candidates.size() > remaining) {
-                        state->persistentBudgetRejectedSprites += chunk.candidates.size();
-                        continue;
-                    }
 
                     auto gpuBuffer = StandaloneAssistBatch::create(
                         state->resolvedState.get(),
@@ -576,7 +552,7 @@ bool Renderer::init(PlayLayer* playLayer) {
             state->resolvedState->setGPUOwnedSprites(state->ownedSprites);
 
             log::info(
-                "Bismuth iOS ownership: {} candidates ({} atlas-now / {} parentless-or-standalone); standalone {} candidates / {} ownership-eligible; rejects mixed {} / duplicate {} / shared {} / external {} (glow {} / color {} / other {}) / invalid {} / root-batched {}; parentless-at-init {} -> deferred atlas {} object(s), {} target batch(es), {} buffer(s), {} unmapped; {} immediate atlas node(s), {} true standalone root(s), {} total GPU sprite(s); CPU standalone {} / persistent-budget rejects {} sprite(s)",
+                "Bismuth iOS ownership: {} candidates ({} atlas-now / {} parentless-or-standalone); standalone {} candidates / {} ownership-eligible; rejects mixed {} / duplicate {} / shared {} / external {} (glow {} / color {} / other {}) / invalid {} / root-batched {}; parentless-at-init {} -> deferred atlas {} object(s), {} target batch(es), {} buffer(s), {} unmapped; {} immediate GPU buffers, {} true standalone root(s), {} total GPU sprite(s); CPU standalone {}",
                 state->gpuCandidateSprites,
                 state->candidatesWithBatch,
                 state->candidatesWithoutBatch,
@@ -599,8 +575,7 @@ bool Renderer::init(PlayLayer* playLayer) {
                 state->gpuBatches.size(),
                 state->standaloneOwnedRoots.size(),
                 state->ownedSprites.size(),
-                state->standaloneCPUObjects,
-                state->persistentBudgetRejectedSprites
+                state->standaloneCPUObjects
             );
         }
     }

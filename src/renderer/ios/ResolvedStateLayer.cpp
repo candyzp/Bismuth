@@ -17,12 +17,6 @@ namespace {
 constexpr usize OBJECT_TEXELS_PER_STATE = 2;
 constexpr usize SPRITE_TEXELS_PER_STATE = 2;
 
-// This is persistent whole-level state, not visible-frame work. Giant effect
-// levels can contain enough decorations to make retaining/uploading every safe
-// sprite more expensive than stock GD, or exhaust memory during load.
-constexpr usize MAX_RESOLVED_OBJECT_RECORDS = 12288;
-constexpr usize MAX_RESOLVED_SPRITE_RECORDS = 16384;
-
 bool isSimpleSpikeRoot(GameObject* object) {
     // Only the root quad is GPU-owned. Separate glow/detail nodes keep their
     // stock draws and lifecycle; nested or animated visuals remain stock.
@@ -34,69 +28,14 @@ bool isSimpleSpikeRoot(GameObject* object) {
         object->m_glowSprite != object && object->m_colorSprite != object;
 }
 
-void collectForcedDecorationSpriteTree(
-    cocos2d::CCSprite* sprite,
-    std::vector<cocos2d::CCSprite*>& outSprites,
-    std::unordered_set<cocos2d::CCSprite*>& seen
-) {
-    if (!sprite || !seen.insert(sprite).second)
-        return;
-
-    std::vector<cocos2d::CCSprite*> negativeChildren;
-    std::vector<cocos2d::CCSprite*> positiveChildren;
-
-    if (auto children = sprite->getChildren()) {
-        negativeChildren.reserve(children->count());
-        positiveChildren.reserve(children->count());
-
-        for (auto childNode : CCArrayExt<cocos2d::CCNode*>(children)) {
-            // Force-decoration mode deliberately ignores non-sprite helper nodes
-            // instead of demoting the entire decoration to stock.
-            auto childSprite = typeinfo_cast<cocos2d::CCSprite*>(childNode);
-            if (!childSprite)
-                continue;
-
-            if (childSprite->getZOrder() < 0)
-                negativeChildren.push_back(childSprite);
-            else
-                positiveChildren.push_back(childSprite);
-        }
+bool isDescendantOf(cocos2d::CCNode* node, cocos2d::CCNode* ancestor) {
+    if (!node || !ancestor)
+        return false;
+    for (auto current = node; current; current = current->getParent()) {
+        if (current == ancestor)
+            return true;
     }
-
-    for (auto child : negativeChildren)
-        collectForcedDecorationSpriteTree(child, outSprites, seen);
-
-    if (!sprite->getDontDraw() && sprite->getTexture())
-        outSprites.push_back(sprite);
-
-    for (auto child : positiveChildren)
-        collectForcedDecorationSpriteTree(child, outSprites, seen);
-}
-
-void collectForcedDecorationSprites(
-    GameObject* object,
-    std::vector<cocos2d::CCSprite*>& outSprites
-) {
-    if (!object)
-        return;
-
-    std::unordered_set<cocos2d::CCSprite*> seen;
-    seen.reserve(16);
-
-    auto colorSprite = object->m_colorSprite;
-    const bool externalColor = colorSprite && colorSprite->getParent() != object;
-    const bool colorInFront = object->m_colorZLayerRelated;
-
-    if (object->m_glowSprite)
-        collectForcedDecorationSpriteTree(object->m_glowSprite, outSprites, seen);
-
-    if (externalColor && !colorInFront)
-        collectForcedDecorationSpriteTree(colorSprite, outSprites, seen);
-
-    collectForcedDecorationSpriteTree(object, outSprites, seen);
-
-    if (externalColor && colorInFront)
-        collectForcedDecorationSpriteTree(colorSprite, outSprites, seen);
+    return false;
 }
 
 inline bool changedFloat(float a, float b, float epsilon = 0.0001f) {
@@ -156,7 +95,28 @@ ResolvedStateLayer::SafetyClass ResolvedStateLayer::classifyObject(
     // detail sprites, nested sprite trees and non-sprite helper children do not
     // demote it back to stock.
     if (object->m_objectType == GameObjectType::Decoration) {
-        collectForcedDecorationSprites(object, outSprites);
+        bool invalidSprite = false;
+        SpriteUnpackStats unpackStats;
+        const bool collectionSafe = ObjectUtils::unpackObjectIntoSprites(
+            object,
+            [&](const UnpackedSprite& unpacked) {
+                if (!unpacked.sprite || !unpacked.sprite->getTexture()) {
+                    invalidSprite = true;
+                    ++diagnostics.invalidSprites;
+                    return;
+                }
+                outSprites.push_back(unpacked.sprite);
+            },
+            &unpackStats
+        );
+
+        diagnostics.invalidChildNodes += unpackStats.nonSpriteChildren;
+        diagnostics.duplicateSprites += unpackStats.duplicateSprites;
+        if (!collectionSafe || invalidSprite) {
+            outSprites.clear();
+            diagnostics.unsafeCollection = true;
+            return SafetyClass::StockOnly;
+        }
         return outSprites.empty() ? SafetyClass::StockOnly : SafetyClass::DynamicSafe;
     }
 
@@ -214,10 +174,23 @@ ResolvedStateLayer::SafetyClass ResolvedStateLayer::classifyObject(
         return SafetyClass::StockOnly;
     }
 
-    if (outSprites.size() != 1 || outSprites.front() != object ||
-        object->m_glowSprite || object->m_colorSprite ||
-        (object->getChildren() && object->getChildren()->count() != 0))
+    // The recursive collector already rejects duplicate records and non-sprite
+    // child nodes. Keep multi-sprite solids only when every accepted visual is
+    // inside the root subtree; separately-homed glow/detail sprites stay stock.
+    const bool hasExternalVisual = std::any_of(
+        outSprites.begin(), outSprites.end(),
+        [object](cocos2d::CCSprite* sprite) {
+            return !sprite || !isDescendantOf(sprite, object);
+        }
+    );
+    const bool externalGlow = object->m_glowSprite &&
+        !isDescendantOf(object->m_glowSprite, object);
+    const bool externalColor = object->m_colorSprite &&
+        !isDescendantOf(object->m_colorSprite, object);
+    if (outSprites.empty() || hasExternalVisual || externalGlow || externalColor) {
+        outSprites.clear();
         return SafetyClass::StockOnly;
+    }
 
     const bool dynamic =
         object->m_groupCount > 0 ||
@@ -435,28 +408,13 @@ bool ResolvedStateLayer::init(PlayLayer* playLayer) {
 
     std::vector<Ref<GameObject>> initObjectRetains;
     std::vector<Ref<cocos2d::CCSprite>> initSpriteRetains;
-    usize budgetRejectedObjects = 0;
-    usize budgetRejectedSprites = 0;
-    initObjectRetains.reserve(std::min<usize>(
-        static_cast<usize>(layer->m_objects->count()),
-        MAX_RESOLVED_OBJECT_RECORDS
-    ));
-    initSpriteRetains.reserve(MAX_RESOLVED_SPRITE_RECORDS);
+    initObjectRetains.reserve(static_cast<usize>(layer->m_objects->count()));
 
     for (auto object : CCArrayExt<GameObject*>(layer->m_objects)) {
         if (!object || object == layer->m_anticheatSpike || object->isTrigger() || object->m_isHide)
             continue;
 
         ++stats.renderableObjects;
-
-        // Once the persistent state budget is saturated, leave additional
-        // objects entirely to Cocos instead of even constructing GPU records.
-        if (objects.size() >= MAX_RESOLVED_OBJECT_RECORDS ||
-            sprites.size() >= MAX_RESOLVED_SPRITE_RECORDS) {
-            ++stats.stockObjects;
-            ++budgetRejectedObjects;
-            continue;
-        }
 
         std::vector<cocos2d::CCSprite*> objectSprites;
         CollectionDiagnostics diagnostics;
@@ -470,14 +428,6 @@ bool ResolvedStateLayer::init(PlayLayer* playLayer) {
 
         if (safety == SafetyClass::StockOnly) {
             ++stats.stockObjects;
-            continue;
-        }
-
-        if (objects.size() + 1 > MAX_RESOLVED_OBJECT_RECORDS ||
-            objectSprites.size() > MAX_RESOLVED_SPRITE_RECORDS - sprites.size()) {
-            ++stats.stockObjects;
-            ++budgetRejectedObjects;
-            budgetRejectedSprites += objectSprites.size();
             continue;
         }
 
@@ -584,7 +534,7 @@ bool ResolvedStateLayer::init(PlayLayer* playLayer) {
     resync();
 
     log::info(
-        "Bismuth iOS state layer: {} safe objects ({} static, {} dynamic), {} stock, {} sprite records; collection rejected {} object(s) / {} non-sprite child node(s) / {} duplicate sprite(s) / {} invalid sprite record(s); init retained {} object(s) / {} sprite(s), {} revalidation failure(s); budget kept <= {} objects / {} sprites, rejected {} object(s) / ~{} sprite(s)",
+        "Bismuth iOS state layer: {} safe objects ({} static, {} dynamic), {} stock, {} sprite records; collection rejected {} object(s) / {} non-sprite child node(s) / {} duplicate sprite(s) / {} invalid sprite record(s); init retained {} object(s) / {} sprite(s), {} revalidation failure(s)",
         stats.safeObjects,
         stats.staticObjects,
         stats.dynamicObjects,
@@ -596,11 +546,7 @@ bool ResolvedStateLayer::init(PlayLayer* playLayer) {
         stats.invalidSpriteRecords,
         stats.retainedInitObjects,
         stats.retainedInitSprites,
-        stats.initRevalidationFailures,
-        MAX_RESOLVED_OBJECT_RECORDS,
-        MAX_RESOLVED_SPRITE_RECORDS,
-        budgetRejectedObjects,
-        budgetRejectedSprites
+        stats.initRevalidationFailures
     );
     return true;
 }
@@ -665,9 +611,9 @@ bool ResolvedStateLayer::canDrawSprite(cocos2d::CCSprite* sprite) {
             objectRecord.safety != SafetyClass::StockOnly) {
             if (object->m_objectType == GameObjectType::Decoration) {
                 result = true;
-            } else if (object == sprite &&
-                (object->m_objectType == GameObjectType::Solid ||
-                 object->m_objectType == GameObjectType::Hazard)) {
+            } else if (object->m_objectType == GameObjectType::Solid) {
+                result = isDescendantOf(sprite, object);
+            } else if (object == sprite && object->m_objectType == GameObjectType::Hazard) {
                 result = true;
             }
         }

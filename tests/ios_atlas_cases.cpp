@@ -65,7 +65,7 @@ int main() {
         auto shuffled=order; std::mt19937 random(13); std::shuffle(shuffled.begin(),shuffled.end(),random);
         s.claim(shuffled); s.draw();
         assert(fixture::pixels==order && fixture::gpuDraws==1);
-        assert(fixture::stockTransforms==10000-HYBRID_GPU_SPRITE_BUDGET);
+        assert(fixture::stockTransforms==0);
         auto uploads=fixture::uploads;
         const auto* cachedRuns=registry().indexCaches.at(&s.batch).runs.data();
         s.draw(); assert(fixture::uploads==uploads && fixture::pixels==order);
@@ -73,10 +73,10 @@ int main() {
         for(int i=0;i<20;++i) {
             std::shuffle(order.begin(),order.end(),random); s.reorder(order); s.draw();
             assert(fixture::pixels==order && fixture::gpuDraws==1);
-            assert(fixture::stockTransforms==10000-HYBRID_GPU_SPRITE_BUDGET);
+            assert(fixture::stockTransforms==0);
             checkStateRestored();
         }
-        std::cout << "10,000 reordered sprites: GPU budget + CPU overflow preserve order; unchanged order: 0 index uploads\n";
+        std::cout << "10,000 reordered sprites: full GPU ownership preserves order; unchanged order: 0 index uploads\n";
     }
     {
         Scene s(3); s.claim({0,2});
@@ -131,6 +131,36 @@ int main() {
         s.draw(); static_cast<cocos2d::CCSpriteBatchNode&>(second).draw();
         assert((fixture::pixels==std::vector<int>{0,1,2,3}));
         assert(fixture::gpuDraws==2 && s.owner.stats.indicesLastFrame==24);
+    }
+    {
+        std::vector<int> workload(40000);
+        std::vector<usize> chunkSizes;
+        forEachAssistBufferChunk(workload, [&](usize, usize count) {
+            chunkSizes.push_back(count);
+        });
+        assert((chunkSizes == std::vector<usize>{16383,16383,7234}));
+    }
+    {
+        Scene s(5);
+        AssistShadowBatch first, second;
+        Buffer secondBuffer; secondBuffer.id=125;
+        first.stockBatch=&s.batch; first.resolvedState=&s.resolved;
+        first.shader=&s.shader; first.indexBuffer=&s.buffer; first.vao=40;
+        first.ownedSprites={&s.sprites[0],&s.sprites[2]};
+        second.stockBatch=&s.batch; second.resolvedState=&s.resolved;
+        second.shader=&s.shader; second.indexBuffer=&secondBuffer; second.vao=42;
+        second.ownedSprites={&s.sprites[1],&s.sprites[3]};
+        fixture::elements[42]=125;
+        fixture::vaoSpriteIDs[40]={0,2};
+        fixture::vaoSpriteIDs[42]={1,3};
+        for (int i=0;i<4;++i) s.renderer.owned.insert(&s.sprites[i]);
+        AtlasInterleaveRegistry::registerImmediate(&first);
+        AtlasInterleaveRegistry::registerImmediate(&second);
+        s.draw();
+        assert((fixture::pixels==std::vector<int>{0,1,2,3,4}));
+        assert(fixture::gpuDraws==4 && fixture::stockTransforms==1);
+        AtlasInterleaveRegistry::unregisterImmediate(&second);
+        AtlasInterleaveRegistry::unregisterImmediate(&first);
     }
     {
         Scene s(3); s.claim({0,2});
@@ -222,5 +252,5 @@ int main() {
         assert(fixture::gpuDraws==1 && fixture::stockTransforms==2);
     }
     assert(registry().spriteOwners.empty() && registry().indexCaches.empty());
-    std::cout << "PASS: mixed stock/GPU order, hybrid recovery, GPU budgeting, batch migration, masks, VAO/EBO state, teardown, u16 limits\n";
+    std::cout << "PASS: mixed stock/GPU order, complete sprite coverage, multiple atlas owners, batch migration, masks, VAO/EBO state, teardown, u16 chunking\n";
 }

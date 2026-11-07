@@ -20,6 +20,7 @@ code = '\n'.join([
     '#define GEODE_IS_IOS',
     '#include "ios_atlas_fixture.hpp"',
     '#include "../src/renderer/ios/AtlasDrawPlan.hpp"',
+    '#include "../src/renderer/ios/AssistBufferLimits.hpp"',
     atlas_header,
     source('src/renderer/ios/AtlasInterleave.cpp'),
     'bool Renderer::prepareGPUOwnedSprite(cocos2d::CCSprite* s) { return enabled && AtlasInterleaveRegistry::shouldSkipTransform(this,s); }',

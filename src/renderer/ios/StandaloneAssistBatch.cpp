@@ -11,8 +11,6 @@
 using namespace geode::prelude;
 
 namespace {
-constexpr usize MAX_BATCH_SPRITES = 16383;
-
 static glm::vec2 quadUV(const cocos2d::ccV3F_C4B_T2F& vertex) {
     return { vertex.texCoords.u, vertex.texCoords.v };
 }
@@ -132,7 +130,7 @@ void StandaloneAssistBatch::destroyGL() {
 bool StandaloneAssistBatch::buildGeometry(
     const std::vector<ResolvedStateLayer::ShadowCandidate>& candidates
 ) {
-    if (candidates.empty() || candidates.size() > MAX_BATCH_SPRITES)
+    if (candidates.empty() || candidates.size() > MAX_ASSIST_SPRITES_PER_BUFFER)
         return false;
 
     std::vector<Vertex> vertices;

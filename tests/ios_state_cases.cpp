@@ -11,6 +11,68 @@ int main() {
     state.objectTexels.resize(2); state.spriteTexels.resize(3);
     assert(state.canDrawSprite(&object));
     {
+        GameObject solid;
+        cocos2d::CCSprite child, grandchild, outside;
+        child.parent = &solid;
+        grandchild.parent = &child;
+        solid.children.size = 1;
+        solid.unpackedSprites = {&child, &grandchild};
+        std::vector<cocos2d::CCSprite*> collected;
+        ResolvedStateLayer::CollectionDiagnostics diagnostics;
+        assert(state.classifyObject(&solid, collected, diagnostics) ==
+            ResolvedStateLayer::SafetyClass::StaticSafe);
+        assert(collected.size() == 3);
+        assert(collected[0] == &solid && collected[1] == &child && collected[2] == &grandchild);
+
+        ResolvedStateLayer treeState;
+        treeState.objects.push_back({});
+        treeState.objects[0].object = &solid;
+        treeState.objects[0].safety = ResolvedStateLayer::SafetyClass::StaticSafe;
+        for (auto sprite : collected) {
+            const usize index = treeState.sprites.size();
+            treeState.sprites.push_back({});
+            treeState.sprites.back().sprite = sprite;
+            treeState.sprites.back().objectIndex = 0;
+            treeState.spriteIndexByPointer.emplace(sprite, index);
+        }
+        assert(treeState.canDrawSprite(&solid));
+        assert(treeState.canDrawSprite(&child));
+        assert(treeState.canDrawSprite(&grandchild));
+
+        child.parent = nullptr;
+        treeState.beginFrameValidation();
+        assert(!treeState.canDrawSprite(&child));
+        child.parent = &solid;
+
+        solid.m_glowSprite = &outside;
+        assert(state.classifyObject(&solid, collected, diagnostics) ==
+            ResolvedStateLayer::SafetyClass::StockOnly);
+        assert(collected.empty());
+    }
+    {
+        GameObject decoration;
+        decoration.m_objectType = GameObjectType::Decoration;
+        cocos2d::CCNode outerContainer, innerContainer;
+        cocos2d::CCSprite firstPiece, secondPiece;
+        outerContainer.parent = &decoration;
+        innerContainer.parent = &outerContainer;
+        firstPiece.parent = &outerContainer;
+        secondPiece.parent = &innerContainer;
+        decoration.children.nodes = {&outerContainer};
+        outerContainer.children.nodes = {&firstPiece, &innerContainer};
+        innerContainer.children.nodes = {&secondPiece};
+
+        std::vector<cocos2d::CCSprite*> collected;
+        ResolvedStateLayer::CollectionDiagnostics diagnostics;
+        assert(state.classifyObject(&decoration, collected, diagnostics) ==
+            ResolvedStateLayer::SafetyClass::DynamicSafe);
+        assert(collected.size() == 3);
+        assert(collected[0] == &decoration);
+        assert(collected[1] == &firstPiece);
+        assert(collected[2] == &secondPiece);
+        assert(diagnostics.invalidChildNodes == 2);
+    }
+    {
         GameObject glow, detail;
         object.m_objectType=GameObjectType::Hazard;
         object.m_glowSprite=&glow; object.m_colorSprite=&detail;

@@ -13,11 +13,6 @@
 using namespace geode::prelude;
 
 namespace {
-// Four vertices per sprite with a u16 index buffer. If one stock batch contains
-// more than this many safe sprites we keep the overflow on stock Cocos instead
-// of disabling GPU ownership for the entire batch.
-constexpr usize MAX_BATCH_SPRITES = 16383;
-
 struct CandidateWithTexture {
     ResolvedStateLayer::ShadowCandidate candidate;
     u32 textureId = 0;
@@ -77,10 +72,10 @@ geode::Ref<AssistShadowBatch> AssistShadowBatch::create(
     ResolvedStateLayer* state,
     Shader* assistShader,
     cocos2d::CCSpriteBatchNode* sourceBatch,
-    usize ownershipLimit
+    const std::vector<ResolvedStateLayer::ShadowCandidate>& candidates
 ) {
     auto node = new AssistShadowBatch();
-    if (node->initWithState(state, assistShader, sourceBatch, ownershipLimit)) {
+    if (node->initWithState(state, assistShader, sourceBatch, candidates)) {
         node->autorelease();
         return node;
     }
@@ -92,7 +87,7 @@ bool AssistShadowBatch::initWithState(
     ResolvedStateLayer* state,
     Shader* assistShader,
     cocos2d::CCSpriteBatchNode* sourceBatch,
-    usize ownershipLimit
+    const std::vector<ResolvedStateLayer::ShadowCandidate>& candidates
 ) {
     if (!CCNode::init() || !state || !assistShader || !sourceBatch || !state->isGPUStateReady())
         return false;
@@ -115,7 +110,7 @@ bool AssistShadowBatch::initWithState(
     blendSrc = (u32)blend.src;
     blendDst = (u32)blend.dst;
 
-    if (!buildGeometry(ownershipLimit))
+    if (!buildGeometry(candidates))
         return false;
 
     setVisible(true);
@@ -146,11 +141,14 @@ void AssistShadowBatch::destroyGL() {
     stats.visibleOwnership = false;
 }
 
-bool AssistShadowBatch::buildGeometry(usize ownershipLimit) {
-    const auto sourceCandidates = resolvedState->getGPUCandidates();
+bool AssistShadowBatch::buildGeometry(
+    const std::vector<ResolvedStateLayer::ShadowCandidate>& sourceCandidates
+) {
+    if (sourceCandidates.empty() || sourceCandidates.size() > MAX_ASSIST_SPRITES_PER_BUFFER)
+        return false;
 
     std::vector<CandidateWithTexture> candidates;
-    candidates.reserve(std::min<usize>(sourceCandidates.size(), MAX_BATCH_SPRITES));
+    candidates.reserve(sourceCandidates.size());
     ownedSprites.clear();
     liveGeometry.clear();
 
@@ -162,14 +160,6 @@ bool AssistShadowBatch::buildGeometry(usize ownershipLimit) {
             continue;
 
         ++stats.eligibleSprites;
-
-        // No whole-batch fallback. Bad/overflow records stay stock individually
-        // while every valid safe sprite in the same Cocos batch still gets GPU
-        // ownership.
-        if (candidates.size() >= MAX_BATCH_SPRITES) {
-            ++stats.rejectedSprites;
-            continue;
-        }
 
         auto texture = candidate.sprite->getTexture();
         if (!texture || texture->getName() == 0) {
@@ -197,7 +187,7 @@ bool AssistShadowBatch::buildGeometry(usize ownershipLimit) {
         });
     }
 
-    if (candidates.empty() || ownershipLimit == 0)
+    if (candidates.empty())
         return false;
 
     // Preserve Cocos atlas order among the GPU-owned subset. Animated/complex
@@ -207,52 +197,6 @@ bool AssistShadowBatch::buildGeometry(usize ownershipLimit) {
             return a.atlasIndex < b.atlasIndex;
         return a.originalOrder < b.originalOrder;
     });
-
-    // A giant atlas must not consume the complete persistent budget and then
-    // leave the rest of the level GPU-idle. When a batch is larger than its
-    // ownership quota, keep atlas-contiguous windows spread across the whole
-    // batch. Each window remains cheap to draw, while later level sections still
-    // retain GPU-owned geometry.
-    const usize limit = std::min<usize>({
-        ownershipLimit,
-        MAX_BATCH_SPRITES,
-        candidates.size()
-    });
-    if (candidates.size() > limit) {
-        // Spread ownership much more finely across giant atlases. The previous
-        // 32-window cap could leave long mid-level stretches with zero owned
-        // sprites even though plenty of profitable GPU geometry existed later.
-        // Keep each window roughly >=64 sprites so the interleave scheduler can
-        // still submit useful runs without exploding draw-call count.
-        const usize windowCount = std::max<usize>(
-            1,
-            std::min<usize>(128, std::max<usize>(1, limit / 64))
-        );
-        std::vector<CandidateWithTexture> distributed;
-        distributed.reserve(limit);
-
-        for (usize window = 0; window < windowCount && distributed.size() < limit; ++window) {
-            const usize segmentBegin = window * candidates.size() / windowCount;
-            const usize segmentEnd = (window + 1) * candidates.size() / windowCount;
-            if (segmentEnd <= segmentBegin)
-                continue;
-
-            const usize remaining = limit - distributed.size();
-            const usize windowsLeft = windowCount - window;
-            const usize target = (remaining + windowsLeft - 1) / windowsLeft;
-            const usize segmentSize = segmentEnd - segmentBegin;
-            const usize take = std::min(target, segmentSize);
-            const usize begin = segmentBegin + (segmentSize - take) / 2;
-            distributed.insert(
-                distributed.end(),
-                candidates.begin() + begin,
-                candidates.begin() + begin + take
-            );
-        }
-
-        stats.rejectedSprites += candidates.size() - distributed.size();
-        candidates = std::move(distributed);
-    }
 
     std::vector<Vertex> vertices;
     std::vector<u16> indices;

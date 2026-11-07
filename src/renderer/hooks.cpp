@@ -7,274 +7,74 @@
 #include "ios/ResolvedStateLayer.hpp"
 #include "ios/GPUTruth.hpp"
 #include "ios/AtlasInterleave.hpp"
-#include "ios_upstream/IOSGPUCapabilities.hpp"
-#include "ios_upstream/IOSSceneData.hpp"
-#include "ios_upstream/IOSGPURenderer.hpp"
-#include "ios_upstream/IOSCrashDiagnostics.hpp"
-#include <Geode/utils/cocos.hpp>
-#include <decomp/GJBaseGameLayer.hpp>
-#include <Geode/binding/CheckpointObject.hpp>
-#include <optional>
-#include <chrono>
 #endif
 
 using namespace geode::prelude;
 
 static bool newPlayLayer = false;
 
-#ifdef GEODE_IS_IOS
-static bool resetLevelHookSeenDuringSetup = false;
-
-static void hideStockPlayLayerBatches(PlayLayer* layer) {
-    if (!layer || !layer->m_batchNodes)
-        return;
-    for (auto batch : CCArrayExt<cocos2d::CCNode*>(layer->m_batchNodes)) {
-        if (batch)
-            batch->setVisible(false);
-    }
-}
-#endif
-
 #include <Geode/modify/PlayLayer.hpp>
 class $modify(RendererPlayLayer, PlayLayer) {
     void setupHasCompleted() {
         newPlayLayer = true;
-#ifdef GEODE_IS_IOS
-        resetLevelHookSeenDuringSetup = false;
-        IOSUpstream::IOSGPURenderer::updateStartupDiagnostic(
-            "BISMUTH iOS GPU STARTUP\nPlayLayer::setupHasCompleted: ENTERED\nresetLevel hook: WAITING"
-        );
-        log::info("Bismuth iOS GPU lifecycle: PlayLayer::setupHasCompleted entered");
-#endif
         PlayLayer::setupHasCompleted();
-#ifdef GEODE_IS_IOS
-        static bool loggedGPUCapabilities = false;
-        if (!loggedGPUCapabilities) {
-            IOSGPU::Capabilities capabilities;
-            if (IOSGPU::queryCapabilities(capabilities))
-                IOSGPU::logCapabilities(capabilities);
-            else
-                log::error("Bismuth iOS could not query the active OpenGL ES context");
-            loggedGPUCapabilities = true;
-        }
-
-        if (!resetLevelHookSeenDuringSetup) {
-            IOSUpstream::IOSGPURenderer::updateStartupDiagnostic(
-                "BISMUTH iOS GPU: FAILED TO REACH RESET HOOK\n"
-                "setupHasCompleted: RETURNED\n"
-                "resetLevel: NOT OBSERVED\n"
-                "renderer create/init: NOT REACHED"
-            );
-        } else if (auto gpuRenderer = IOSUpstream::IOSGPURenderer::getCurrent()) {
-            if (gpuRenderer->isFailed()) {
-                IOSUpstream::IOSGPURenderer::updateStartupDiagnostic(
-                    std::string("BISMUTH iOS GPU: FAILED\nsetupHasCompleted: RETURNED\nresetLevel: OBSERVED\n") +
-                    gpuRenderer->getFailureReason()
-                );
-            } else if (gpuRenderer->isReadyForDrawing()) {
-                IOSUpstream::IOSGPURenderer::updateStartupDiagnostic(
-                    "BISMUTH iOS GPU: ACTIVE\nsetupHasCompleted: RETURNED\nresetLevel: OBSERVED\nstock batches: HIDDEN"
-                );
-            } else {
-                IOSUpstream::IOSGPURenderer::updateStartupDiagnostic(
-                    "BISMUTH iOS GPU: STARTING\nsetupHasCompleted: RETURNED\nresetLevel: OBSERVED\nrenderer not ready"
-                );
-            }
-        } else {
-            IOSUpstream::IOSGPURenderer::updateStartupDiagnostic(
-                "BISMUTH iOS GPU: FAILED\nsetupHasCompleted: RETURNED\nresetLevel: OBSERVED\nrenderer owner missing"
-            );
-        }
-        log::info(
-            "Bismuth iOS GPU lifecycle: setupHasCompleted returned; resetLevel hook {}",
-            resetLevelHookSeenDuringSetup ? "was reached" : "was not reached"
-        );
-#endif
         newPlayLayer = false;
     }
 
     void resetLevel() {
 #ifdef GEODE_IS_IOS
+        // A replacement PlayLayer can finish setup before the outgoing layer's
+        // destructor runs. Its renderer must not block this level's creation.
         if (newPlayLayer) {
-            resetLevelHookSeenDuringSetup = true;
-            IOSUpstream::IOSGPURenderer::updateStartupDiagnostic(
-                "BISMUTH iOS GPU STARTUP\nPlayLayer::resetLevel hook: ENTERED\nrenderer create: PENDING"
-            );
-            log::info("Bismuth iOS GPU lifecycle: PlayLayer::resetLevel new-layer hook entered");
-            IOSUpstream::crashBreadcrumb(fmt::format(
-                "PlayLayer::resetLevel ENTER layer={:p} objects={} stockBatches={}",
-                static_cast<void*>(this),
-                m_objects ? m_objects->count() : 0,
-                m_batchNodes ? m_batchNodes->count() : 0
-            ));
-
-            // Exclusive ownership is intentional: no stock Cocos batches may
-            // become visible even when GPU renderer construction fails.
-            hideStockPlayLayerBatches(this);
-
-            auto batchLayer = this->m_objectLayer;
-            if (!batchLayer) {
-                log::error("Bismuth GPU-only beta FAILED: object layer not found");
-                IOSUpstream::IOSGPURenderer::updateStartupDiagnostic(
-                    "BISMUTH iOS GPU: FAILED\nresetLevel hook: ENTERED\nobject layer: MISSING\nstock batches: HIDDEN"
-                );
-                PlayLayer::resetLevel();
-                hideStockPlayLayerBatches(this);
-                return;
-            }
-
-            // Match the owner's lifecycle: create the renderer after level
-            // objects are prepared but before the final PlayLayer reset.
-            auto gpuRenderer = IOSUpstream::IOSGPURenderer::create(this);
-            if (gpuRenderer) {
-                if (gpuRenderer->isFailed()) {
-                    IOSUpstream::IOSGPURenderer::updateStartupDiagnostic(
-                        std::string("BISMUTH iOS GPU: FAILED\\nrenderer create: RETURNED\\n") +
-                        gpuRenderer->getFailureReason()
-                    );
-                } else {
-                    IOSUpstream::IOSGPURenderer::updateStartupDiagnostic(
-                        "BISMUTH iOS GPU STARTUP\\nrenderer create: RETURNED\\nrenderer initialized: " +
-                        std::string(gpuRenderer->isReadyForDrawing() ? "YES" : "NO")
-                    );
-                }
-            } else {
-                log::error("Bismuth GPU-only beta FAILED: renderer owner creation failed");
-                IOSUpstream::IOSGPURenderer::updateStartupDiagnostic(
-                    "BISMUTH iOS GPU: FAILED\\nrenderer create returned null\\nstock batches: HIDDEN"
-                );
-            }
-
+            if (auto existing = Renderer::forPlayLayer(this))
+                existing->resumeGPU();
+            else if (auto previous = Renderer::get())
+                previous->suspendGPU();
+        }
+#endif
+        if (newPlayLayer && Renderer::get() == nullptr) {
             PlayLayer::resetLevel();
 
-            // The base reset creates the owner Z-order batch containers. Attach
-            // the GPU renderer only afterwards so reset cannot detach it, then
-            // construct its sibling GPU draw nodes against the live containers.
-            batchLayer = this->m_objectLayer;
-            if (gpuRenderer && batchLayer) {
-                if (gpuRenderer->getParent() != batchLayer) {
-                    if (gpuRenderer->getParent())
-                        gpuRenderer->removeFromParentAndCleanup(false);
-                    batchLayer->addChild(gpuRenderer, -100000);
-                }
-                gpuRenderer->enforceGPUOwnership();
-            } else {
-                if (gpuRenderer)
-                    gpuRenderer->reportFailure(
-                        "PlayLayer reset completed without a valid object layer for GPU renderer attachment"
-                    );
-                hideStockPlayLayerBatches(this);
-            }
-            return;
-        }
-
-        // The level reset can discard/recreate GameObject particle systems.
-        // Release our claims while the old object array is still alive.
-        if (auto scene = IOSUpstream::SceneData::getCurrent();
-            scene && scene->getPlayLayer() == this)
-            scene->releaseObjectParticles();
-
-        auto gpuRenderer = IOSUpstream::IOSGPURenderer::getCurrent();
-        if (gpuRenderer && gpuRenderer->getPlayLayer() == this)
-            gpuRenderer->reset();
-        else
-            hideStockPlayLayerBatches(this);
-
-        PlayLayer::resetLevel();
-
-        if (gpuRenderer && gpuRenderer->getPlayLayer() == this)
-            gpuRenderer->enforceGPUOwnership();
-        else
-            hideStockPlayLayerBatches(this);
-#else
-        if (newPlayLayer && Renderer::get() == nullptr) {
             auto batchLayer = this->m_objectLayer;
             if (!batchLayer) {
                 log::error("failed to attach renderer: batch layer not found");
-                PlayLayer::resetLevel();
                 return;
             }
 
             auto renderer = Renderer::create(this);
-            if (renderer)
+            if (renderer) {
                 batchLayer->addChild(renderer, -100000);
-            PlayLayer::resetLevel();
+                renderer->reset();
+#ifdef GEODE_IS_IOS
+                if (auto resolved = ResolvedStateLayer::getCurrent())
+                    resolved->reseedActiveFromStock();
+#endif
+            }
             return;
         }
 
-        if (auto renderer = Renderer::get())
-            renderer->reset();
         PlayLayer::resetLevel();
-#endif
-    }
 
-    CheckpointObject* createCheckpoint() {
-        CheckpointObject* checkpoint = PlayLayer::createCheckpoint();
 #ifdef GEODE_IS_IOS
-        if (auto scene = IOSUpstream::SceneData::getCurrent();
-            scene && scene->isReady() &&
-            static_cast<GJBaseGameLayer*>(scene->getPlayLayer()) == this) {
-            if (auto gpuRenderer = IOSUpstream::IOSGPURenderer::getCurrent();
-                gpuRenderer && gpuRenderer->isReadyForDrawing() &&
-                gpuRenderer->getPlayLayer() == scene->getPlayLayer()) {
-                scene->getGroupManager().storeCheckpoint(checkpoint);
-            }
-        }
+        // Menu restart may reuse this layer without another enter-transition
+        // callback. The active singleton is null while its renderer is suspended.
+        auto renderer = Renderer::forPlayLayer(this);
+        if (renderer)
+            renderer->resumeGPU();
+#else
+        auto renderer = Renderer::get();
 #endif
-        return checkpoint;
-    }
-
-    void loadFromCheckpoint(CheckpointObject* checkpoint) {
-        PlayLayer::loadFromCheckpoint(checkpoint);
+        if (renderer) {
+            renderer->reset();
 #ifdef GEODE_IS_IOS
-        if (auto scene = IOSUpstream::SceneData::getCurrent();
-            scene && scene->getPlayLayer() == this) {
-            scene->getGroupManager().restoreCheckpoint(checkpoint);
-        }
+            if (auto resolved = ResolvedStateLayer::getCurrent())
+                resolved->reseedActiveFromStock();
 #endif
+        }
     }
 
     void updateVisibility(float dt) {
 #ifdef GEODE_IS_IOS
-        auto scene = IOSUpstream::SceneData::getCurrent();
-        auto gpuRenderer = IOSUpstream::IOSGPURenderer::getCurrent();
-        if (scene && scene->isReady() && gpuRenderer &&
-            gpuRenderer->isReadyForDrawing() &&
-            gpuRenderer->getPlayLayer() == this &&
-            scene->getPlayLayer() == this) {
-            // Owner-style GPU visibility path. The iOS decomp keeps 2.2 Area
-            // visual updates, enter effects, audio scale, colors and particles
-            // advancing while omitting the expensive per-object stock
-            // visibility walk; the GPU renderer owns final sprite visibility.
-            // Reclaim only nearby object particle systems before the optimized
-            // path advances PlayLayer::updateParticles(dt).
-            scene->updateObjectParticles();
-            ((decomp_PlayLayer*)this)->optimized_updateVisibility(dt);
-
-            // Upstream refreshes channel blend flags and requests its sorted
-            // batch variant once in the renderer pre-draw, before any layer is
-            // submitted. Do this once here so every GPU layer node in this
-            // frame uses the same draw-range map.
-            if (auto gpuRenderer = IOSUpstream::IOSGPURenderer::getCurrent();
-                gpuRenderer && gpuRenderer->getPlayLayer() == this) {
-                const auto blendRefreshStart = std::chrono::steady_clock::now();
-                const bool blendRefreshOK = scene->refreshBlendOrder();
-                gpuRenderer->recordBlendRefresh(
-                    std::chrono::duration<float, std::milli>(
-                        std::chrono::steady_clock::now() - blendRefreshStart
-                    ).count()
-                );
-                if (!blendRefreshOK)
-                    gpuRenderer->reportFailure(
-                        "could not refresh the live blend-state draw schedule"
-                    );
-            } else {
-                log::error("Bismuth iOS GPU-only beta FAILED: scene data has no matching renderer during blend-order refresh");
-            }
-            return;
-        }
-        if (scene && scene->getPlayLayer() == this)
-            scene->releaseObjectParticles();
         PlayLayer::updateVisibility(dt);
 #else
         auto renderer = Renderer::get();
@@ -304,11 +104,7 @@ static void removeDecoObjects(CCArray* array) {
 class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
     void update(float dt) {
         auto timer = BProfiler::start("GJBaseGameLayer::update");
-        const auto gameLayerUpdateStart = std::chrono::steady_clock::now();
         GJBaseGameLayer::update(dt);
-        const float gameLayerUpdateMilliseconds = std::chrono::duration<float, std::milli>(
-            std::chrono::steady_clock::now() - gameLayerUpdateStart
-        ).count();
         timer.end();
 
         auto renderer = Renderer::get();
@@ -316,31 +112,6 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
         if (renderer && static_cast<GJBaseGameLayer*>(renderer->getPlayLayer()) !=
             static_cast<GJBaseGameLayer*>(this))
             return;
-
-        auto scene = IOSUpstream::SceneData::getCurrent();
-        auto gpuRenderer = IOSUpstream::IOSGPURenderer::getCurrent();
-        if (gpuRenderer &&
-            static_cast<GJBaseGameLayer*>(gpuRenderer->getPlayLayer()) == this)
-            gpuRenderer->recordGameLayerUpdate(gameLayerUpdateMilliseconds);
-
-        if (scene && scene->isReady() && gpuRenderer &&
-            gpuRenderer->isReadyForDrawing() &&
-            gpuRenderer->getPlayLayer() == scene->getPlayLayer() &&
-            static_cast<GJBaseGameLayer*>(scene->getPlayLayer()) == this) {
-            const auto sceneUpdateStart = std::chrono::steady_clock::now();
-            const bool sceneUpdateOK = scene->update(dt);
-            gpuRenderer->recordSceneUpdate(
-                std::chrono::duration<float, std::milli>(
-                    std::chrono::steady_clock::now() - sceneUpdateStart
-                ).count()
-            );
-            if (!sceneUpdateOK) {
-                gpuRenderer->reportFailure(
-                    "scene update or GPU state upload failed"
-                );
-                return;
-            }
-        }
 #endif
         if (renderer) {
             renderer->update(dt);
@@ -349,49 +120,7 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
 
     void processMoveActions() {
 #ifdef GEODE_IS_IOS
-        auto scene = IOSUpstream::SceneData::getCurrent();
-        auto gpuRenderer = IOSUpstream::IOSGPURenderer::getCurrent();
-        if (!scene || !scene->isReady() || !gpuRenderer ||
-            !gpuRenderer->isReadyForDrawing() ||
-            gpuRenderer->getPlayLayer() != scene->getPlayLayer() ||
-            static_cast<GJBaseGameLayer*>(scene->getPlayLayer()) != this) {
-            GJBaseGameLayer::processMoveActions();
-            return;
-        }
-
-        // Port the owner's move-action split: Geometry Dash still advances its
-        // move command nodes and physical object data, while GroupManager mirrors
-        // the same deltas into the render-state table consumed by the GPU.
-        m_effectManager->processMoveCalculations();
-        for (auto node : m_effectManager->m_unkVector6c0) {
-            if (!node || node->m_unk0d0)
-                continue;
-
-            const i32 groupId = node->getTag();
-            scene->getGroupManager().moveGroup(
-                static_cast<IOSUpstream::GroupID>(groupId),
-                static_cast<float>(node->m_unk038),
-                static_cast<float>(node->m_unk040)
-            );
-
-            CCArray* objects = getStaticGroup(groupId);
-            if (objects) {
-                ((decomp_GJBaseGameLayer*)this)->moveObjects(
-                    objects, node->m_unk038, node->m_unk040, 0
-                );
-            }
-
-            // Decorations have been removed from both vanilla arrays. Remaining
-            // optimized-group solids still need GD's physical position, section,
-            // and collision bookkeeping even though their visual transform is
-            // mirrored in the GPU GroupManager state.
-            objects = getOptimizedGroup(groupId);
-            if (objects) {
-                ((decomp_GJBaseGameLayer*)this)->moveObjects(
-                    objects, node->m_unk090, node->m_unk098, 0
-                );
-            }
-        }
+        GJBaseGameLayer::processMoveActions();
         return;
 #else
         auto renderer = Renderer::get();
@@ -421,19 +150,7 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
 
     void processRotationActions() {
 #ifdef GEODE_IS_IOS
-        auto scene = IOSUpstream::SceneData::getCurrent();
-        auto gpuRenderer = IOSUpstream::IOSGPURenderer::getCurrent();
-        if (!scene || !scene->isReady() || !gpuRenderer ||
-            !gpuRenderer->isReadyForDrawing() ||
-            gpuRenderer->getPlayLayer() != scene->getPlayLayer() ||
-            static_cast<GJBaseGameLayer*>(scene->getPlayLayer()) != this) {
-            GJBaseGameLayer::processRotationActions();
-            return;
-        }
-
-        ((decomp_GJBaseGameLayer*)this)->optimized_processRotationActions(
-            scene->getGroupManager()
-        );
+        GJBaseGameLayer::processRotationActions();
         return;
 #else
         auto renderer = Renderer::get();
@@ -488,40 +205,6 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
 
     void processFollowActions() {
 #ifdef GEODE_IS_IOS
-        auto scene = IOSUpstream::SceneData::getCurrent();
-        auto gpuRenderer = IOSUpstream::IOSGPURenderer::getCurrent();
-        if (!scene || !scene->isReady() || !gpuRenderer ||
-            !gpuRenderer->isReadyForDrawing() ||
-            gpuRenderer->getPlayLayer() != scene->getPlayLayer() ||
-            static_cast<GJBaseGameLayer*>(scene->getPlayLayer()) != this) {
-            GJBaseGameLayer::processFollowActions();
-            return;
-        }
-
-        auto effectManager = m_effectManager;
-        for (auto node : effectManager->m_unkVector6d8) {
-            if (!node)
-                continue;
-            const i32 targetGroupId = node->getTag();
-            const i32 followGroupId = node->m_unk074;
-            auto mainObject = tryGetMainObject(followGroupId);
-            if (!mainObject)
-                continue;
-
-            double moveX = 0.0;
-            double moveY = 0.0;
-            if (mainObject->m_unk4C4 == m_gameState.m_commandIndex) {
-                moveX = (mainObject->m_positionX - mainObject->m_lastPosition.x) * node->m_unk080;
-                moveY = (mainObject->m_positionY - mainObject->m_lastPosition.y) * node->m_unk088;
-            }
-
-            scene->getGroupManager().moveGroup(
-                static_cast<IOSUpstream::GroupID>(targetGroupId),
-                static_cast<float>(moveX),
-                static_cast<float>(moveY)
-            );
-        }
-
         GJBaseGameLayer::processFollowActions();
         return;
 #else
@@ -555,18 +238,7 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
 
     void toggleGroup(int id, bool activate) {
         GJBaseGameLayer::toggleGroup(id, activate);
-#ifdef GEODE_IS_IOS
-        auto scene = IOSUpstream::SceneData::getCurrent();
-        auto gpuRenderer = IOSUpstream::IOSGPURenderer::getCurrent();
-        if (scene && scene->isReady() && gpuRenderer &&
-            gpuRenderer->isReadyForDrawing() &&
-            gpuRenderer->getPlayLayer() == scene->getPlayLayer() &&
-            static_cast<GJBaseGameLayer*>(scene->getPlayLayer()) == this) {
-            scene->getGroupManager().toggleGroup(
-                static_cast<IOSUpstream::GroupID>(id), activate
-            );
-        }
-#else
+#ifndef GEODE_IS_IOS
         auto renderer = Renderer::get();
         if (renderer)
             renderer->getGroupManager().toggleGroup(id, activate);
@@ -577,21 +249,7 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
         GJBaseGameLayer::optimizeMoveGroups();
 
 #ifdef GEODE_IS_IOS
-        auto scene = IOSUpstream::SceneData::getCurrent();
-        auto gpuRenderer = IOSUpstream::IOSGPURenderer::getCurrent();
-        if (!scene || !scene->isReady() || !gpuRenderer ||
-            !gpuRenderer->isReadyForDrawing() ||
-            gpuRenderer->getPlayLayer() != scene->getPlayLayer() ||
-            static_cast<GJBaseGameLayer*>(scene->getPlayLayer()) != this)
-            return;
-
-        // Match the owner's optimized renderer: GPU-managed decorations are
-        // removed from vanilla move/rotation groups while solid gameplay
-        // objects remain available for physics and oriented-box updates.
-        for (auto array : m_optimizedGroups)
-            removeDecoObjects(array);
-        for (auto array : m_staticGroups)
-            removeDecoObjects(array);
+        return;
 #else
         auto renderer = Renderer::get();
         if (!renderer || !renderer->useOptimizations())
@@ -606,31 +264,9 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
 };
 
 #ifdef GEODE_IS_IOS
-#include <Geode/modify/CheckpointObject.hpp>
-class $modify(RendererCheckpointObject, CheckpointObject) {
-    struct Fields {
-        CheckpointObject* checkpoint = nullptr;
-        ~Fields() {
-            if (auto scene = IOSUpstream::SceneData::getCurrent())
-                scene->getGroupManager().removeCheckpoint(checkpoint);
-        }
-    };
-
-    bool init() {
-        if (!CheckpointObject::init())
-            return false;
-        m_fields.self()->checkpoint = this;
-        return true;
-    }
-};
-
 #include <Geode/modify/GameObject.hpp>
 class $modify(RendererTrackedGameObject, GameObject) {
     void activateObject() {
-        // Do not emit one log record per GameObject. Large levels can contain
-        // hundreds of thousands of objects, and this used to bury the renderer
-        // lifecycle breadcrumbs (the EXIT record was also accidentally
-        // unconditional when detailed diagnostics were disabled).
         GameObject::activateObject();
 
         if (Renderer::get()) {
@@ -645,39 +281,6 @@ class $modify(RendererTrackedGameObject, GameObject) {
         if (Renderer::get()) {
             if (auto resolved = ResolvedStateLayer::getCurrent())
                 resolved->onObjectDeactivated(this);
-        }
-    }
-};
-
-#include <Geode/modify/RingObject.hpp>
-class $modify(RendererTrackedRingObject, RingObject) {
-    void triggerActivated(float xPosition) {
-        auto gpuRenderer = IOSUpstream::IOSGPURenderer::getCurrent();
-        const bool track = gpuRenderer && gpuRenderer->getPlayLayer();
-        const auto position = this->getPosition();
-        if (track) {
-            IOSUpstream::crashBreadcrumb(fmt::format(
-                "RingObject::triggerActivated ENTER object={:p} id={} x={} position=({}, {}) activated={} groupDisabled={} particle={}",
-                static_cast<void*>(this),
-                this->m_objectID,
-                xPosition,
-                position.x,
-                position.y,
-                this->m_isActivated,
-                this->m_isGroupDisabled,
-                this->m_particle != nullptr
-            ));
-        }
-
-        RingObject::triggerActivated(xPosition);
-
-        if (track) {
-            IOSUpstream::crashBreadcrumb(fmt::format(
-                "RingObject::triggerActivated EXIT object={:p} id={} particle={}",
-                static_cast<void*>(this),
-                this->m_objectID,
-                this->m_particle != nullptr
-            ));
         }
     }
 };
@@ -713,26 +316,6 @@ class $modify(RendererOwnedCCSprite, cocos2d::CCSprite) {
 
 class $modify(RendererInterleavedSpriteBatchNode, cocos2d::CCSpriteBatchNode) {
     void draw() {
-        // Block stock draws only for the PlayLayer owned by the active GPU
-        // renderer. A previous PlayLayer may still be alive during a scene
-        // transition; it must not suppress the incoming scene's setup draws.
-        if (auto gpuRenderer = IOSUpstream::IOSGPURenderer::getCurrent();
-            gpuRenderer && gpuRenderer->isReadyForDrawing()) {
-            auto owner = gpuRenderer->getPlayLayer();
-            cocos2d::CCNode* ancestor = this;
-            while (ancestor && ancestor != owner)
-                ancestor = ancestor->getParent();
-
-            // Only PlayLayer::m_batchNodes contain the stock GameObject atlases
-            // replaced by GPU layer nodes. Ground/background batches are not
-            // part of that object stream and must continue through Cocos draw.
-            const bool isStockObjectBatch =
-                owner && ancestor == owner && owner->m_batchNodes &&
-                owner->m_batchNodes->indexOfObject(this) != UINT_MAX;
-            if (isStockObjectBatch)
-                return;
-        }
-
         auto renderer = Renderer::get();
         if (!renderer || !renderer->isEnabled()) {
             cocos2d::CCSpriteBatchNode::draw();
@@ -783,38 +366,8 @@ class $modify(RendererInterleavedSpriteBatchNode, cocos2d::CCSpriteBatchNode) {
 #include <Geode/modify/CCDisplayLinkDirector.hpp>
 class $modify(RendererCCDisplayLinkDirector, CCDisplayLinkDirector) {
     void mainLoop() {
-#ifdef GEODE_IS_IOS
-        auto gpuRenderer = IOSUpstream::IOSGPURenderer::getCurrent();
-        auto renderer = Renderer::get();
-        if (!gpuRenderer && !renderer) {
-            CCDisplayLinkDirector::mainLoop();
-            return;
-        }
-
-        if (gpuRenderer)
-            gpuRenderer->beginFrame();
-
-        auto timer = BProfiler::start("Frame time");
-        CCDisplayLinkDirector::mainLoop();
-        timer.end();
-
-        // Re-acquire after the scene tick: a PlayLayer transition may destroy
-        // the renderer that was current at frame start.
-        if (auto currentGPU = IOSUpstream::IOSGPURenderer::getCurrent()) {
-            currentGPU->finishFrame();
-            static u64 crashDiagnosticFrame = 0;
-            if (IOSUpstream::crashDiagnosticsEnabled() &&
-                (++crashDiagnosticFrame % 60u) == 0u) {
-                IOSUpstream::crashBreadcrumb(
-                    currentGPU->getCrashDiagnosticSnapshot()
-                );
-            }
-        }
-
-        BProfiler::frameEnd();
-#else
-        auto renderer = Renderer::get();
-        if (!renderer) {
+        auto ren = Renderer::get();
+        if (!ren) {
             CCDisplayLinkDirector::mainLoop();
             return;
         }
@@ -822,7 +375,7 @@ class $modify(RendererCCDisplayLinkDirector, CCDisplayLinkDirector) {
         auto timer = BProfiler::start("Frame time");
         CCDisplayLinkDirector::mainLoop();
         timer.end();
+
         BProfiler::frameEnd();
-#endif
     }
 };

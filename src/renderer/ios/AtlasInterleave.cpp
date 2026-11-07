@@ -27,11 +27,6 @@ constexpr usize MAX_REASONABLE_ATLAS_QUADS = 262144;
 // seen in dense levels and deliberately leave substantial work on stock Cocos.
 // 2304 keeps the GPU useful without letting it dominate the frame, so CPU + GPU
 // cooperate instead of alternating between GPU spikes and CPU-only stretches.
-constexpr usize HYBRID_GPU_SPRITE_BUDGET = 2304;
-constexpr usize HYBRID_MIN_GPU_RUN = 48;
-constexpr usize HYBRID_SMALL_RUN_GRACE = 8;
-constexpr usize HYBRID_MAX_GPU_RUNS_PER_BATCH = 8;
-constexpr usize HYBRID_MAX_GPU_RUNS_PER_FRAME = 24;
 
 struct SpriteOwner {
     Renderer* renderer = nullptr;
@@ -87,7 +82,6 @@ struct BatchIndexCache {
 
 struct RegistryState {
     std::unordered_map<cocos2d::CCSprite*, SpriteOwner> spriteOwners;
-    std::unordered_map<cocos2d::CCSpriteBatchNode*, AssistShadowBatch*> immediateByBatch;
     std::unordered_map<AssistShadowBatch*, Renderer*> immediateRenderers;
     std::unordered_map<StandaloneAssistBatch*, Renderer*> deferredRenderers;
     std::unordered_set<Renderer*> invalidRenderers;
@@ -110,8 +104,6 @@ struct RegistryState {
     u32 lastFailureAtlasSize = 0;
     bool lastFailureCanUseStock = true;
 
-    usize gpuSpritesUsedThisFrame = 0;
-    usize gpuDrawRunsUsedThisFrame = 0;
 };
 
 static RegistryState& registry() {
@@ -219,8 +211,6 @@ static void releaseScratchIfUnused() {
     state.atlasOwners.clear();
     state.invalidRenderers.clear();
     state.lastFailureCanUseStock = true;
-    state.gpuSpritesUsedThisFrame = 0;
-    state.gpuDrawRunsUsedThisFrame = 0;
 }
 
 static bool uploadDirtyAtlas(cocos2d::CCTextureAtlas* atlas) {
@@ -360,12 +350,6 @@ void AtlasInterleaveRegistry::registerImmediate(AssistShadowBatch* owner) {
     auto& state = registry();
     state.immediateRenderers[owner] = renderer;
 
-    auto [batchIt, insertedBatch] = state.immediateByBatch.emplace(owner->stockBatch, owner);
-    if (!insertedBatch && batchIt->second != owner) {
-        invalidateRenderer(renderer, "multiple immediate GPU owners claimed one stock batch");
-        return;
-    }
-
     for (usize i = 0; i < owner->ownedSprites.size(); ++i) {
         auto sprite = owner->ownedSprites[i];
         if (!sprite || i * 4 + 3 > 65535) {
@@ -401,13 +385,6 @@ void AtlasInterleaveRegistry::unregisterImmediate(AssistShadowBatch* owner) {
     for (auto it = state.spriteOwners.begin(); it != state.spriteOwners.end();) {
         if (it->second.immediate == owner)
             it = state.spriteOwners.erase(it);
-        else
-            ++it;
-    }
-
-    for (auto it = state.immediateByBatch.begin(); it != state.immediateByBatch.end();) {
-        if (it->second == owner)
-            it = state.immediateByBatch.erase(it);
         else
             ++it;
     }
@@ -608,9 +585,8 @@ bool AtlasInterleaveRegistry::drawBatch(
 
         const auto& record = recordIt->second;
         auto& geometry = record.immediate ? record.immediate->liveGeometry : record.deferred->liveGeometry;
-        // Eligibility is cheap. Do not rebuild live geometry yet: the hybrid
-        // scheduler may put this sprite on the CPU anyway. Refreshing thousands
-        // of candidates before selection caused the assist-time frame spikes.
+        // Check ownership and transform eligibility cheaply. Live geometry is
+        // refreshed later, once the legacy helper is ready to submit this batch.
         if (!geometry.canUseBatch(record.baseVertex / 4, batch))
             continue;
 
@@ -618,97 +594,11 @@ bool AtlasInterleaveRegistry::drawBatch(
         hasGPU = true;
     }
 
-    const usize frameSpritesBeforeBatch = state.gpuSpritesUsedThisFrame;
-    const usize frameRunsBeforeBatch = state.gpuDrawRunsUsedThisFrame;
+    // The legacy helper submits every eligible GPU-owned sprite in atlas order.
+    // There is no per-frame sprite quota, small-run filter, or draw-run ceiling.
 
-    // A GPU sprite only helps when enough neighbors can be submitted with it.
-    // The previous sprite-only budget still allowed pathological levels to make
-    // 100+ tiny GL submissions per frame. On iOS those state switches cost more
-    // than Cocos' CPU transform work. Rank contiguous owner runs by size and only
-    // keep the profitable ones, with hard per-batch and per-frame call ceilings.
-    if (hasGPU) {
-        struct CandidateRun {
-            usize start = 0;
-            usize count = 0;
-        };
-
-        std::vector<CandidateRun> candidateRuns;
-        for (usize start = 0; start < totalQuads;) {
-            if (state.atlasOwners[start].empty()) {
-                ++start;
-                continue;
-            }
-
-            const auto owner = state.atlasOwners[start];
-            usize end = start + 1;
-            while (end < totalQuads && state.atlasOwners[end].sameOwner(owner))
-                ++end;
-
-            candidateRuns.push_back({ start, end - start });
-            start = end;
-        }
-
-        // Keep atlas order stable. Re-sorting by run size made the chosen GPU
-        // islands jump around as objects entered/left visibility, forcing index
-        // cache uploads and producing periodic assist spikes.
-        const usize spriteBudgetLeft =
-            state.gpuSpritesUsedThisFrame < HYBRID_GPU_SPRITE_BUDGET
-                ? HYBRID_GPU_SPRITE_BUDGET - state.gpuSpritesUsedThisFrame
-                : 0;
-        const usize frameRunBudgetLeft =
-            state.gpuDrawRunsUsedThisFrame < HYBRID_MAX_GPU_RUNS_PER_FRAME
-                ? HYBRID_MAX_GPU_RUNS_PER_FRAME - state.gpuDrawRunsUsedThisFrame
-                : 0;
-
-        usize remainingSprites = spriteBudgetLeft;
-        usize remainingRuns = std::min(HYBRID_MAX_GPU_RUNS_PER_BATCH, frameRunBudgetLeft);
-        usize smallRunGraceLeft =
-            state.gpuDrawRunsUsedThisFrame < HYBRID_SMALL_RUN_GRACE
-                ? HYBRID_SMALL_RUN_GRACE - state.gpuDrawRunsUsedThisFrame
-                : 0;
-        usize keptSprites = 0;
-        usize keptRuns = 0;
-        std::vector<bool> selected(totalQuads, false);
-
-        for (const auto& run : candidateRuns) {
-            if (!remainingRuns || !remainingSprites)
-                break;
-
-            const bool smallRun = run.count < HYBRID_MIN_GPU_RUN;
-            // Do not abort the atlas just because an early tiny island exhausted
-            // the small-run grace. Larger profitable runs may still exist later
-            // in atlas order, especially with distributed long-level ownership.
-            if (smallRun && !smallRunGraceLeft)
-                continue;
-
-            const usize keep = std::min(run.count, remainingSprites);
-            if (!keep)
-                continue;
-            if (smallRun)
-                --smallRunGraceLeft;
-            else if (keep < HYBRID_MIN_GPU_RUN)
-                continue;
-
-            for (usize slot = run.start; slot < run.start + keep; ++slot)
-                selected[slot] = true;
-
-            keptSprites += keep;
-            remainingSprites -= keep;
-            --remainingRuns;
-            ++keptRuns;
-        }
-
-        for (usize slot = 0; slot < totalQuads; ++slot) {
-            if (!state.atlasOwners[slot].empty() && !selected[slot])
-                state.atlasOwners[slot] = {};
-        }
-
-        state.gpuSpritesUsedThisFrame += keptSprites;
-        state.gpuDrawRunsUsedThisFrame += keptRuns;
-        hasGPU = keptSprites != 0;
-    }
-
-    // Only now touch live geometry for sprites that survived hybrid selection.
+    // Refresh live geometry for every eligible sprite before submitting the
+    // legacy helper draw. Unsupported or stale geometry remains on the stock path.
     // This turns the expensive refresh from "all eligible sprites" into "actual
     // GPU work" and keeps CPU-only frames genuinely cheap.
     if (hasGPU) {
@@ -724,19 +614,12 @@ bool AtlasInterleaveRegistry::drawBatch(
         }
 
         usize actualSprites = 0;
-        usize actualRuns = 0;
         for (usize slot = 0; slot < totalQuads; ++slot) {
             const auto& owner = state.atlasOwners[slot];
             if (owner.empty())
                 continue;
             ++actualSprites;
-            if (slot == 0 || state.atlasOwners[slot - 1].empty() ||
-                !owner.sameOwner(state.atlasOwners[slot - 1])) {
-                ++actualRuns;
-            }
         }
-        state.gpuSpritesUsedThisFrame = frameSpritesBeforeBatch + actualSprites;
-        state.gpuDrawRunsUsedThisFrame = frameRunsBeforeBatch + actualRuns;
         hasGPU = actualSprites != 0;
     }
 
@@ -1053,8 +936,6 @@ void AtlasInterleaveRegistry::beginFrame() {
     state.lastFailureSlot = -1;
     state.lastFailureAtlasSize = 0;
     state.lastFailureCanUseStock = true;
-    state.gpuSpritesUsedThisFrame = 0;
-    state.gpuDrawRunsUsedThisFrame = 0;
     for (const auto& [owner, renderer] : state.immediateRenderers) {
         owner->stats.drawCallsLastFrame = 0;
         owner->stats.indicesLastFrame = 0;

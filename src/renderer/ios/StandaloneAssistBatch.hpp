@@ -4,6 +4,7 @@
 
 #include "ResolvedStateLayer.hpp"
 #include "LiveGeometry.hpp"
+#include "AssistBufferLimits.hpp"
 #include "../Buffer.hpp"
 #include "../Shader.hpp"
 #include <Geode/Geode.hpp>
@@ -17,6 +18,7 @@
 // same stock atlas to render in a small number of shared draws.
 class StandaloneAssistBatch : public cocos2d::CCNode {
 public:
+    static constexpr usize MaxSpritesPerBuffer = MAX_ASSIST_SPRITES_PER_BUFFER;
     struct Stats {
         usize sprites = 0;
         usize textureRanges = 0;
