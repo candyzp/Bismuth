@@ -1,12 +1,14 @@
 #ifdef GEODE_IS_IOS
 
 #include "../Renderer.hpp"
+#include "CorporateCatcher.hpp"
 #include <Geode/modify/CCSprite.hpp>
 
 using namespace geode::prelude;
 
 class $modify(RendererStandaloneOwnedCCSprite, cocos2d::CCSprite) {
     void draw() {
+        CORPORATE_CATCHER_PROFILE_HOOK("CCSprite::draw");
         auto renderer = Renderer::get();
         if (renderer && renderer->drawGPUBackground(this))
             return;
@@ -14,6 +16,7 @@ class $modify(RendererStandaloneOwnedCCSprite, cocos2d::CCSprite) {
     }
 
     void visit() {
+        CORPORATE_CATCHER_PROFILE_HOOK("CCSprite::visit");
         auto renderer = Renderer::get();
         if (renderer && renderer->isGPUOwnedStandaloneSprite(this)) {
             // This returns true only for a GameObject root whose COMPLETE safe
