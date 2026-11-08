@@ -11,6 +11,63 @@ int main() {
     state.objectTexels.resize(3); state.spriteTexels.resize(3);
     assert(state.canDrawSprite(&object));
     {
+        GameObject groupedDecoration;
+        groupedDecoration.parent = &groupedDecoration;
+        cocos2d::CCSprite childVisual;
+
+        ResolvedStateLayer fullyOwned;
+        fullyOwned.objects.push_back({});
+        auto& fullRecord = fullyOwned.objects.back();
+        fullRecord.object = &groupedDecoration;
+        fullRecord.safety = ResolvedStateLayer::SafetyClass::StaticSafe;
+        fullRecord.groupFlags = 3.f;
+        fullRecord.firstSprite = 0;
+        fullRecord.spriteCount = 2;
+        fullyOwned.sprites.push_back({});
+        fullyOwned.sprites.back().sprite = &groupedDecoration;
+        fullyOwned.sprites.back().objectIndex = 0;
+        fullyOwned.sprites.push_back({});
+        fullyOwned.sprites.back().sprite = &childVisual;
+        fullyOwned.sprites.back().objectIndex = 0;
+        fullyOwned.objectTexels.resize(3);
+        DataTexture fullObjectTexture;
+        fullyOwned.objectStateTexture = &fullObjectTexture;
+        fullyOwned.stats.staticObjects = 1;
+        std::unordered_set<cocos2d::CCSprite*> allSprites = {
+            &groupedDecoration, &childVisual
+        };
+        fullyOwned.setGPUOwnedSprites(allSprites);
+        assert(fullyOwned.objects[0].groupFlags == 3.f);
+        assert(fullyOwned.isGPUGroupManagedObject(&groupedDecoration));
+
+        ResolvedStateLayer partiallyOwned;
+        partiallyOwned.objects.push_back({});
+        auto& partialRecord = partiallyOwned.objects.back();
+        partialRecord.object = &groupedDecoration;
+        partialRecord.safety = ResolvedStateLayer::SafetyClass::StaticSafe;
+        partialRecord.groupFlags = 3.f;
+        partialRecord.firstSprite = 0;
+        partialRecord.spriteCount = 2;
+        partiallyOwned.sprites.push_back({});
+        partiallyOwned.sprites.back().sprite = &groupedDecoration;
+        partiallyOwned.sprites.back().objectIndex = 0;
+        partiallyOwned.sprites.push_back({});
+        partiallyOwned.sprites.back().sprite = &childVisual;
+        partiallyOwned.sprites.back().objectIndex = 0;
+        partiallyOwned.objectTexels.resize(3);
+        DataTexture partialObjectTexture;
+        partiallyOwned.objectStateTexture = &partialObjectTexture;
+        partiallyOwned.stats.staticObjects = 1;
+        std::unordered_set<cocos2d::CCSprite*> oneSprite = { &groupedDecoration };
+        partiallyOwned.setGPUOwnedSprites(oneSprite);
+        assert(partiallyOwned.objects[0].groupFlags == 0.f);
+        assert(partiallyOwned.objects[0].safety == ResolvedStateLayer::SafetyClass::DynamicSafe);
+        assert(partiallyOwned.stats.staticObjects == 0);
+        assert(partiallyOwned.stats.dynamicObjects == 1);
+        assert(partiallyOwned.objectTexels[2].w == 0.f);
+        assert(!partiallyOwned.isGPUGroupManagedObject(&groupedDecoration));
+    }
+    {
         GameObject solid;
         cocos2d::CCSprite child, grandchild, outside;
         child.parent = &solid;

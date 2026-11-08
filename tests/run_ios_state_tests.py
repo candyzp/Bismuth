@@ -16,13 +16,16 @@ pieces=[
     state[state.index('namespace {'):state.index('} // namespace')]+'}',
     state[state.index('ResolvedStateLayer::SafetyClass ResolvedStateLayer::classifyObject('):state.index('bool ResolvedStateLayer::isShadowValidationCandidate(')],
     state[state.index('ResolvedStateLayer::ObjectState ResolvedStateLayer::captureObjectState('):state.index('bool ResolvedStateLayer::init(')],
-    state[state.index('bool ResolvedStateLayer::canDrawSprite('):state.index('void ResolvedStateLayer::setGPUOwnedSprites(')],
+    state[state.index('bool ResolvedStateLayer::canDrawSprite('):state.index('void ResolvedStateLayer::update(')],
     'namespace { ResolvedStateLayer* g_currentResolvedState=nullptr; }',
     'void ResolvedStateLayer::destroyTextures() {}',
-    active[active.index('ResolvedStateLayer::ResolvedStateLayer()'):active.index('void ResolvedStateLayer::ensureEventOwnership()')],
+    active[active.index('ResolvedStateLayer::ResolvedStateLayer()'):active.index('void ResolvedStateLayer::reseedActiveFromStock()')],
     state[state.index('void ResolvedStateLayer::update('):state.rindex('#endif')],
     (root/'tests/ios_state_cases.cpp').read_text(),
 ]
+hooks=(root/'src/renderer/hooks.cpp').read_text()
+assert 'resolved->isGPUGroupManagedObject(object)' in hooks
+assert 'pruneGPUGroupManagedObjects(this);' in hooks
 with tempfile.TemporaryDirectory(prefix='bismuth-state-tests-') as directory:
     path=Path(directory); (path/'test.cpp').write_text('\n'.join(pieces))
     subprocess.run(['g++','-std=c++23','-O1','-g','-Wall','-Wextra','-fsanitize=address,undefined',

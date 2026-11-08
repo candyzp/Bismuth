@@ -162,6 +162,8 @@ public:
     }
 
     bool isForcedDecorationSprite(cocos2d::CCSprite* sprite) const;
+    // True only when every sprite of this grouped root is owned by the GPU path.
+    bool isGPUGroupManagedObject(GameObject* object);
 
     inline bool isGPUStateReady() const {
         return objectStateTexture != nullptr && spriteStateTexture != nullptr &&

@@ -803,6 +803,34 @@ bool ResolvedStateLayer::isForcedDecorationSprite(cocos2d::CCSprite* sprite) con
     return object && object->m_objectType == GameObjectType::Decoration;
 }
 
+bool ResolvedStateLayer::isGPUGroupManagedObject(GameObject* object) {
+    if (!object)
+        return false;
+
+    ensureEventOwnership();
+    if (!eventOwnershipReady)
+        return false;
+
+    const auto found = objectIndexByPointer.find(object);
+    if (found == objectIndexByPointer.end() || found->second >= objects.size())
+        return false;
+
+    const auto& record = objects[found->second];
+    if (record.groupFlags < 0.5f || record.spriteCount == 0 ||
+        record.firstSprite > sprites.size() ||
+        record.spriteCount > sprites.size() - record.firstSprite ||
+        record.firstSprite + record.spriteCount > gpuOwnedSpriteMask.size())
+        return false;
+
+    for (usize spriteIndex = record.firstSprite;
+         spriteIndex < record.firstSprite + record.spriteCount;
+         ++spriteIndex) {
+        if (!gpuOwnedSpriteMask[spriteIndex])
+            return false;
+    }
+    return true;
+}
+
 void ResolvedStateLayer::beginFrameValidation() {
     stats.spriteValidations = 0;
     stats.spriteValidationReuses = 0;
@@ -828,6 +856,46 @@ void ResolvedStateLayer::setGPUOwnedSprites(
 
     if (ownedSprites.empty() || objects.empty() || sprites.empty())
         return;
+
+    // GPU group transforms are an all-visuals ownership contract. If any
+    // sprite belonging to a grouped root remains on stock Cocos, keep the entire
+    // root on the CPU transform path so its GPU-owned subset is not moved twice.
+    bool adjustedGroupOwnership = false;
+    for (usize objectIndex = 0; objectIndex < objects.size(); ++objectIndex) {
+        auto& objectRecord = objects[objectIndex];
+        if (objectRecord.groupFlags < 0.5f)
+            continue;
+
+        bool fullyOwned = objectRecord.spriteCount > 0 &&
+            objectRecord.firstSprite <= sprites.size() &&
+            objectRecord.spriteCount <= sprites.size() - objectRecord.firstSprite;
+        for (usize localSprite = 0; fullyOwned && localSprite < objectRecord.spriteCount; ++localSprite) {
+            const usize spriteIndex = objectRecord.firstSprite + localSprite;
+            fullyOwned = sprites[spriteIndex].sprite &&
+                ownedSprites.contains(sprites[spriteIndex].sprite);
+        }
+
+        if (fullyOwned)
+            continue;
+
+        objectRecord.groupFlags = 0.f;
+        if (objectRecord.safety == SafetyClass::StaticSafe) {
+            objectRecord.safety = SafetyClass::DynamicSafe;
+            if (stats.staticObjects)
+                --stats.staticObjects;
+            ++stats.dynamicObjects;
+        }
+        packObjectState(objectIndex, objectRecord.state, objectRecord.safety);
+        adjustedGroupOwnership = true;
+    }
+
+    if (adjustedGroupOwnership && objectStateTexture) {
+        const bool uploaded = objectStateTexture->upload(objectTexels.data(), objectTexels.size());
+        if (!uploaded) {
+            uploadsCurrent = false;
+            fullUploadPending = true;
+        }
+    }
 
     std::vector<bool> activeObjectMask(objects.size(), false);
     activeSpriteIndices.reserve(std::min(ownedSprites.size(), sprites.size()));

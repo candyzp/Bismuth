@@ -11,6 +11,10 @@
 
 using namespace geode::prelude;
 
+#ifdef GEODE_IS_IOS
+static void pruneGPUGroupManagedObjects(GJBaseGameLayer* layer);
+#endif
+
 static bool newPlayLayer = false;
 
 #include <Geode/modify/PlayLayer.hpp>
@@ -48,6 +52,7 @@ class $modify(RendererPlayLayer, PlayLayer) {
 #ifdef GEODE_IS_IOS
                 if (auto resolved = ResolvedStateLayer::getCurrent())
                     resolved->reseedActiveFromStock();
+                pruneGPUGroupManagedObjects(this);
 #endif
             }
             return;
@@ -69,6 +74,7 @@ class $modify(RendererPlayLayer, PlayLayer) {
 #ifdef GEODE_IS_IOS
             if (auto resolved = ResolvedStateLayer::getCurrent())
                 resolved->reseedActiveFromStock();
+        pruneGPUGroupManagedObjects(this);
 #endif
         }
     }
@@ -86,6 +92,43 @@ class $modify(RendererPlayLayer, PlayLayer) {
 #endif
     }
 };
+
+#ifdef GEODE_IS_IOS
+static void pruneGPUGroupManagedObjects(GJBaseGameLayer* baseLayer) {
+    auto renderer = Renderer::get();
+    auto resolved = ResolvedStateLayer::getCurrent();
+    if (!baseLayer || !renderer || !resolved ||
+        static_cast<GJBaseGameLayer*>(renderer->getPlayLayer()) != baseLayer)
+        return;
+
+    usize removed = 0;
+    auto prune = [&](CCArray* group) {
+        if (!group)
+            return;
+        for (u32 i = 0; i < group->count();) {
+            auto object = typeinfo_cast<GameObject*>(group->objectAtIndex(i));
+            if (object && resolved->isGPUGroupManagedObject(object)) {
+                group->removeObjectAtIndex(i);
+                ++removed;
+            } else {
+                ++i;
+            }
+        }
+    };
+
+    for (auto group : baseLayer->m_optimizedGroups)
+        prune(group);
+    for (auto group : baseLayer->m_staticGroups)
+        prune(group);
+
+    if (removed) {
+        log::info(
+            "Bismuth iOS removed {} fully GPU-managed grouped object entries from CPU transform lists",
+            removed
+        );
+    }
+}
+#endif
 
 static void removeDecoObjects(CCArray* array) {
     if (!array)
@@ -232,6 +275,7 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
         GJBaseGameLayer::optimizeMoveGroups();
 
 #ifdef GEODE_IS_IOS
+        pruneGPUGroupManagedObjects(this);
         return;
 #else
         auto renderer = Renderer::get();
