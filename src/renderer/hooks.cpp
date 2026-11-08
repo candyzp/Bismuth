@@ -2,6 +2,7 @@
 #include "Renderer.hpp"
 #include <decomp/PlayLayer.hpp>
 #include <BProfiler.hpp>
+#include "CorporateCatcher.hpp"
 #ifdef GEODE_IS_IOS
 #include <decomp/GJBaseGameLayer.hpp>
 #include "ios_upstream/IOSGPURenderer.hpp"
@@ -26,12 +27,14 @@ static bool newPlayLayer = false;
 #include <Geode/modify/PlayLayer.hpp>
 class $modify(RendererPlayLayer, PlayLayer) {
     void setupHasCompleted() {
+        CORPORATE_CATCHER_PROFILE_HOOK("PlayLayer::setupHasCompleted");
         newPlayLayer = true;
         PlayLayer::setupHasCompleted();
         newPlayLayer = false;
     }
 
     void resetLevel() {
+        CORPORATE_CATCHER_PROFILE_HOOK("PlayLayer::resetLevel");
 #ifdef GEODE_IS_IOS
         // Remove draw nodes before PlayLayer rebuilds its Z-order containers.
         auto existing = IOSUpstream::IOSGPURenderer::getCurrent();
@@ -79,6 +82,7 @@ class $modify(RendererPlayLayer, PlayLayer) {
     }
 
     void updateVisibility(float dt) {
+        CORPORATE_CATCHER_PROFILE_HOOK("PlayLayer::updateVisibility");
 #ifdef GEODE_IS_IOS
         auto renderer = IOSUpstream::IOSGPURenderer::getCurrent();
         if (renderer && renderer->getPlayLayer() == this) {
@@ -135,6 +139,7 @@ static void pruneGPUOwnedDecorations(GJBaseGameLayer* baseLayer) {
 #include <Geode/modify/GJBaseGameLayer.hpp>
 class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
     void update(float dt) {
+        CORPORATE_CATCHER_PROFILE_HOOK("GJBaseGameLayer::update");
         auto timer = BProfiler::start("GJBaseGameLayer::update");
 #ifdef GEODE_IS_IOS
         const auto updateStart = std::chrono::steady_clock::now();
@@ -160,6 +165,7 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
     }
 
     void processMoveActions() {
+        CORPORATE_CATCHER_PROFILE_HOOK("GJBaseGameLayer::processMoveActions");
 #ifdef GEODE_IS_IOS
         auto renderer = IOSUpstream::IOSGPURenderer::getCurrent();
         if (!renderer || !renderer->isReadyForDrawing() ||
@@ -204,6 +210,7 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
     }
 
     void processRotationActions() {
+        CORPORATE_CATCHER_PROFILE_HOOK("GJBaseGameLayer::processRotationActions");
 #ifdef GEODE_IS_IOS
         auto renderer = IOSUpstream::IOSGPURenderer::getCurrent();
         if (renderer && renderer->isReadyForDrawing() &&
@@ -259,6 +266,7 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
     }
 
     void processFollowActions() {
+        CORPORATE_CATCHER_PROFILE_HOOK("GJBaseGameLayer::processFollowActions");
 #ifdef GEODE_IS_IOS
         auto renderer = IOSUpstream::IOSGPURenderer::getCurrent();
         if (!renderer || !renderer->isReadyForDrawing() ||
@@ -309,6 +317,7 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
     }
 
     void toggleGroup(int id, bool activate) {
+        CORPORATE_CATCHER_PROFILE_HOOK("GJBaseGameLayer::toggleGroup");
         GJBaseGameLayer::toggleGroup(id, activate);
 #ifdef GEODE_IS_IOS
         auto renderer = IOSUpstream::IOSGPURenderer::getCurrent();
@@ -325,6 +334,7 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
     }
 
     void optimizeMoveGroups() {
+        CORPORATE_CATCHER_PROFILE_HOOK("GJBaseGameLayer::optimizeMoveGroups");
         GJBaseGameLayer::optimizeMoveGroups();
 #ifdef GEODE_IS_IOS
         pruneGPUOwnedDecorations(this);
@@ -344,6 +354,7 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
 #include <Geode/modify/GameObject.hpp>
 class $modify(RendererTrackedGameObject, GameObject) {
     void activateObject() {
+        CORPORATE_CATCHER_PROFILE_HOOK("GameObject::activateObject");
         GameObject::activateObject();
 
         if (Renderer::get()) {
@@ -353,6 +364,7 @@ class $modify(RendererTrackedGameObject, GameObject) {
     }
 
     void deactivateObject(bool value) {
+        CORPORATE_CATCHER_PROFILE_HOOK("GameObject::deactivateObject");
         GameObject::deactivateObject(value);
 
         if (Renderer::get()) {
@@ -365,6 +377,7 @@ class $modify(RendererTrackedGameObject, GameObject) {
 #include <Geode/modify/CCSprite.hpp>
 class $modify(RendererOwnedCCSprite, cocos2d::CCSprite) {
     void updateTransform() {
+        CORPORATE_CATCHER_PROFILE_HOOK("CCSprite::updateTransform");
         auto renderer = Renderer::get();
         if (!renderer || !renderer->prepareGPUOwnedSprite(this)) {
             cocos2d::CCSprite::updateTransform();
@@ -404,6 +417,7 @@ class $modify(RendererOwnedCCSprite, cocos2d::CCSprite) {
 
 class $modify(RendererInterleavedSpriteBatchNode, cocos2d::CCSpriteBatchNode) {
     void draw() {
+        CORPORATE_CATCHER_PROFILE_HOOK("CCSpriteBatchNode::draw");
         auto renderer = Renderer::get();
         if (!renderer || !renderer->isEnabled()) {
             cocos2d::CCSpriteBatchNode::draw();
@@ -454,6 +468,8 @@ class $modify(RendererInterleavedSpriteBatchNode, cocos2d::CCSpriteBatchNode) {
 #include <Geode/modify/CCDisplayLinkDirector.hpp>
 class $modify(RendererCCDisplayLinkDirector, CCDisplayLinkDirector) {
     void mainLoop() {
+        CorporateCatcher::beginFrame();
+        CORPORATE_CATCHER_PROFILE_HOOK("CCDisplayLinkDirector::mainLoop");
 #ifdef GEODE_IS_IOS
         auto renderer = IOSUpstream::IOSGPURenderer::getCurrent();
         if (renderer)
