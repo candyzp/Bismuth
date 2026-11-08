@@ -99,6 +99,8 @@ void GroupManager::initWithObjects(cocos2d::CCArray* objects) {
     }
 
     groupCombinationCount = groupCombIndex;
+    groupStateDirtyMask.assign(groupCombinationCount, false);
+    dirtyGroupStateIndices.clear();
 
     u32 transformCombIndex = 0;
     u32 alphaCombIndex     = 0;
@@ -143,7 +145,16 @@ void GroupManager::initWithObjects(cocos2d::CCArray* objects) {
     alphaValuesPerAlphaIndex.resize(alphaIndiciesCount);
 
     groupStateBuffer = Buffer::createDynamicDraw("Group state buffer", getGroupStateBufferSize());
+    if (!groupStateBuffer) {
+        log::error("Bismuth failed to allocate the group-state buffer");
+        groupStates = nullptr;
+        return;
+    }
     groupStates = (GroupCombinationState*)groupStateBuffer->mapReadWrite();
+    if (!groupStates) {
+        log::error("Bismuth failed to map the group-state buffer");
+        return;
+    }
 }
     
 GroupCombinationIndex GroupManager::getGroupCombinationIndexForObject(GameObject* object) {
@@ -166,6 +177,10 @@ GroupCombinationIndex GroupManager::getTransformCombinationIndexForObject(GameOb
 }
 
 void GroupManager::prepareGroupStateBuffer() {
+    if (!groupStates || !renderer.getPlayLayer() ||
+        !renderer.getPlayLayer()->m_effectManager)
+        return;
+
     for (u32 id = 1; id <= maxGroupId; id++) {
         if (!disabledGroups.contains(id))
             alphaValuesPerGroupId[id] = renderer.getPlayLayer()->m_effectManager->opacityModForGroup(id);
@@ -184,14 +199,26 @@ void GroupManager::prepareGroupStateBuffer() {
         alphaValuesPerAlphaIndex[alphaIndex] = alpha;
     }
 
-    for (u32 combIndex = 0; combIndex < groupCombinationCount; combIndex++)
-        groupStates[combIndex].opacity = alphaValuesPerAlphaIndex[alphaIndiciesPerGroupCombinationIndex[combIndex]];
+    for (u32 combIndex = 0; combIndex < groupCombinationCount; combIndex++) {
+        const float nextOpacity =
+            alphaValuesPerAlphaIndex[alphaIndiciesPerGroupCombinationIndex[combIndex]];
+        if (groupStates[combIndex].opacity != nextOpacity) {
+            groupStates[combIndex].opacity = nextOpacity;
+            markGroupStateDirty(combIndex);
+        }
+    }
 }
 
 void GroupManager::moveGroup(GroupID groupId, float deltaX, float deltaY) {
-    auto combIndicies = groupCombinationIndiciesPerGroupId[groupId];
-    for (auto combIndex : combIndicies)
+    if (!groupStates || groupId <= 0 ||
+        static_cast<usize>(groupId) >= groupCombinationIndiciesPerGroupId.size())
+        return;
+
+    const auto& combIndicies = groupCombinationIndiciesPerGroupId[groupId];
+    for (auto combIndex : combIndicies) {
         groupStates[combIndex].offset += glm::vec2(deltaX, deltaY);
+        markGroupStateDirty(combIndex);
+    }
 }
 
 void GroupManager::rotateGroup(
@@ -203,6 +230,10 @@ void GroupManager::rotateGroup(
     // GroupCommandObject2 already supplies the actual per-step rotation delta
     // in degrees. Do not halve it here, or GPU-managed decoration rotates at
     // half the rate of Geometry Dash's own objects and progressively separates.
+    if (!groupStates || groupId <= 0 ||
+        static_cast<usize>(groupId) >= groupCombinationIndiciesPerGroupId.size())
+        return;
+
     float cos = cosf(glm::radians(angle));
     float sin = sinf(glm::radians(angle));
     glm::mat2 matrix = {
@@ -210,23 +241,28 @@ void GroupManager::rotateGroup(
         { sin,  cos }
     };
 
-    auto combIndicies = groupCombinationIndiciesPerGroupId[groupId];
+    const auto& combIndicies = groupCombinationIndiciesPerGroupId[groupId];
     for (auto combIndex : combIndicies) {
         auto& groupState = groupStates[combIndex];
+        bool changed = false;
 
-        if (!lockObjectRotation)
+        if (!lockObjectRotation) {
             groupState.localTransform *= matrix;
+            changed = true;
+        }
 
         // A rotate trigger without a center still applies the local rotation to
         // every matching group combination. Do not exit after the first one.
-        if (!centerPoint.has_value())
-            continue;
+        if (centerPoint.has_value()) {
+            auto center = centerPoint.value();
+            groupState.positionalTransform *= matrix;
+            groupState.offset = matrix * (groupState.offset - center) + center;
+            haveGroupStatesScaled[combIndex] = true;
+            changed = true;
+        }
 
-        auto center = centerPoint.value();
-        groupState.positionalTransform *= matrix;
-        groupState.offset = matrix * (groupState.offset - center) + center;
-        
-        haveGroupStatesScaled[combIndex] = true;
+        if (changed)
+            markGroupStateDirty(combIndex);
     }
 }
 
@@ -238,13 +274,30 @@ void GroupManager::toggleGroup(GroupID groupId, bool visible) {
 }
 
 void GroupManager::resetGroupStates() {
+    u32 index = 0;
     for (auto& groupState : getGroupStates()) {
         groupState.positionalTransform = glm::identity<glm::mat2>();
         groupState.localTransform = glm::identity<glm::mat2>();
         groupState.offset = glm::vec2(0, 0);
+        markGroupStateDirty(index++);
     }
     disabledGroups.clear();
     std::fill(haveGroupStatesScaled.begin(), haveGroupStatesScaled.end(), false);
+}
+
+void GroupManager::markGroupStateDirty(GroupCombinationIndex index) {
+    if (index >= groupStateDirtyMask.size() || groupStateDirtyMask[index])
+        return;
+    groupStateDirtyMask[index] = true;
+    dirtyGroupStateIndices.push_back(index);
+}
+
+void GroupManager::clearDirtyGroupStateIndices() {
+    for (auto index : dirtyGroupStateIndices) {
+        if (index < groupStateDirtyMask.size())
+            groupStateDirtyMask[index] = false;
+    }
+    dirtyGroupStateIndices.clear();
 }
 
 void GroupManager::addGroupCombination(GroupCombination& comb, GroupCombinationIndex index) {

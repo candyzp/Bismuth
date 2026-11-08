@@ -119,10 +119,6 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
     }
 
     void processMoveActions() {
-#ifdef GEODE_IS_IOS
-        GJBaseGameLayer::processMoveActions();
-        return;
-#else
         auto renderer = Renderer::get();
         if (renderer == nullptr) {
             GJBaseGameLayer::processMoveActions();
@@ -145,14 +141,9 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
             if (objects)
                 moveObjects(objects, node->m_unk090, node->m_unk098, 0);
         }
-#endif
     }
 
     void processRotationActions() {
-#ifdef GEODE_IS_IOS
-        GJBaseGameLayer::processRotationActions();
-        return;
-#else
         auto renderer = Renderer::get();
         if (renderer == nullptr) {
             GJBaseGameLayer::processRotationActions();
@@ -200,14 +191,9 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
         }
 
         GJBaseGameLayer::processRotationActions();
-#endif
     }
 
     void processFollowActions() {
-#ifdef GEODE_IS_IOS
-        GJBaseGameLayer::processFollowActions();
-        return;
-#else
         auto renderer = Renderer::get();
         if (renderer == nullptr) {
             GJBaseGameLayer::processFollowActions();
@@ -233,16 +219,13 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
         }
 
         GJBaseGameLayer::processFollowActions();
-#endif
     }
 
     void toggleGroup(int id, bool activate) {
         GJBaseGameLayer::toggleGroup(id, activate);
-#ifndef GEODE_IS_IOS
         auto renderer = Renderer::get();
         if (renderer)
             renderer->getGroupManager().toggleGroup(id, activate);
-#endif
     }
 
     void optimizeMoveGroups() {

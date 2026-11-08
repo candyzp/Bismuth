@@ -1,6 +1,7 @@
 #ifdef GEODE_IS_IOS
 
 #include "ResolvedStateLayer.hpp"
+#include "../GroupManager.hpp"
 #include "DirtyRanges.hpp"
 #include "../../ObjectUtils.hpp"
 
@@ -14,7 +15,7 @@
 using namespace geode::prelude;
 
 namespace {
-constexpr usize OBJECT_TEXELS_PER_STATE = 2;
+constexpr usize OBJECT_TEXELS_PER_STATE = 3;
 constexpr usize SPRITE_TEXELS_PER_STATE = 2;
 
 bool isSimpleSpikeRoot(GameObject* object) {
@@ -104,8 +105,13 @@ void ResolvedStateLayer::destroyTextures() {
         DataTexture::destroy(objectStateTexture);
     if (spriteStateTexture)
         DataTexture::destroy(spriteStateTexture);
+    if (groupStateTexture)
+        DataTexture::destroy(groupStateTexture);
     objectStateTexture = nullptr;
     spriteStateTexture = nullptr;
+    groupStateTexture = nullptr;
+    groupStateTexels.clear();
+    groupStateUploadCurrent = false;
     uploadsCurrent = false;
 }
 
@@ -152,13 +158,13 @@ ResolvedStateLayer::SafetyClass ResolvedStateLayer::classifyObject(
         const auto batch = object->getBatchNode();
         const bool inheritedNodeTransform =
             batch && object->getParent() && object->getParent() != batch;
+        const bool groupDriven = object->m_groupCount > 0;
         const bool dynamic =
             object->m_classType == GameObjectClassType::Animated ||
             object->getHasSyncedAnimation() ||
-            object->m_groupCount > 0 ||
-            object->getHasRotateAction() ||
             object->m_usesAudioScale ||
-            inheritedNodeTransform;
+            inheritedNodeTransform ||
+            (object->getHasRotateAction() && !groupDriven);
 
         if (outSprites.empty())
             return SafetyClass::StockOnly;
@@ -240,10 +246,11 @@ ResolvedStateLayer::SafetyClass ResolvedStateLayer::classifyObject(
     const auto batch = object->getBatchNode();
     const bool inheritedNodeTransform =
         batch && object->getParent() && object->getParent() != batch;
+    const bool groupDriven = object->m_groupCount > 0;
     const bool dynamic =
-        object->m_groupCount > 0 ||
-        object->getHasRotateAction() || object->m_usesAudioScale ||
-        inheritedNodeTransform;
+        object->m_usesAudioScale ||
+        inheritedNodeTransform ||
+        (object->getHasRotateAction() && !groupDriven);
 
     return dynamic ? SafetyClass::DynamicSafe : SafetyClass::StaticSafe;
 }
@@ -358,7 +365,7 @@ ResolvedStateLayer::SpriteState ResolvedStateLayer::captureFrameSpriteState(
 
 void ResolvedStateLayer::packObjectState(usize index, const ObjectState& state, SafetyClass) {
     const usize base = index * OBJECT_TEXELS_PER_STATE;
-    if (base + 1 >= objectTexels.size())
+    if (index >= objects.size() || base + 2 >= objectTexels.size())
         return;
 
     objectTexels[base + 0] = {
@@ -372,6 +379,14 @@ void ResolvedStateLayer::packObjectState(usize index, const ObjectState& state, 
         state.transform.ty,
         state.vertexZ,
         state.visible ? 1.f : 0.f
+    };
+
+    const auto& record = objects[index];
+    objectTexels[base + 2] = {
+        record.startPosition.x,
+        record.startPosition.y,
+        static_cast<float>(record.groupCombinationIndex),
+        record.groupFlags
     };
 }
 
@@ -435,9 +450,10 @@ bool ResolvedStateLayer::spriteUVChanged(const SpriteState& a, const SpriteState
            a.flipY != b.flipY;
 }
 
-bool ResolvedStateLayer::init(PlayLayer* playLayer) {
+bool ResolvedStateLayer::init(PlayLayer* playLayer, GroupManager* groups) {
     destroyTextures();
     layer = playLayer;
+    groupManager = groups;
     objects.clear();
     sprites.clear();
     spriteIndexByPointer.clear();
@@ -452,7 +468,7 @@ bool ResolvedStateLayer::init(PlayLayer* playLayer) {
     activeSpriteIndices.clear();
     stats = {};
 
-    if (!layer || !layer->m_objects)
+    if (!layer || !layer->m_objects || !groupManager || !groupManager->isReady())
         return false;
 
     std::vector<Ref<GameObject>> initObjectRetains;
@@ -508,6 +524,16 @@ bool ResolvedStateLayer::init(PlayLayer* playLayer) {
         ObjectRecord record;
         record.object = object;
         record.safety = safety;
+        record.startPosition = ccPointToGLM(object->m_startPosition);
+        record.groupCombinationIndex =
+            groupManager->getGroupCombinationIndexForObject(object);
+        if (safety == SafetyClass::StaticSafe && object->m_groupCount > 0) {
+            // Bit 0 enables shared positional state; bit 1 applies the group-local
+            // transform for non-Solid objects, matching the desktop shader.
+            record.groupFlags = 1.f;
+            if (object->m_objectType != GameObjectType::Solid)
+                record.groupFlags += 2.f;
+        }
         record.firstSprite = sprites.size();
         record.spriteCount = objectSprites.size();
 
@@ -560,6 +586,9 @@ bool ResolvedStateLayer::init(PlayLayer* playLayer) {
 
     objectTexels.resize(objects.size() * OBJECT_TEXELS_PER_STATE);
     spriteTexels.resize(sprites.size() * SPRITE_TEXELS_PER_STATE);
+    groupStateTexels.resize(
+        static_cast<usize>(groupManager->getGroupCombinationCount()) * 3
+    );
     spriteValidationEpoch.assign(sprites.size(), 0);
     spriteValidationResult.assign(sprites.size(), 0);
 
@@ -573,8 +602,13 @@ bool ResolvedStateLayer::init(PlayLayer* playLayer) {
         spriteTexels.size(),
         DataTexture::Type::FloatRGBA
     );
+    groupStateTexture = DataTexture::create(
+        "Resolved group-combination state",
+        groupStateTexels.size(),
+        DataTexture::Type::FloatRGBA
+    );
 
-    if (!objectStateTexture || !spriteStateTexture) {
+    if (!objectStateTexture || !spriteStateTexture || !groupStateTexture) {
         log::warn("Bismuth iOS resolved-state textures unavailable; GPU assist cannot consume state");
         destroyTextures();
         return false;
@@ -618,10 +652,91 @@ void ResolvedStateLayer::resync() {
 
     const bool objectsUploaded = objectStateTexture->upload(objectTexels.data(), objectTexels.size());
     const bool spritesUploaded = spriteStateTexture->upload(spriteTexels.data(), spriteTexels.size());
-    uploadsCurrent = objectsUploaded && spritesUploaded;
-    fullUploadPending = !uploadsCurrent;
+    groupStateUploadCurrent = syncGroupStateTexture();
+    uploadsCurrent = objectsUploaded && spritesUploaded && groupStateUploadCurrent;
+    fullUploadPending = !objectsUploaded || !spritesUploaded;
     dirtyObjectRecords.clear();
     dirtySpriteRecords.clear();
+}
+
+bool ResolvedStateLayer::syncGroupStateTexture() {
+    if (!groupManager || !groupStateTexture)
+        return groupStateUploadCurrent = false;
+
+    const auto states = groupManager->getGroupStates();
+    if (states.size() * 3 != groupStateTexels.size())
+        return groupStateUploadCurrent = false;
+
+    const auto& dirtyIndices = groupManager->getDirtyGroupCombinationIndices();
+    if (dirtyIndices.empty())
+        return groupStateUploadCurrent = true;
+
+    std::vector<u32> sortedIndices(dirtyIndices.begin(), dirtyIndices.end());
+    std::sort(sortedIndices.begin(), sortedIndices.end());
+    sortedIndices.erase(
+        std::unique(sortedIndices.begin(), sortedIndices.end()),
+        sortedIndices.end()
+    );
+
+    for (u32 groupIndex : sortedIndices) {
+        if (groupIndex >= states.size())
+            return groupStateUploadCurrent = false;
+
+        const auto& state = states[groupIndex];
+        const usize base = static_cast<usize>(groupIndex) * 3;
+        groupStateTexels[base + 0] = {
+            state.positionalTransform[0][0],
+            state.positionalTransform[0][1],
+            state.positionalTransform[1][0],
+            state.positionalTransform[1][1]
+        };
+        groupStateTexels[base + 1] = {
+            state.localTransform[0][0],
+            state.localTransform[0][1],
+            state.localTransform[1][0],
+            state.localTransform[1][1]
+        };
+        groupStateTexels[base + 2] = {
+            state.offset.x,
+            state.offset.y,
+            state.opacity,
+            0.f
+        };
+    }
+
+    std::vector<DataTexture::Range> ranges;
+    ranges.reserve(std::min<usize>(sortedIndices.size(), 48));
+    constexpr usize MAX_GROUP_STATE_RANGES = 48;
+    constexpr usize COALESCE_GAP_GROUPS = 2;
+
+    usize rangeStart = static_cast<usize>(sortedIndices.front()) * 3;
+    usize rangeEnd = rangeStart + 3;
+    for (usize i = 1; i < sortedIndices.size(); ++i) {
+        const usize nextStart = static_cast<usize>(sortedIndices[i]) * 3;
+        if (nextStart <= rangeEnd + COALESCE_GAP_GROUPS * 3) {
+            // The mirror already contains correct values for unchanged groups,
+            // so small gaps can be uploaded together to avoid many tiny GL calls.
+            rangeEnd = nextStart + 3;
+            continue;
+        }
+        ranges.push_back({rangeStart, rangeEnd - rangeStart});
+        rangeStart = nextStart;
+        rangeEnd = nextStart + 3;
+    }
+    ranges.push_back({rangeStart, rangeEnd - rangeStart});
+
+    if (ranges.size() > MAX_GROUP_STATE_RANGES) {
+        ranges.clear();
+        ranges.push_back({0, groupStateTexels.size()});
+    }
+
+    if (!groupStateTexture->uploadRanges(
+        groupStateTexels.data(), groupStateTexels.size(), ranges
+    ))
+        return groupStateUploadCurrent = false;
+
+    groupManager->clearDirtyGroupStateIndices();
+    return groupStateUploadCurrent = true;
 }
 
 bool ResolvedStateLayer::canDrawSprite(cocos2d::CCSprite* sprite) {
@@ -868,7 +983,7 @@ void ResolvedStateLayer::update(bool detailedProbe) {
         spritesUploaded = spriteStateTexture->upload(spriteTexels.data(), spriteTexels.size());
         fullUploadPending = !(objectsUploaded && spritesUploaded);
     }
-    uploadsCurrent = objectsUploaded && spritesUploaded;
+    uploadsCurrent = objectsUploaded && spritesUploaded && groupStateUploadCurrent;
 }
 
 #endif

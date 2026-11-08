@@ -8,7 +8,7 @@ int main() {
     state.sprites.push_back({}); state.sprites[0].sprite=&object;
     state.sprites[0].geometry=state.captureSpriteState(&object);
     state.spriteIndexByPointer.emplace(&object,0);
-    state.objectTexels.resize(2); state.spriteTexels.resize(3);
+    state.objectTexels.resize(3); state.spriteTexels.resize(3);
     assert(state.canDrawSprite(&object));
     {
         GameObject solid;
@@ -73,7 +73,7 @@ int main() {
 
         decoration.m_groupCount = 1;
         assert(state.classifyObject(&decoration, collected, diagnostics) ==
-            ResolvedStateLayer::SafetyClass::DynamicSafe);
+            ResolvedStateLayer::SafetyClass::StaticSafe);
         decoration.m_groupCount = 0;
         decoration.synced = true;
         assert(state.classifyObject(&decoration, collected, diagnostics) ==
@@ -180,9 +180,13 @@ int main() {
     object.parent=&object;
     object.transform=staticBaseline.transform;
 
+    state.objects[0].startPosition = {123.f, 456.f};
+    state.objects[0].groupCombinationIndex = 17;
+    state.objects[0].groupFlags = 3.f;
     auto next=state.captureObjectState(&object);
     state.packObjectState(0,next,ResolvedStateLayer::SafetyClass::DynamicSafe);
-    auto a=state.objectTexels[0], b=state.objectTexels[1];
+    auto a=state.objectTexels[0], b=state.objectTexels[1], c=state.objectTexels[2];
+    assert(c.x == 123.f && c.y == 456.f && c.z == 17.f && c.w == 3.f);
     assert(a.x==0.7f && a.y==1.3f && a.z==-0.2f && a.w==-2.f);
     assert(b.x==84000.f && b.y==700.f && b.z==9 && b.w==1);
     auto old=next; next.transform.c+=0.000001f;
@@ -256,9 +260,10 @@ int main() {
         // A deactivated sprite can leave the active set before a failed hide
         // upload retries. Empty active vectors must not strand that dirty state.
         ResolvedStateLayer pending;
-        DataTexture objects, sprites;
+        DataTexture objects, sprites, groups;
         pending.objectStateTexture=&objects; pending.spriteStateTexture=&sprites;
-        pending.objectTexels.resize(2); pending.spriteTexels.resize(2);
+        pending.groupStateTexture=&groups; pending.groupStateUploadCurrent=true;
+        pending.objectTexels.resize(3); pending.spriteTexels.resize(2);
         pending.dirtyObjectRecords={0}; pending.uploadsCurrent=true;
         objects.fail=true; pending.update(true);
         assert(!pending.isGPUStateReady() && pending.dirtyObjectRecords.size()==1);

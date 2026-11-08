@@ -118,10 +118,25 @@ public:
     }
 
     inline std::span<GroupCombinationState> getGroupStates() {
+        if (!groupStates)
+            return {};
         return { groupStates, groupStates + getGroupCombinationCount() };
     }
 
-    inline bool hasGroupStateScaled(i32 index) { return haveGroupStatesScaled[index]; }
+    inline bool isReady() const {
+        return groupStates != nullptr && groupCombinationCount > 0;
+    }
+
+    inline const std::vector<GroupCombinationIndex>& getDirtyGroupCombinationIndices() const {
+        return dirtyGroupStateIndices;
+    }
+
+    void clearDirtyGroupStateIndices();
+
+    inline bool hasGroupStateScaled(i32 index) {
+        return index >= 0 && static_cast<usize>(index) < haveGroupStatesScaled.size() &&
+            haveGroupStatesScaled[index];
+    }
 
     void prepareGroupStateBuffer();
 
@@ -144,24 +159,27 @@ public:
 
 private:
     void addGroupCombination(GroupCombination& comb, GroupCombinationIndex index);
+    void markGroupStateDirty(GroupCombinationIndex index);
 
 private:
     Renderer& renderer;
 
     // GroupCombinationState struct can be found in resources/shaders/shared.h
     // std::vector<GroupCombinationState> groupStates;
-    GroupCombinationState* groupStates;
+    GroupCombinationState* groupStates = nullptr;
     Buffer* groupStateBuffer = nullptr;
 
     std::vector<bool> haveGroupStatesScaled;
+    std::vector<bool> groupStateDirtyMask;
+    std::vector<GroupCombinationIndex> dirtyGroupStateIndices;
 
-    u32 groupCombinationCount;
+    u32 groupCombinationCount = 0;
     std::map<GroupCombination, GroupCombinationIndex> groupCombinationIndicies;
 
-    u32 transformCombinationCount;
+    u32 transformCombinationCount = 0;
     std::map<GroupCombination, u32> transformCombinationIndicies;
 
-    u32 alphaIndiciesCount;
+    u32 alphaIndiciesCount = 0;
     std::map<GroupCombination, u32> alphaIndicies;
 
     std::vector<u32> alphaIndiciesPerGroupCombinationIndex;

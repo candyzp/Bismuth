@@ -93,7 +93,7 @@ bool StandaloneAssistBatch::initWithCandidates(
 
     GLint vertexTextureUnits = 0;
     glGetIntegerv(GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS, &vertexTextureUnits);
-    if (vertexTextureUnits < 2)
+    if (vertexTextureUnits < 4)
         return false;
 
     if (!buildGeometry(candidates))
@@ -371,7 +371,8 @@ bool StandaloneAssistBatch::drawRangeSpan(usize firstRange, usize rangeCount) {
 
     auto objectStateTexture = resolvedState->getObjectStateTexture();
     auto spriteStateTexture = resolvedState->getSpriteStateTexture();
-    if (!objectStateTexture || !spriteStateTexture)
+    auto groupStateTexture = resolvedState->getGroupStateTexture();
+    if (!objectStateTexture || !spriteStateTexture || !groupStateTexture)
         return false;
 
     kmMat4 matrixP;
@@ -386,7 +387,7 @@ bool StandaloneAssistBatch::drawRangeSpan(usize firstRange, usize rangeCount) {
     GLint previousIBO = 0;
     GLint previousProgram = 0;
     GLint previousActiveTexture = GL_TEXTURE0;
-    GLint previousTextures[3] = {0, 0, 0};
+    GLint previousTextures[4] = {0, 0, 0, 0};
     GLint previousBlendSrcRGB = GL_SRC_ALPHA;
     GLint previousBlendDstRGB = GL_ONE_MINUS_SRC_ALPHA;
     GLint previousBlendSrcAlpha = GL_SRC_ALPHA;
@@ -409,7 +410,7 @@ bool StandaloneAssistBatch::drawRangeSpan(usize firstRange, usize rangeCount) {
     glGetBooleanv(GL_DEPTH_WRITEMASK, &previousDepthMask);
     glGetIntegerv(GL_STENCIL_WRITEMASK, &previousStencilMask);
 
-    for (i32 unit = 0; unit < 3; ++unit) {
+    for (i32 unit = 0; unit < 4; ++unit) {
         glActiveTexture(GL_TEXTURE0 + unit);
         glGetIntegerv(GL_TEXTURE_BINDING_2D, &previousTextures[unit]);
     }
@@ -428,6 +429,10 @@ bool StandaloneAssistBatch::drawRangeSpan(usize firstRange, usize rangeCount) {
     spriteStateTexture->bind(2);
     shader->setInt("u_spriteStateTexture", 2);
     shader->setVec2("u_spriteStateTextureSize", spriteStateTexture->getSize());
+
+    groupStateTexture->bind(3);
+    shader->setInt("u_groupStateTexture", 3);
+    shader->setVec2("u_groupStateTextureSize", groupStateTexture->getSize());
 
     glBindVertexArray(vao);
     glEnable(GL_BLEND);
@@ -474,7 +479,7 @@ bool StandaloneAssistBatch::drawRangeSpan(usize firstRange, usize rangeCount) {
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, (u32)previousIBO);
     glUseProgram((u32)previousProgram);
 
-    for (i32 unit = 0; unit < 3; ++unit) {
+    for (i32 unit = 0; unit < 4; ++unit) {
         glActiveTexture(GL_TEXTURE0 + unit);
         glBindTexture(GL_TEXTURE_2D, (u32)previousTextures[unit]);
     }

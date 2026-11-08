@@ -203,8 +203,14 @@ bool Renderer::init(PlayLayer* playLayer) {
     colorChannelBuffer = state->colorChannels.get();
     std::memset(colorChannelBuffer, 0, sizeof(ColorChannelBuffer));
 
+    // Build the compact group-combination table once for this level. The GLES2
+    // assist shader consumes the same shared transform model as desktop Bismuth.
+    groupManager.initWithObjects(layer->m_objects);
+    groupManager.resetGroupStates();
+    groupManager.prepareGroupStateBuffer();
+
     state->resolvedState = std::make_unique<ResolvedStateLayer>();
-    if (!state->resolvedState->init(layer)) {
+    if (!state->resolvedState->init(layer, &groupManager)) {
         log::warn("Bismuth iOS resolved-state layer unavailable; GPU assist cannot initialize");
     }
 
@@ -767,6 +773,9 @@ void Renderer::prepareGPUFrame() {
     // Called from render traversal, after stock scheduler/actions/physics. One
     // state capture per displayed frame, independent of simulation substeps.
     if (state->resolvedState) {
+        groupManager.prepareGroupStateBuffer();
+        if (!state->resolvedState->syncGroupStateTexture())
+            log::warn("Bismuth iOS group-state texture upload failed; keeping the last uploaded state");
         state->resolvedState->update(!state->ownedSprites.empty());
         state->resolvedState->finishEventFrame();
     }
@@ -980,6 +989,8 @@ void Renderer::setEnabled(bool value) {
 
 void Renderer::reset() {
     AreaVisualState::reset();
+    groupManager.resetGroupStates();
+    groupManager.prepareGroupStateBuffer();
     if (auto state = iosState(this); state && state->resolvedState) {
         state->resolvedState->resync();
     }

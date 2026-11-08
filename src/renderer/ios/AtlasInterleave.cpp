@@ -62,6 +62,8 @@ struct AssistUniformLocations {
     GLint objectStateTextureSize = -1;
     GLint spriteStateTexture = -1;
     GLint spriteStateTextureSize = -1;
+    GLint groupStateTexture = -1;
+    GLint groupStateTextureSize = -1;
     GLint spriteSheetTexture = -1;
 };
 
@@ -70,7 +72,7 @@ struct SavedGLState {
     GLint elementArrayBuffer = 0;
     GLint program = 0;
     GLint activeTexture = GL_TEXTURE0;
-    GLint textures[3] = {0, 0, 0};
+    GLint textures[4] = {0, 0, 0, 0};
 };
 
 struct BatchIndexCache {
@@ -273,7 +275,7 @@ static SavedGLState captureGLState() {
     glGetIntegerv(GL_ELEMENT_ARRAY_BUFFER_BINDING, &saved.elementArrayBuffer);
     glGetIntegerv(GL_CURRENT_PROGRAM, &saved.program);
     glGetIntegerv(GL_ACTIVE_TEXTURE, &saved.activeTexture);
-    for (i32 unit = 0; unit < 3; ++unit) {
+    for (i32 unit = 0; unit < 4; ++unit) {
         glActiveTexture(GL_TEXTURE0 + unit);
         glGetIntegerv(GL_TEXTURE_BINDING_2D, &saved.textures[unit]);
     }
@@ -285,7 +287,7 @@ static void restoreGLState(const SavedGLState& saved) {
     glBindVertexArray(static_cast<u32>(saved.vao));
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, static_cast<u32>(saved.elementArrayBuffer));
     glUseProgram(static_cast<u32>(saved.program));
-    for (i32 unit = 0; unit < 3; ++unit) {
+    for (i32 unit = 0; unit < 4; ++unit) {
         glActiveTexture(GL_TEXTURE0 + unit);
         glBindTexture(GL_TEXTURE_2D, static_cast<u32>(saved.textures[unit]));
     }
@@ -301,6 +303,8 @@ static AssistUniformLocations queryAssistUniformLocations(Shader* shader) {
     locations.objectStateTextureSize = static_cast<GLint>(shader->location("u_objectStateTextureSize"));
     locations.spriteStateTexture = static_cast<GLint>(shader->location("u_spriteStateTexture"));
     locations.spriteStateTextureSize = static_cast<GLint>(shader->location("u_spriteStateTextureSize"));
+    locations.groupStateTexture = static_cast<GLint>(shader->location("u_groupStateTexture"));
+    locations.groupStateTextureSize = static_cast<GLint>(shader->location("u_groupStateTextureSize"));
     locations.spriteSheetTexture = static_cast<GLint>(shader->location("u_spriteSheetTexture"));
     return locations;
 }
@@ -842,7 +846,8 @@ bool AtlasInterleaveRegistry::drawBatch(
         }
         auto objectStateTexture = owner.resolvedState->getObjectStateTexture();
         auto spriteStateTexture = owner.resolvedState->getSpriteStateTexture();
-        if (!objectStateTexture || !spriteStateTexture) {
+        auto groupStateTexture = owner.resolvedState->getGroupStateTexture();
+        if (!objectStateTexture || !spriteStateTexture || !groupStateTexture) {
             if (gpuStateActive)
                 restoreStockState();
             return fail("state-texture-missing", static_cast<int>(run.firstSlot), static_cast<u32>(totalQuads));
@@ -867,6 +872,10 @@ bool AtlasInterleaveRegistry::drawBatch(
             const auto spriteTextureSize = spriteStateTexture->getSize();
             glUniform2f(configuredLocations.spriteStateTextureSize,
                 spriteTextureSize.x, spriteTextureSize.y);
+            glUniform1i(configuredLocations.groupStateTexture, 3);
+            const auto groupTextureSize = groupStateTexture->getSize();
+            glUniform2f(configuredLocations.groupStateTextureSize,
+                groupTextureSize.x, groupTextureSize.y);
             glUniform1i(configuredLocations.spriteSheetTexture, 0);
             configuredShader = owner.shader;
             configuredResolvedState = owner.resolvedState;
@@ -875,6 +884,7 @@ bool AtlasInterleaveRegistry::drawBatch(
         if (!gpuStateActive || activeResolvedState != owner.resolvedState) {
             objectStateTexture->bind(1);
             spriteStateTexture->bind(2);
+            groupStateTexture->bind(3);
             glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_2D, texture->getName());
             activeResolvedState = owner.resolvedState;

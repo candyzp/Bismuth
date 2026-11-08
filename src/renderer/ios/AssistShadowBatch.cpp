@@ -98,9 +98,9 @@ bool AssistShadowBatch::initWithState(
 
     GLint vertexTextureUnits = 0;
     glGetIntegerv(GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS, &vertexTextureUnits);
-    if (vertexTextureUnits < 2) {
+    if (vertexTextureUnits < 4) {
         log::warn(
-            "Bismuth iOS assist batch needs 2 vertex texture units; device reports {}",
+            "Bismuth iOS assist batch needs 4 vertex texture units; device reports {}",
             vertexTextureUnits
         );
         return false;

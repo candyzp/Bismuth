@@ -10,8 +10,10 @@ attribute float a_spriteStateIndex;
 
 uniform highp sampler2D u_objectStateTexture;
 uniform highp sampler2D u_spriteStateTexture;
+uniform highp sampler2D u_groupStateTexture;
 uniform vec2 u_objectStateTextureSize;
 uniform vec2 u_spriteStateTextureSize;
+uniform vec2 u_groupStateTextureSize;
 uniform mat4 u_mvp;
 
 varying vec2 t_texCoord;
@@ -25,9 +27,10 @@ vec4 fetchData(highp sampler2D textureSampler, vec2 textureSize, float index) {
 
 void main() {
     float objectIndex = floor(a_objectStateIndex + 0.5);
-    float objectBase = objectIndex * 2.0;
+    float objectBase = objectIndex * 3.0;
     vec4 o0 = fetchData(u_objectStateTexture, u_objectStateTextureSize, objectBase + 0.0);
     vec4 o1 = fetchData(u_objectStateTexture, u_objectStateTextureSize, objectBase + 1.0);
+    vec4 o2 = fetchData(u_objectStateTexture, u_objectStateTextureSize, objectBase + 2.0);
 
     // Stock affine matrix includes separate axis rotations, skew and anchor.
     // o0 = a,b,c,d; o1 = tx,ty,vertexZ,visibility.
@@ -38,10 +41,34 @@ void main() {
         return;
     }
 
-    vec2 worldPosition = vec2(
-        a_localPosition.x * o0.x + a_localPosition.y * o0.z + o1.x,
-        a_localPosition.x * o0.y + a_localPosition.y * o0.w + o1.y
-    );
+    vec2 worldPosition;
+    mat2 rootTransform = mat2(o0.xy, o0.zw);
+    float groupFlags = floor(o2.w + 0.5);
+    bool groupManaged = mod(groupFlags, 2.0) > 0.5;
+    if (groupManaged) {
+        float groupBase = floor(o2.z + 0.5) * 3.0;
+        vec4 g0 = fetchData(u_groupStateTexture, u_groupStateTextureSize, groupBase + 0.0);
+        vec4 g1 = fetchData(u_groupStateTexture, u_groupStateTextureSize, groupBase + 1.0);
+        vec4 g2 = fetchData(u_groupStateTexture, u_groupStateTextureSize, groupBase + 2.0);
+
+        mat2 positionalTransform = mat2(g0.xy, g0.zw);
+        mat2 groupLocalTransform = mat2(g1.xy, g1.zw);
+
+        // Keep the root's initial affine matrix resident. Split its translation
+        // from the authored start position so Cocos' CPU-side group movement is
+        // not sampled and then applied a second time by this shader.
+        vec2 localOffset = rootTransform * a_localPosition + (o1.xy - o2.xy);
+        bool applyLocalTransform = mod(floor(groupFlags / 2.0), 2.0) > 0.5;
+        if (applyLocalTransform)
+            localOffset = groupLocalTransform * localOffset;
+
+        worldPosition = positionalTransform * o2.xy + g2.xy + localOffset;
+    } else {
+        worldPosition = vec2(
+            a_localPosition.x * o0.x + a_localPosition.y * o0.z + o1.x,
+            a_localPosition.x * o0.y + a_localPosition.y * o0.w + o1.y
+        );
+    }
     gl_Position = u_mvp * vec4(worldPosition, o1.z, 1.0);
     t_texCoord = a_texCoord;
 

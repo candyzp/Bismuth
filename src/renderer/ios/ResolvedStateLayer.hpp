@@ -10,6 +10,8 @@
 #include <unordered_set>
 #include <vector>
 
+class GroupManager;
+
 class ResolvedStateLayer {
 public:
     enum class SafetyClass : u8 {
@@ -69,8 +71,9 @@ public:
     ResolvedStateLayer();
     ~ResolvedStateLayer();
 
-    bool init(PlayLayer* layer);
+    bool init(PlayLayer* layer, GroupManager* groups);
     void resync();
+    bool syncGroupStateTexture();
     void update(bool detailedProbe);
     void beginFrameValidation();
     bool canDrawSprite(cocos2d::CCSprite* sprite);
@@ -161,11 +164,13 @@ public:
     bool isForcedDecorationSprite(cocos2d::CCSprite* sprite) const;
 
     inline bool isGPUStateReady() const {
-        return objectStateTexture != nullptr && spriteStateTexture != nullptr && uploadsCurrent;
+        return objectStateTexture != nullptr && spriteStateTexture != nullptr &&
+            groupStateTexture != nullptr && uploadsCurrent && groupStateUploadCurrent;
     }
 
     inline DataTexture* getObjectStateTexture() const { return objectStateTexture; }
     inline DataTexture* getSpriteStateTexture() const { return spriteStateTexture; }
+    inline DataTexture* getGroupStateTexture() const { return groupStateTexture; }
 
 private:
     bool uploadsCurrent = false;
@@ -196,6 +201,9 @@ private:
         GameObject* object = nullptr;
         SafetyClass safety = SafetyClass::StockOnly;
         ObjectState state;
+        glm::vec2 startPosition = {0.f, 0.f};
+        u32 groupCombinationIndex = 0;
+        float groupFlags = 0.f;
         usize firstSprite = 0;
         usize spriteCount = 0;
     };
@@ -255,12 +263,14 @@ private:
 
 private:
     PlayLayer* layer = nullptr;
+    GroupManager* groupManager = nullptr;
 
     std::vector<ObjectRecord> objects;
     std::vector<SpriteRecord> sprites;
     std::vector<ShadowCandidate> shadowCandidates;
     std::vector<glm::vec4> objectTexels;
     std::vector<glm::vec4> spriteTexels;
+    std::vector<glm::vec4> groupStateTexels;
     std::unordered_map<cocos2d::CCSprite*, usize> spriteIndexByPointer;
 
     // Live-geometry safety checks can be queried several times while one stock
@@ -288,6 +298,8 @@ private:
 
     DataTexture* objectStateTexture = nullptr;
     DataTexture* spriteStateTexture = nullptr;
+    DataTexture* groupStateTexture = nullptr;
+    bool groupStateUploadCurrent = false;
 
     Stats stats;
 };
