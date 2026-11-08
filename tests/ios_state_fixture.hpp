@@ -45,7 +45,7 @@ struct CCNode {
     CCNode* getParent(){return parent;}
     CCArray* getChildren(){return &children;}
     int getZOrder(){return zOrder;}
-    CCAffineTransform nodeToParentTransform(){return transform;}
+    virtual CCAffineTransform nodeToParentTransform(){return transform;}
 };
 struct CCSpriteBatchNode : CCNode {};
 struct CCSprite : CCNode {
@@ -83,7 +83,7 @@ struct GameObject : cocos2d::CCSprite {
     std::vector<cocos2d::CCSprite*> unpackedSprites;
     float vertexZ=0;
     cocos2d::CCArray* getChildren(){return &children;}
-    cocos2d::CCAffineTransform nodeToParentTransform(){return transform;}
+    cocos2d::CCAffineTransform nodeToParentTransform() override {return transform;}
     float getVertexZ(){return vertexZ;}
 };
 struct PlayLayer {};
