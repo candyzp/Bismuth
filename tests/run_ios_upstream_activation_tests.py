@@ -49,11 +49,29 @@ require("CVOpenGLESTextureCacheFlush" in metal and
 require("updateMetalCulling()" in gpu and "getPreCulledSprites()" in gpu and
         "getGroupStates()" in gpu and "u_metalVisibilityTexture" in gpu,
         "the active renderer must feed group/sprite inputs and bind the Metal mask")
+metal_cull_start = gpu.index("bool IOSGPURenderer::updateMetalCulling()")
+metal_cull_end = gpu.index("void IOSGPURenderer::drawLayer", metal_cull_start)
+metal_cull = gpu[metal_cull_start:metal_cull_end]
+require("metalInterop.isReady()" in metal_cull and
+        "metalInterop.selfTestPassed()" in metal_cull and
+        "fail(" in metal_cull and "return false;" in metal_cull and
+        "metalInterop.reset()" not in metal_cull and
+        "using GLES culling" not in metal_cull,
+        "Metal culling must fail closed on initialization, scheduler, and dispatch errors")
+require("using GLES culling" not in gpu and "GLES fallback" not in gpu,
+        "no runtime code or status label may silently advertise a GLES culling fallback")
+metal_init_start = gpu.index("const usize spriteCount=sceneData.getObjectBatch().getSpriteCount();")
+metal_init_end = gpu.index("updateStartupDiagnostic(\n        \"BISMUTH iOS GPU STARTUP\\nScene extraction/state tables: PASS", metal_init_start)
+metal_init = gpu[metal_init_start:metal_init_end]
+require("fail(" in metal_init and "metalInterop.initialize(" in metal_init and
+        "metalInterop.runSelfTest(" in metal_init,
+        "Metal initialization and self-test failures must fail renderer initialization")
 vertex_shader=(ROOT/"resources/shaders/ios_upstream/object.vert").read_text()
-require("u_useMetalVisibility" in vertex_shader and
-        "texture2D(u_metalVisibilityTexture,maskUV)" in vertex_shader.replace(" ","") and
-        "const float cullMargin" in vertex_shader,
-        "GLES must sample the Metal mask and retain its fallback culling path")
+require("u_useMetalVisibility" not in vertex_shader and
+        "cullMargin" not in vertex_shader and
+        "cameraOffset=objectPosition-u_cameraPosition" not in vertex_shader and
+        "texture2D(u_metalVisibilityTexture,maskUV)" in vertex_shader.replace(" ",""),
+        "the GLES vertex shader must sample only the Metal-produced visibility mask")
 require("metalInterop.runSelfTest(metalInteropError)" in gpu and
         "metalInterop.selfTestPassed()" in gpu,
         "the active iOS renderer must initialize and report the interop self-test")

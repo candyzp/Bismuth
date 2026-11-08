@@ -5,9 +5,9 @@
 	},
 	"id": "iliashdz.bismuth",
 	"name": "Bismuth (experimental)",
-	"version": "v0.1.9-alpha",
+	"version": "v0.1.10-alpha",
 	"developer": "IliasHDZ",
-	"description": "iOS Metal-compute visibility culling with Geometry Dash OpenGL ES shared-texture rendering.",
+	"description": "iOS Metal-only visibility culling with Geometry Dash OpenGL ES shared-texture rendering; no GLES culling fallback.",
 	"dependencies": {
 		"geode.node-ids": ">=v1.20.0"
 	},

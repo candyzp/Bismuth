@@ -330,7 +330,7 @@ void IOSGPURenderer::updateDebugOverlay() {
 
     detail += fmt::format(
         "Metal cull:{} shared GL tex:{}\n",
-        metalInterop.selfTestPassed() ? "ACTIVE" : "GLES fallback",
+        metalInterop.selfTestPassed() ? "ACTIVE" : "OFF",
         metalInterop.openGLESTextureName()
     );
 
@@ -848,17 +848,30 @@ bool IOSGPURenderer::initForPlayLayer(PlayLayer* playLayer) {
     const usize cullTextureHeight=std::max<usize>(1,(std::max<usize>(2,spriteCount)+cullTextureWidth-1)/cullTextureWidth);
     std::string metalInteropError;
     if (cullTextureHeight>static_cast<usize>(capabilities.maxTextureSize)) {
-        log::warn("Bismuth Metal visibility mask needs {} rows, exceeding GL_MAX_TEXTURE_SIZE {}",
-                  cullTextureHeight,capabilities.maxTextureSize);
-    } else if (!metalInterop.initialize(cullTextureWidth,static_cast<u32>(cullTextureHeight),metalInteropError)) {
-        log::warn("Bismuth iOS Metal culling unavailable: {}",metalInteropError);
-    } else if (!metalInterop.runSelfTest(metalInteropError)) {
-        log::warn("Bismuth iOS Metal culling self-test failed: {}",metalInteropError);
-        metalInterop.reset();
-    } else {
-        log::info("Bismuth iOS Metal sprite culling ready: {} sprites, shared GL texture {}",
-                  spriteCount,metalInterop.openGLESTextureName());
+        fail(fmt::format(
+            "Metal visibility mask needs {} rows, exceeding GL_MAX_TEXTURE_SIZE {}",
+            cullTextureHeight,
+            capabilities.maxTextureSize
+        ));
+        return false;
     }
+    if (!metalInterop.initialize(cullTextureWidth,static_cast<u32>(cullTextureHeight),metalInteropError)) {
+        fail(fmt::format(
+            "Metal culling initialization failed: {}",
+            metalInteropError.empty() ? "unknown initialization error" : metalInteropError
+        ));
+        return false;
+    }
+    if (!metalInterop.runSelfTest(metalInteropError)) {
+        metalInterop.reset();
+        fail(fmt::format(
+            "Metal culling self-test failed: {}",
+            metalInteropError.empty() ? "unknown self-test error" : metalInteropError
+        ));
+        return false;
+    }
+    log::info("Bismuth iOS Metal sprite culling ready: {} sprites, shared GL texture {}",
+              spriteCount,metalInterop.openGLESTextureName());
 
     updateStartupDiagnostic(
         "BISMUTH iOS GPU STARTUP\nScene extraction/state tables: PASS\nSprites: " +
@@ -1001,30 +1014,31 @@ bool IOSGPURenderer::refreshBlendOrder() {
 }
 
 bool IOSGPURenderer::updateMetalCulling() {
-    if (!metalInterop.selfTestPassed()) return true;
+    if (!metalInterop.isReady() || !metalInterop.selfTestPassed()) {
+        fail("Metal visibility culling is unavailable; refusing to draw without Metal results");
+        return false;
+    }
+
     const auto& batch=sceneData.getObjectBatch();
     const auto& orderedSprites=batch.getPreCulledSprites();
     const auto& inputIndices=batch.getSortedBatch().inputSpriteIndices;
     const auto groupStates=sceneData.getGroupManager().getGroupStates();
     const usize spriteCount=batch.getSpriteCount();
-    auto disable=[&](const std::string& reason) {
-        log::warn("Bismuth Metal culling disabled; using GLES culling: {}",reason);
-        metalInterop.reset();
-        metalCullInputs.clear();
-        updateDebugOverlay();
-    };
+
     if (orderedSprites.size()!=spriteCount || inputIndices.size()!=spriteCount) {
-        disable("scheduler records do not match the source sprite count");
-        return true;
+        fail("Metal culling scheduler records do not match the source sprite count");
+        return false;
     }
+
     metalCullInputs.resize(spriteCount);
     for (usize i=0;i<spriteCount;++i) {
         const u32 sourceIndex=inputIndices[i];
         const auto& sprite=orderedSprites[i];
         if (sourceIndex>=spriteCount || sprite.groupCombinationIndex>=groupStates.size()) {
-            disable("scheduler returned an invalid source sprite or group index");
-            return true;
+            fail("Metal culling scheduler returned an invalid source sprite or group index");
+            return false;
         }
+
         const auto& group=groupStates[sprite.groupCombinationIndex];
         metalCullInputs[sourceIndex]={
             sprite.startPosition.x,sprite.startPosition.y,
@@ -1033,6 +1047,7 @@ bool IOSGPURenderer::updateMetalCulling() {
             group.offset.x,group.offset.y
         };
     }
+
     const auto& camera=sceneData.getGameState();
     IOSMetalCullParameters params;
     params.cameraPositionX=camera.cameraPosition.x;
@@ -1043,10 +1058,12 @@ bool IOSGPURenderer::updateMetalCulling() {
     params.cameraUpY=camera.cameraUp.y;
     params.cameraWidth=camera.cameraSize.x;
     params.cameraHeight=camera.cameraSize.y;
+
     std::string error;
     if (!metalInterop.dispatchCulling(metalCullInputs.data(),
             static_cast<std::uint32_t>(spriteCount),params,error)) {
-        disable(error.empty()?"Metal visibility dispatch failed":error);
+        fail(error.empty() ? "Metal visibility dispatch failed" : error);
+        return false;
     }
     return true;
 }
@@ -1120,17 +1137,13 @@ void IOSGPURenderer::drawLayer(const LayerKey& key) {
         spriteSheet
     );
 
-    const bool useMetalVisibility=metalInterop.selfTestPassed();
     shader->setInt("u_metalVisibilityTexture",METAL_VISIBILITY_TEXTURE_UNIT);
-    shader->setFloat("u_useMetalVisibility",useMetalVisibility?1.f:0.f);
     shader->setVec2("u_metalVisibilityTextureSize",glm::vec2(
         static_cast<float>(metalInterop.textureWidth()),
         static_cast<float>(metalInterop.textureHeight())
     ));
-    if (useMetalVisibility) {
-        glActiveTexture(GL_TEXTURE0+METAL_VISIBILITY_TEXTURE_UNIT);
-        glBindTexture(GL_TEXTURE_2D,metalInterop.openGLESTextureName());
-    }
+    glActiveTexture(GL_TEXTURE0+METAL_VISIBILITY_TEXTURE_UNIT);
+    glBindTexture(GL_TEXTURE_2D,metalInterop.openGLESTextureName());
 
     shader->setVec2("u_objectDataTextureSize", tableLayout.objectTextureSize);
     shader->setVec2("u_groupDataTextureSize", tableLayout.groupTextureSize);
