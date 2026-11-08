@@ -88,16 +88,17 @@ void assignError(std::string& output, const char* prefix, NSError* error = nil) 
 }
 
 NSString* probeShaderSource() {
-    return @
-    "#include <metal_stdlib>\n"
-    "using namespace metal;\n"
-    "kernel void bismuthInteropProbe("
-    "    texture2d<float, access::write> output [[texture(0)]],"
-    "    uint2 gid [[thread_position_in_grid]]) {"
-    "    if (gid.x < output.get_width() && gid.y < output.get_height()) {"
-    "        output.write(float4(0.25, 0.50, 0.75, 1.0), gid);"
-    "    }"
-    "}\n";
+    return [NSString stringWithUTF8String:
+        "#include <metal_stdlib>\n"
+        "using namespace metal;\n"
+        "kernel void bismuthInteropProbe("
+        "    texture2d<float, access::write> output [[texture(0)]],"
+        "    uint2 gid [[thread_position_in_grid]]) {"
+        "    if (gid.x < output.get_width() && gid.y < output.get_height()) {"
+        "        output.write(float4(0.25, 0.50, 0.75, 1.0), gid);"
+        "    }"
+        "}\n"
+    ];
 }
 
 bool validateOpenGLESTexture(BismuthMetalInteropOwner* owner,
