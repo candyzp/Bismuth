@@ -14,6 +14,13 @@ set(CMAKE_CXX_VISIBILITY_PRESET hidden)
 
 project(Bismuth VERSION 1.0.0)
 
+# The iOS Metal/OpenGL ES bridge is implemented in Objective-C++.
+if (CMAKE_SYSTEM_NAME STREQUAL "iOS" OR IOS)
+    enable_language(OBJCXX)
+    set(CMAKE_OBJCXX_STANDARD 23)
+    set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
+endif()
+
 if (DEFINED ENV{CMAKE_C_COMPILER})
     set(CMAKE_C_COMPILER $ENV{CMAKE_C_COMPILER})
 endif()
@@ -22,6 +29,11 @@ if (DEFINED ENV{CMAKE_CXX_COMPILER})
 endif()
 
 file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS src/*.cpp)
+list(APPEND SOURCES src/renderer/ios_metal/IOSMetalInterop.mm)
+set_source_files_properties(
+    src/renderer/ios_metal/IOSMetalInterop.mm
+    PROPERTIES COMPILE_OPTIONS "-fobjc-arc"
+)
 
 add_library(${PROJECT_NAME} SHARED ${SOURCES})
 set(CMAKE_BUILD_TYPE Release)
@@ -43,11 +55,18 @@ target_link_libraries(${PROJECT_NAME} glm::glm)
 # it is not a Windows backend.
 target_include_directories(${PROJECT_NAME} BEFORE PRIVATE libs/ios-shims)
 
-find_library(OPENGLES_FRAMEWORK OpenGLES)
-if (NOT OPENGLES_FRAMEWORK)
-    message(FATAL_ERROR "OpenGLES framework not found")
-endif()
-target_link_libraries(${PROJECT_NAME} ${OPENGLES_FRAMEWORK})
+find_library(OPENGLES_FRAMEWORK OpenGLES REQUIRED)
+find_library(METAL_FRAMEWORK Metal REQUIRED)
+find_library(COREVIDEO_FRAMEWORK CoreVideo REQUIRED)
+find_library(FOUNDATION_FRAMEWORK Foundation REQUIRED)
+
+target_link_libraries(
+    ${PROJECT_NAME}
+    ${OPENGLES_FRAMEWORK}
+    ${METAL_FRAMEWORK}
+    ${COREVIDEO_FRAMEWORK}
+    ${FOUNDATION_FRAMEWORK}
+)
 
 target_include_directories(${PROJECT_NAME} PRIVATE src src/renderer)
 

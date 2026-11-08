@@ -5,7 +5,7 @@
 	},
 	"id": "iliashdz.bismuth",
 	"name": "Bismuth (experimental)",
-	"version": "v0.1.7-alpha",
+	"version": "v0.1.8-alpha",
 	"developer": "IliasHDZ",
 	"description": "iOS GPU-only GLES2 port of Bismuth\u0027s ordered-object-batch renderer architecture.",
 	"dependencies": {

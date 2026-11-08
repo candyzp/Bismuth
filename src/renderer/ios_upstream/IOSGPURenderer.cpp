@@ -327,6 +327,12 @@ void IOSGPURenderer::updateDebugOverlay() {
         lastFrameLayerVisits
     );
 
+    detail += fmt::format(
+        "Metal interop:{} shared GL tex:{}\n",
+        metalInterop.selfTestPassed() ? "PASS" : "OFF",
+        metalInterop.openGLESTextureName()
+    );
+
     updateStartupDiagnostic(status + "\n" + detail);
 }
 
@@ -822,6 +828,25 @@ bool IOSGPURenderer::initForPlayLayer(PlayLayer* playLayer) {
     if (!queryAndValidateCapabilities())
         return false;
     updateStartupDiagnostic("BISMUTH iOS GPU STARTUP\nOpenGL ES capability validation: PASS");
+
+    // Phase 1 of the Metal backend: prove that a Metal compute kernel can write
+    // an IOSurface-backed CVPixelBuffer whose texture view is also valid in the
+    // currently active Cocos OpenGL ES context. This probe runs once per level,
+    // not in the frame loop; the actual draw path remains unchanged until the
+    // compute/culling handoff is ready.
+    std::string metalInteropError;
+    if (!metalInterop.initialize(4, 4, metalInteropError)) {
+        log::warn("Bismuth iOS Metal/OpenGL ES interop unavailable: {}", metalInteropError);
+    } else if (!metalInterop.runSelfTest(metalInteropError)) {
+        log::warn("Bismuth iOS Metal/OpenGL ES interop probe failed: {}", metalInteropError);
+        metalInterop.reset();
+    } else {
+        log::info(
+            "Bismuth iOS Metal/OpenGL ES interop probe PASSED (shared GL texture {})",
+            metalInterop.openGLESTextureName()
+        );
+    }
+
     crashBreadcrumb("IOSGPURenderer::initForPlayLayer capabilities PASS; SceneData::init BEGIN");
 
     if (!sceneData.init(layer)) {

@@ -4,6 +4,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 hooks = (ROOT / "src/renderer/hooks.cpp").read_text()
+cmake = (ROOT / "CMakeLists.txt").read_text()
+metal = (ROOT / "src/renderer/ios_metal/IOSMetalInterop.mm").read_text()
+metal_header = (ROOT / "src/renderer/ios_metal/IOSMetalInterop.hpp").read_text()
 gpu = (ROOT / "src/renderer/ios_upstream/IOSGPURenderer.cpp").read_text()
 header = (ROOT / "src/renderer/ios_upstream/IOSGPURenderer.hpp").read_text()
 scene = (ROOT / "src/renderer/ios_upstream/IOSSceneData.cpp").read_text()
@@ -18,6 +21,26 @@ def require(condition, message):
 
 require("IOSUpstream::IOSGPURenderer::create(this)" in hooks,
         "PlayLayer must create the iOS GPU renderer")
+require("enable_language(OBJCXX)" in cmake and
+        "IOSMetalInterop.mm" in cmake and
+        "-fobjc-arc" in cmake,
+        "iOS build must compile the Objective-C++ Metal bridge")
+require("METAL_FRAMEWORK" in cmake and "COREVIDEO_FRAMEWORK" in cmake and
+        "FOUNDATION_FRAMEWORK" in cmake,
+        "iOS target must link Metal, CoreVideo and Foundation")
+require("kCVPixelBufferOpenGLESCompatibilityKey" in metal and
+        "kCVPixelBufferMetalCompatibilityKey" in metal and
+        "kCVPixelBufferIOSurfacePropertiesKey" in metal,
+        "shared CVPixelBuffer must be created with both API compatibility flags and IOSurface backing")
+require("CVMetalTextureCacheCreateTextureFromImage" in metal and
+        "CVOpenGLESTextureCacheCreateTextureFromImage" in metal,
+        "one CVPixelBuffer must expose both Metal and OpenGL ES texture views")
+require("newComputePipelineStateWithFunction" in metal and
+        "dispatchThreadgroups" in metal and "waitUntilCompleted" in metal,
+        "Metal compute probe must execute and synchronize before the GL consumer")
+require("metalInterop.runSelfTest(metalInteropError)" in gpu and
+        "metalInterop.selfTestPassed()" in gpu,
+        "the active iOS renderer must initialize and report the interop self-test")
 require("existing->prepareForLevelReset()" in hooks and
         "renderer->enforceGPUOwnership()" in hooks,
         "PlayLayer reset must retire stale layer nodes and reassert GPU ownership")

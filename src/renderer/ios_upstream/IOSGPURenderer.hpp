@@ -4,6 +4,7 @@
 
 #include "IOSSceneData.hpp"
 #include "IOSGPUCapabilities.hpp"
+#include "../ios_metal/IOSMetalInterop.hpp"
 #include <Geode/cocos/base_nodes/CCNode.h>
 #include <set>
 #include <chrono>
@@ -63,6 +64,7 @@ private:
 
     PlayLayer* layer = nullptr;
     SceneData sceneData;
+    IOSMetalInteropTexture metalInterop;
     Shader* shader = nullptr;
     u32 vertexBuffer = 0;
     u64 uploadedOrderRevision = 0;
