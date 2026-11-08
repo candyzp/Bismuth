@@ -33,8 +33,8 @@ namespace fixture {
 inline GLuint vao=99, program=77, arrayBuffer=88, nextBuffer=1000;
 inline GLuint cachedVAO=99;
 inline GLenum activeTexture=GL_TEXTURE0;
-inline std::array<GLint, 3> textures{11,22,33};
-inline std::array<GLint, 3> cachedTextures{11,22,33};
+inline std::array<GLint, 4> textures{11,22,33,44};
+inline std::array<GLint, 4> cachedTextures{11,22,33,44};
 inline std::array<GLboolean,4> colorMask{1,1,1,1};
 inline GLboolean depthMask=1;
 inline GLint frontMask=7, backMask=13;
@@ -265,10 +265,11 @@ struct DataTexture {
 };
 struct ResolvedStateLayer {
     bool ready=true;
-    DataTexture objectTexture,spriteTexture;
+    DataTexture objectTexture,spriteTexture,groupStateTexture;
     bool isGPUStateReady() { return ready; }
     DataTexture* getObjectStateTexture() { return &objectTexture; }
     DataTexture* getSpriteStateTexture() { return &spriteTexture; }
+    DataTexture* getGroupStateTexture() { return &groupStateTexture; }
 };
 struct Shader {
     void use(){glUseProgram(500);}
