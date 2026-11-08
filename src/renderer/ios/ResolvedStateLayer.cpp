@@ -143,7 +143,26 @@ ResolvedStateLayer::SafetyClass ResolvedStateLayer::classifyObject(
             diagnostics.unsafeCollection = true;
             return SafetyClass::StockOnly;
         }
-        return outSprites.empty() ? SafetyClass::StockOnly : SafetyClass::DynamicSafe;
+
+        // Keep decorations GPU-owned, but do not label every decoration dynamic.
+        // The legacy helper polls DynamicSafe roots for a fresh Cocos transform on
+        // every rendered frame. Most decoration roots are fixed; their child
+        // animations and atlas UV changes are already handled by LiveGeometry.
+        // Only roots with a real per-frame transform source need that CPU work.
+        const auto batch = object->getBatchNode();
+        const bool inheritedNodeTransform =
+            batch && object->getParent() && object->getParent() != batch;
+        const bool dynamic =
+            object->m_classType == GameObjectClassType::Animated ||
+            object->getHasSyncedAnimation() ||
+            object->m_groupCount > 0 ||
+            object->getHasRotateAction() ||
+            object->m_usesAudioScale ||
+            inheritedNodeTransform;
+
+        if (outSprites.empty())
+            return SafetyClass::StockOnly;
+        return dynamic ? SafetyClass::DynamicSafe : SafetyClass::StaticSafe;
     }
 
     if (object->m_classType == GameObjectClassType::Animated)

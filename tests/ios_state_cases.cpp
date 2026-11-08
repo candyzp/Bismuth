@@ -64,9 +64,20 @@ int main() {
 
         std::vector<cocos2d::CCSprite*> collected;
         ResolvedStateLayer::CollectionDiagnostics diagnostics;
+        // The nested visual tree is GPU-owned, but a fixed root does not
+        // need a per-frame Cocos root-transform capture.
+        assert(state.classifyObject(&decoration, collected, diagnostics) ==
+            ResolvedStateLayer::SafetyClass::StaticSafe);
+        assert(collected.size() == 3);
+
+        decoration.m_groupCount = 1;
         assert(state.classifyObject(&decoration, collected, diagnostics) ==
             ResolvedStateLayer::SafetyClass::DynamicSafe);
-        assert(collected.size() == 3);
+        decoration.m_groupCount = 0;
+        decoration.synced = true;
+        assert(state.classifyObject(&decoration, collected, diagnostics) ==
+            ResolvedStateLayer::SafetyClass::DynamicSafe);
+        decoration.synced = false;
         assert(collected[0] == &decoration);
         assert(collected[1] == &firstPiece);
         assert(collected[2] == &secondPiece);
