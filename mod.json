@@ -5,9 +5,9 @@
 	},
 	"id": "iliashdz.bismuth",
 	"name": "Bismuth (experimental)",
-	"version": "v0.1.5-alpha",
+	"version": "v0.1.6-alpha",
 	"developer": "IliasHDZ",
-	"description": "iOS rendering optimization experiment: Geometry Dash stays authoritative while Bismuth prepares resolved sprite state for GPU-side transform and batching work.",
+	"description": "iOS GPU-only GLES2 port of Bismuth\u0027s ordered-object-batch renderer architecture.",
 	"dependencies": {
 		"geode.node-ids": ">=v1.20.0"
 	},

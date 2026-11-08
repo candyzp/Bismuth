@@ -573,6 +573,7 @@ bool SceneData::update(float dt) {
         return true;
 
     updateAnimatedObjects(dt);
+    updateObjectParticles();
     updateColorChannelTable();
     groupManager.updateGroupStateBuffer();
     objectBatch.refreshSpriteAppearances();

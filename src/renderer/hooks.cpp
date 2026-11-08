@@ -2,6 +2,12 @@
 #include "Renderer.hpp"
 #include <decomp/PlayLayer.hpp>
 #include <BProfiler.hpp>
+#ifdef GEODE_IS_IOS
+#include <decomp/GJBaseGameLayer.hpp>
+#include "ios_upstream/IOSGPURenderer.hpp"
+#include "ios_upstream/IOSGroupManager.hpp"
+#include <chrono>
+#endif
 
 #ifdef GEODE_IS_IOS
 #include "ios/ResolvedStateLayer.hpp"
@@ -12,7 +18,7 @@
 using namespace geode::prelude;
 
 #ifdef GEODE_IS_IOS
-static void pruneGPUGroupManagedObjects(GJBaseGameLayer* layer);
+static void pruneGPUOwnedDecorations(GJBaseGameLayer* layer);
 #endif
 
 static bool newPlayLayer = false;
@@ -27,60 +33,62 @@ class $modify(RendererPlayLayer, PlayLayer) {
 
     void resetLevel() {
 #ifdef GEODE_IS_IOS
-        // A replacement PlayLayer can finish setup before the outgoing layer's
-        // destructor runs. Its renderer must not block this level's creation.
-        if (newPlayLayer) {
-            if (auto existing = Renderer::forPlayLayer(this))
-                existing->resumeGPU();
-            else if (auto previous = Renderer::get())
-                previous->suspendGPU();
+        // Remove draw nodes before PlayLayer rebuilds its Z-order containers.
+        auto existing = IOSUpstream::IOSGPURenderer::getCurrent();
+        if (existing && existing->getPlayLayer() == this)
+            existing->prepareForLevelReset();
+
+        PlayLayer::resetLevel();
+
+        if (newPlayLayer || (existing && existing->getPlayLayer() == this)) {
+            auto renderer = IOSUpstream::IOSGPURenderer::create(this);
+            if (!renderer) {
+                log::error("Bismuth iOS GPU-only renderer could not be created");
+                return;
+            }
+
+            // The owner node keeps SceneData/VBO/shader alive for this level;
+            // draw nodes are siblings of Geometry Dash's stock Z-order batches.
+            if (renderer->getParent() != this)
+                this->addChild(renderer, -100000);
+
+            renderer->reset();
+            renderer->enforceGPUOwnership();
+            pruneGPUOwnedDecorations(this);
         }
-#endif
+#else
         if (newPlayLayer && Renderer::get() == nullptr) {
             PlayLayer::resetLevel();
-
             auto batchLayer = this->m_objectLayer;
             if (!batchLayer) {
                 log::error("failed to attach renderer: batch layer not found");
                 return;
             }
-
             auto renderer = Renderer::create(this);
             if (renderer) {
                 batchLayer->addChild(renderer, -100000);
                 renderer->reset();
-#ifdef GEODE_IS_IOS
-                if (auto resolved = ResolvedStateLayer::getCurrent())
-                    resolved->reseedActiveFromStock();
-                pruneGPUGroupManagedObjects(this);
-#endif
             }
             return;
         }
-
         PlayLayer::resetLevel();
-
-#ifdef GEODE_IS_IOS
-        // Menu restart may reuse this layer without another enter-transition
-        // callback. The active singleton is null while its renderer is suspended.
-        auto renderer = Renderer::forPlayLayer(this);
-        if (renderer)
-            renderer->resumeGPU();
-#else
         auto renderer = Renderer::get();
-#endif
-        if (renderer) {
+        if (renderer)
             renderer->reset();
-#ifdef GEODE_IS_IOS
-            if (auto resolved = ResolvedStateLayer::getCurrent())
-                resolved->reseedActiveFromStock();
-        pruneGPUGroupManagedObjects(this);
 #endif
-        }
     }
 
     void updateVisibility(float dt) {
 #ifdef GEODE_IS_IOS
+        auto renderer = IOSUpstream::IOSGPURenderer::getCurrent();
+        if (renderer && renderer->getPlayLayer() == this) {
+            // Keep GD's effect/particle simulation, but skip stock per-object
+            // visibility and sprite traversal: the GPU renderer owns visuals.
+            ((decomp_PlayLayer*)this)->optimized_updateVisibility(dt);
+            if (renderer->isReadyForDrawing())
+                renderer->refreshBlendOrder();
+            return;
+        }
         PlayLayer::updateVisibility(dt);
 #else
         auto renderer = Renderer::get();
@@ -93,42 +101,7 @@ class $modify(RendererPlayLayer, PlayLayer) {
     }
 };
 
-#ifdef GEODE_IS_IOS
-static void pruneGPUGroupManagedObjects(GJBaseGameLayer* baseLayer) {
-    auto renderer = Renderer::get();
-    auto resolved = ResolvedStateLayer::getCurrent();
-    if (!baseLayer || !renderer || !resolved ||
-        static_cast<GJBaseGameLayer*>(renderer->getPlayLayer()) != baseLayer)
-        return;
 
-    usize removed = 0;
-    auto prune = [&](CCArray* group) {
-        if (!group)
-            return;
-        for (u32 i = 0; i < group->count();) {
-            auto object = typeinfo_cast<GameObject*>(group->objectAtIndex(i));
-            if (object && resolved->isGPUGroupManagedObject(object)) {
-                group->removeObjectAtIndex(i);
-                ++removed;
-            } else {
-                ++i;
-            }
-        }
-    };
-
-    for (auto group : baseLayer->m_optimizedGroups)
-        prune(group);
-    for (auto group : baseLayer->m_staticGroups)
-        prune(group);
-
-    if (removed) {
-        log::info(
-            "Bismuth iOS removed {} fully GPU-managed grouped object entries from CPU transform lists",
-            removed
-        );
-    }
-}
-#endif
 
 static void removeDecoObjects(CCArray* array) {
     if (!array)
@@ -136,34 +109,61 @@ static void removeDecoObjects(CCArray* array) {
 
     for (u32 i = 0; i < array->count();) {
         auto object = (GameObject*)array->objectAtIndex(i);
-        if (object->m_objectType == GameObjectType::Decoration)
+        if (object && object->m_objectType == GameObjectType::Decoration)
             array->removeObjectAtIndex(i);
         else
             i++;
     }
 }
 
+#ifdef GEODE_IS_IOS
+static void pruneGPUOwnedDecorations(GJBaseGameLayer* baseLayer) {
+    auto renderer = IOSUpstream::IOSGPURenderer::getCurrent();
+    if (!baseLayer || !renderer || !renderer->isReadyForDrawing() ||
+        static_cast<GJBaseGameLayer*>(renderer->getPlayLayer()) != baseLayer)
+        return;
+
+    // Match upstream ownership: decorations are GPU-rendered; static gameplay
+    // objects keep their CPU movement/collision updates.
+    for (auto group : baseLayer->m_optimizedGroups)
+        removeDecoObjects(group);
+    for (auto group : baseLayer->m_staticGroups)
+        removeDecoObjects(group);
+}
+#endif
+
 #include <Geode/modify/GJBaseGameLayer.hpp>
 class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
     void update(float dt) {
         auto timer = BProfiler::start("GJBaseGameLayer::update");
+#ifdef GEODE_IS_IOS
+        const auto updateStart = std::chrono::steady_clock::now();
         GJBaseGameLayer::update(dt);
         timer.end();
 
-        auto renderer = Renderer::get();
-#ifdef GEODE_IS_IOS
-        if (renderer && static_cast<GJBaseGameLayer*>(renderer->getPlayLayer()) !=
-            static_cast<GJBaseGameLayer*>(this))
-            return;
-#endif
-        if (renderer) {
-            renderer->update(dt);
+        auto renderer = IOSUpstream::IOSGPURenderer::getCurrent();
+        if (renderer && static_cast<GJBaseGameLayer*>(renderer->getPlayLayer()) == this) {
+            const float elapsed = std::chrono::duration<float, std::milli>(
+                std::chrono::steady_clock::now() - updateStart
+            ).count();
+            renderer->recordGameLayerUpdate(elapsed);
+            if (renderer->isReadyForDrawing())
+                renderer->updateScene(dt);
         }
+#else
+        GJBaseGameLayer::update(dt);
+        timer.end();
+        auto renderer = Renderer::get();
+        if (renderer)
+            renderer->update(dt);
+#endif
     }
 
     void processMoveActions() {
-        auto renderer = Renderer::get();
-        if (renderer == nullptr) {
+#ifdef GEODE_IS_IOS
+        auto renderer = IOSUpstream::IOSGPURenderer::getCurrent();
+        if (!renderer || !renderer->isReadyForDrawing() ||
+            static_cast<GJBaseGameLayer*>(renderer->getPlayLayer()) != this) {
             GJBaseGameLayer::processMoveActions();
             return;
         }
@@ -172,48 +172,70 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
         for (auto node : m_effectManager->m_unkVector6c0) {
             if (node->m_unk0d0)
                 continue;
-
-            int groupId = node->getTag();
-            renderer->getGroupManager().moveGroup(groupId, node->m_unk038, node->m_unk040);
-
+            const i32 groupId = node->getTag();
+            renderer->getGroupManager().moveGroup(
+                static_cast<IOSUpstream::GroupID>(groupId),
+                node->m_unk038, node->m_unk040
+            );
             CCArray* objects = getStaticGroup(groupId);
             if (objects)
                 moveObjects(objects, node->m_unk038, node->m_unk040, 0);
-
+        }
+#else
+        auto renderer = Renderer::get();
+        if (!renderer) {
+            GJBaseGameLayer::processMoveActions();
+            return;
+        }
+        m_effectManager->processMoveCalculations();
+        for (auto node : m_effectManager->m_unkVector6c0) {
+            if (node->m_unk0d0)
+                continue;
+            int groupId = node->getTag();
+            renderer->getGroupManager().moveGroup(groupId, node->m_unk038, node->m_unk040);
+            CCArray* objects = getStaticGroup(groupId);
+            if (objects)
+                moveObjects(objects, node->m_unk038, node->m_unk040, 0);
             objects = getOptimizedGroup(groupId);
             if (objects)
                 moveObjects(objects, node->m_unk090, node->m_unk098, 0);
         }
+#endif
     }
 
     void processRotationActions() {
+#ifdef GEODE_IS_IOS
+        auto renderer = IOSUpstream::IOSGPURenderer::getCurrent();
+        if (renderer && renderer->isReadyForDrawing() &&
+            static_cast<GJBaseGameLayer*>(renderer->getPlayLayer()) == this) {
+            ((decomp_GJBaseGameLayer*)this)->optimized_processRotationActions(
+                renderer->getGroupManager()
+            );
+            return;
+        }
+        GJBaseGameLayer::processRotationActions();
+#else
         auto renderer = Renderer::get();
-        if (renderer == nullptr) {
+        if (!renderer) {
             GJBaseGameLayer::processRotationActions();
             return;
         }
-
         auto eman = m_effectManager;
         for (auto cmdObj : eman->m_unkVector5b0) {
             if (cmdObj->m_someInterpValue1RelatedFalse)
                 continue;
-
             i32 targetId = cmdObj->m_targetGroupID;
             i32 centerId = cmdObj->m_centerGroupID;
-
             auto mainObject = tryGetMainObject(centerId);
             auto staticGroup = getStaticGroup(targetId);
             const bool hasStaticGroup = staticGroup && staticGroup->count() != 0;
-
             float rotation;
             if (hasStaticGroup)
                 rotation = cmdObj->m_someInterpValue1RelatedOne - cmdObj->m_someInterpValue1RelatedZero;
             else
                 rotation = cmdObj->m_someInterpValue2RelatedOne - cmdObj->m_someInterpValue2RelatedZero;
-
             if (rotation == 0.0 && !cmdObj->m_finishRelated)
                 continue;
-
             if (eman->m_unkMap770.find({ targetId, centerId }) != eman->m_unkMap770.end()) {
                 for (auto obj : eman->m_unkMap770[{ targetId, centerId }]) {
                     if (obj->m_someInterpValue1RelatedFalse)
@@ -224,64 +246,92 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
                         rotation += obj->m_someInterpValue2RelatedOne - obj->m_someInterpValue2RelatedZero;
                 }
             }
-
-            if (mainObject == nullptr)
+            if (!mainObject)
                 renderer->getGroupManager().rotateGroup(targetId, rotation, cmdObj->m_lockObjectRotation);
-            else {
-                auto pos = mainObject->getUnmodifiedPosition();
-                renderer->getGroupManager().rotateGroup(targetId, rotation, cmdObj->m_lockObjectRotation, ccPointToGLM(pos));
-            }
+            else
+                renderer->getGroupManager().rotateGroup(
+                    targetId, rotation, cmdObj->m_lockObjectRotation,
+                    ccPointToGLM(mainObject->getUnmodifiedPosition())
+                );
         }
-
         GJBaseGameLayer::processRotationActions();
+#endif
     }
 
     void processFollowActions() {
-        auto renderer = Renderer::get();
-        if (renderer == nullptr) {
+#ifdef GEODE_IS_IOS
+        auto renderer = IOSUpstream::IOSGPURenderer::getCurrent();
+        if (!renderer || !renderer->isReadyForDrawing() ||
+            static_cast<GJBaseGameLayer*>(renderer->getPlayLayer()) != this) {
             GJBaseGameLayer::processFollowActions();
             return;
         }
-
         auto eman = m_effectManager;
         for (auto node : eman->m_unkVector6d8) {
-            i32 targetGroupId = node->getTag();
-            i32 followGroupId = node->m_unk074;
-
+            const i32 targetGroupId = node->getTag();
+            const i32 followGroupId = node->m_unk074;
             auto mainObject = tryGetMainObject(followGroupId);
-            if (mainObject == nullptr)
+            if (!mainObject)
                 continue;
-
             double moveX = 0.0, moveY = 0.0;
             if (mainObject->m_unk4C4 == m_gameState.m_commandIndex) {
                 moveX = (mainObject->m_positionX - mainObject->m_lastPosition.x) * node->m_unk080;
                 moveY = (mainObject->m_positionY - mainObject->m_lastPosition.y) * node->m_unk088;
             }
-
+            renderer->getGroupManager().moveGroup(
+                static_cast<IOSUpstream::GroupID>(targetGroupId),
+                static_cast<float>(moveX), static_cast<float>(moveY)
+            );
+        }
+        GJBaseGameLayer::processFollowActions();
+#else
+        auto renderer = Renderer::get();
+        if (!renderer) {
+            GJBaseGameLayer::processFollowActions();
+            return;
+        }
+        auto eman = m_effectManager;
+        for (auto node : eman->m_unkVector6d8) {
+            i32 targetGroupId = node->getTag();
+            i32 followGroupId = node->m_unk074;
+            auto mainObject = tryGetMainObject(followGroupId);
+            if (!mainObject)
+                continue;
+            double moveX = 0.0, moveY = 0.0;
+            if (mainObject->m_unk4C4 == m_gameState.m_commandIndex) {
+                moveX = (mainObject->m_positionX - mainObject->m_lastPosition.x) * node->m_unk080;
+                moveY = (mainObject->m_positionY - mainObject->m_lastPosition.y) * node->m_unk088;
+            }
             renderer->getGroupManager().moveGroup(targetGroupId, moveX, moveY);
         }
-
         GJBaseGameLayer::processFollowActions();
+#endif
     }
 
     void toggleGroup(int id, bool activate) {
         GJBaseGameLayer::toggleGroup(id, activate);
+#ifdef GEODE_IS_IOS
+        auto renderer = IOSUpstream::IOSGPURenderer::getCurrent();
+        if (renderer && renderer->isReadyForDrawing() &&
+            static_cast<GJBaseGameLayer*>(renderer->getPlayLayer()) == this)
+            renderer->getGroupManager().toggleGroup(
+                static_cast<IOSUpstream::GroupID>(id), activate
+            );
+#else
         auto renderer = Renderer::get();
         if (renderer)
             renderer->getGroupManager().toggleGroup(id, activate);
+#endif
     }
 
     void optimizeMoveGroups() {
         GJBaseGameLayer::optimizeMoveGroups();
-
 #ifdef GEODE_IS_IOS
-        pruneGPUGroupManagedObjects(this);
-        return;
+        pruneGPUOwnedDecorations(this);
 #else
         auto renderer = Renderer::get();
         if (!renderer || !renderer->useOptimizations())
             return;
-
         for (auto array : m_optimizedGroups)
             removeDecoObjects(array);
         for (auto array : m_staticGroups)
@@ -404,16 +454,28 @@ class $modify(RendererInterleavedSpriteBatchNode, cocos2d::CCSpriteBatchNode) {
 #include <Geode/modify/CCDisplayLinkDirector.hpp>
 class $modify(RendererCCDisplayLinkDirector, CCDisplayLinkDirector) {
     void mainLoop() {
-        auto ren = Renderer::get();
-        if (!ren) {
-            CCDisplayLinkDirector::mainLoop();
-            return;
-        }
+#ifdef GEODE_IS_IOS
+        auto renderer = IOSUpstream::IOSGPURenderer::getCurrent();
+        if (renderer)
+            renderer->beginFrame();
 
         auto timer = BProfiler::start("Frame time");
         CCDisplayLinkDirector::mainLoop();
         timer.end();
 
+        if (auto finishedRenderer = IOSUpstream::IOSGPURenderer::getCurrent())
+            finishedRenderer->finishFrame();
         BProfiler::frameEnd();
+#else
+        auto ren = Renderer::get();
+        if (!ren) {
+            CCDisplayLinkDirector::mainLoop();
+            return;
+        }
+        auto timer = BProfiler::start("Frame time");
+        CCDisplayLinkDirector::mainLoop();
+        timer.end();
+        BProfiler::frameEnd();
+#endif
     }
 };

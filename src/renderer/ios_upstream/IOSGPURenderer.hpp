@@ -25,8 +25,12 @@ public:
 
     bool initForPlayLayer(PlayLayer* layer);
     void reset();
+    void prepareForLevelReset();
     void reportFailure(const std::string& reason) { fail(reason); }
     void enforceGPUOwnership();
+    bool updateScene(float dt);
+    bool refreshBlendOrder();
+    GroupManager& getGroupManager() { return sceneData.getGroupManager(); }
     void recordGameLayerUpdate(float milliseconds);
     void recordSceneUpdate(float milliseconds);
     void recordBlendRefresh(float milliseconds);

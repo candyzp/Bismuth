@@ -491,6 +491,7 @@ void IOSGPURenderer::fail(const std::string& reason) {
     failed = true;
     initialized = false;
     failureReason = reason;
+    sceneData.releaseObjectParticles();
     log::error("Bismuth iOS GPU-only beta FAILED: {}", failureReason);
 
     for (auto node : layerNodes) {
@@ -857,6 +858,19 @@ bool IOSGPURenderer::initForPlayLayer(PlayLayer* playLayer) {
     return true;
 }
 
+void IOSGPURenderer::prepareForLevelReset() {
+    // Retire draw nodes while the old object-layer containers are still alive.
+    for (auto node : layerNodes) {
+        if (!node)
+            continue;
+        node->setVisible(false);
+        if (node->getParent())
+            node->removeFromParentAndCleanup(true);
+    }
+    layerNodes.clear();
+    layerNodeKeys.clear();
+}
+
 void IOSGPURenderer::reset() {
     if (failed || !sceneData.isReady())
         return;
@@ -871,7 +885,45 @@ void IOSGPURenderer::reset() {
         fail("ordered vertex upload failed during reset");
         return;
     }
-    syncLayerNodes();
+    if (!syncLayerNodes() && !failed)
+        fail("GPU layer nodes could not be restored after PlayLayer reset");
+}
+
+bool IOSGPURenderer::updateScene(float dt) {
+    if (!isReadyForDrawing() || !sceneData.isReady())
+        return false;
+
+    const auto start = std::chrono::steady_clock::now();
+    const bool updated = sceneData.update(dt);
+    const float elapsed = std::chrono::duration<float, std::milli>(
+        std::chrono::steady_clock::now() - start
+    ).count();
+    recordSceneUpdate(elapsed);
+
+    if (!updated) {
+        const auto& reason = sceneData.getFailureReason();
+        fail(reason.empty() ? "GPU scene-state update failed" : reason);
+        return false;
+    }
+    return true;
+}
+
+bool IOSGPURenderer::refreshBlendOrder() {
+    if (!isReadyForDrawing() || !sceneData.isReady())
+        return false;
+
+    const auto start = std::chrono::steady_clock::now();
+    const bool refreshed = sceneData.refreshBlendOrder();
+    const float elapsed = std::chrono::duration<float, std::milli>(
+        std::chrono::steady_clock::now() - start
+    ).count();
+    recordBlendRefresh(elapsed);
+
+    if (!refreshed) {
+        fail("GPU blend-order refresh failed");
+        return false;
+    }
+    return true;
 }
 
 void IOSGPURenderer::drawLayer(const LayerKey& key) {
