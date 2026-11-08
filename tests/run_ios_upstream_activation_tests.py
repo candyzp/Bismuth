@@ -40,8 +40,20 @@ require("CVMetalTextureCacheCreateTextureFromImage" in metal and
         "CVOpenGLESTextureCacheCreateTextureFromImage" in metal,
         "one CVPixelBuffer must expose both Metal and OpenGL ES texture views")
 require("newComputePipelineStateWithFunction" in metal and
+        "bismuthCullSprites" in metal and "dispatchCulling(" in metal and
         "dispatchThreadgroups" in metal and "waitUntilCompleted" in metal,
-        "Metal compute probe must execute and synchronize before the GL consumer")
+        "Metal must compute per-sprite visibility and synchronize before the GLES consumer")
+require("CVOpenGLESTextureCacheFlush" in metal and
+        "output.write(float4(value, value, value, 1.0)" in metal,
+        "Metal visibility results must be written to the shared pixel buffer")
+require("updateMetalCulling()" in gpu and "getPreCulledSprites()" in gpu and
+        "getGroupStates()" in gpu and "u_metalVisibilityTexture" in gpu,
+        "the active renderer must feed group/sprite inputs and bind the Metal mask")
+vertex_shader=(ROOT/"resources/shaders/ios_upstream/object.vert").read_text()
+require("u_useMetalVisibility" in vertex_shader and
+        "texture2D(u_metalVisibilityTexture,maskUV)" in vertex_shader.replace(" ","") and
+        "const float cullMargin" in vertex_shader,
+        "GLES must sample the Metal mask and retain its fallback culling path")
 require("metalInterop.runSelfTest(metalInteropError)" in gpu and
         "metalInterop.selfTestPassed()" in gpu,
         "the active iOS renderer must initialize and report the interop self-test")

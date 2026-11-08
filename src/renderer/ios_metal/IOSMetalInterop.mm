@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <string>
 
 @interface BismuthMetalInteropOwner : NSObject {
@@ -30,7 +31,9 @@
 
     id<MTLDevice> device;
     id<MTLCommandQueue> commandQueue;
-    id<MTLComputePipelineState> probePipeline;
+    id<MTLComputePipelineState> cullPipeline;
+    id<MTLBuffer> cullInputBuffer;
+    NSUInteger cullInputCapacity;
     id<MTLTexture> metalTexture;
     EAGLContext* openGLESContext;
 
@@ -49,6 +52,7 @@
         metalTextureRef = nullptr;
         openGLESTextureCache = nullptr;
         openGLESTextureRef = nullptr;
+        cullInputCapacity = 0;
         width = 0;
         height = 0;
     }
@@ -92,16 +96,23 @@ void assignError(std::string& output, const char* prefix, NSError* error = nil) 
     }
 }
 
-NSString* probeShaderSource() {
+NSString* cullingShaderSource() {
     return [NSString stringWithUTF8String:
         "#include <metal_stdlib>\n"
         "using namespace metal;\n"
-        "kernel void bismuthInteropProbe("
-        "    texture2d<float, access::write> output [[texture(0)]],"
-        "    uint2 gid [[thread_position_in_grid]]) {"
-        "    if (gid.x < output.get_width() && gid.y < output.get_height()) {"
-        "        output.write(float4(0.25, 0.50, 0.75, 1.0), gid);"
-        "    }"
+        "struct BismuthCullSprite { float2 startPosition; float2 transformColumn0; float2 transformColumn1; float2 offset; };"
+        "struct BismuthCullParameters { float2 cameraPosition; float2 cameraRight; float2 cameraUp; float2 cameraSize; uint spriteCount; uint padding0; uint padding1; uint padding2; };"
+        "kernel void bismuthCullSprites(device const BismuthCullSprite* sprites [[buffer(0)]], constant BismuthCullParameters& params [[buffer(1)]], texture2d<float, access::write> output [[texture(0)]], uint index [[thread_position_in_grid]]) {"
+        "    if (index >= params.spriteCount) return;"
+        "    const BismuthCullSprite sprite = sprites[index];"
+        "    const float2 objectPosition = sprite.transformColumn0 * sprite.startPosition.x + sprite.transformColumn1 * sprite.startPosition.y + sprite.offset;"
+        "    const float2 cameraOffset = objectPosition - params.cameraPosition;"
+        "    const float2 screenPosition = float2(dot(params.cameraRight, cameraOffset), dot(params.cameraUp, cameraOffset));"
+        "    constexpr float margin = 100.0;"
+        "    const bool visible = screenPosition.x >= -margin && screenPosition.x <= params.cameraSize.x + margin && screenPosition.y >= -margin && screenPosition.y <= params.cameraSize.y + margin;"
+        "    const float value = visible ? 1.0 : 0.0;"
+        "    const uint2 outputPosition = uint2(index % output.get_width(), index / output.get_width());"
+        "    output.write(float4(value, value, value, 1.0), outputPosition);"
         "}\n"
     ];
 }
@@ -122,6 +133,10 @@ bool validateOpenGLESTexture(BismuthMetalInteropOwner* owner,
     GLint previousBinding = 0;
     glGetIntegerv(GL_TEXTURE_BINDING_2D, &previousBinding);
     glBindTexture(GL_TEXTURE_2D, textureName);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     const GLboolean isTexture = glIsTexture(textureName);
     const GLenum bindError = glGetError();
     glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(previousBinding));
@@ -150,6 +165,8 @@ void IOSMetalInteropTexture::reset() {
         (void)owner;
     }
     m_glTextureName = 0;
+    m_width = 0;
+    m_height = 0;
     m_selfTestPassed = false;
 }
 
@@ -279,112 +296,104 @@ bool IOSMetalInteropTexture::initialize(
         return false;
 
     NSError* metalError = nil;
-    NSString* source = probeShaderSource();
-    id<MTLLibrary> library = [owner->device newLibraryWithSource:source
-                                                         options:nil
-                                                           error:&metalError];
+    NSString* source = cullingShaderSource();
+    id<MTLLibrary> library = [owner->device newLibraryWithSource:source options:nil error:&metalError];
     if (!library) {
-        assignError(error, "Metal could not compile the interop probe kernel", metalError);
+        assignError(error, "Metal could not compile the sprite-culling kernel", metalError);
         return false;
     }
-
-    id<MTLFunction> function = [library newFunctionWithName:@"bismuthInteropProbe"];
+    id<MTLFunction> function = [library newFunctionWithName:@"bismuthCullSprites"];
     if (!function) {
-        error = "Metal probe function bismuthInteropProbe was not found";
+        error = "Metal function bismuthCullSprites was not found";
         return false;
     }
-
-    owner->probePipeline = [owner->device newComputePipelineStateWithFunction:function
-                                                                        error:&metalError];
-    if (!owner->probePipeline) {
-        assignError(error, "Metal could not create the interop compute pipeline", metalError);
+    owner->cullPipeline = [owner->device newComputePipelineStateWithFunction:function error:&metalError];
+    if (!owner->cullPipeline) {
+        assignError(error, "Metal could not create the sprite-culling pipeline", metalError);
         return false;
     }
-
     m_impl = (__bridge_retained void*)owner;
     m_glTextureName = textureName;
+    m_width = width;
+    m_height = height;
+    return true;
+}
+
+bool IOSMetalInteropTexture::dispatchCulling(
+    const IOSMetalCullSprite* sprites, std::uint32_t spriteCount,
+    const IOSMetalCullParameters& parameters, std::string& error
+) {
+    error.clear();
+    if (!isReady()) { error="Metal/GLES culling texture is not initialized"; return false; }
+    if (spriteCount==0) return true;
+    if (!sprites) { error="Metal culling input is null"; return false; }
+    const std::uint64_t capacity=static_cast<std::uint64_t>(m_width)*m_height;
+    if (spriteCount>capacity) { error="visibility mask exceeds shared texture capacity"; return false; }
+    BismuthMetalInteropOwner* owner=(__bridge BismuthMetalInteropOwner*)m_impl;
+    if ([EAGLContext currentContext]!=owner->openGLESContext) {
+        error="shared EAGL context is not current during Metal culling"; return false;
+    }
+    const std::size_t inputBytes=static_cast<std::size_t>(spriteCount)*sizeof(IOSMetalCullSprite);
+    if (owner->cullInputCapacity<inputBytes) {
+        id<MTLBuffer> replacement=[owner->device newBufferWithLength:inputBytes options:MTLResourceStorageModeShared];
+        if (!replacement) { error="Metal input buffer allocation failed"; return false; }
+        owner->cullInputBuffer=replacement;
+        owner->cullInputCapacity=inputBytes;
+    }
+    void* contents=owner->cullInputBuffer.contents;
+    if (!contents) { error="Metal input buffer has no CPU-visible contents"; return false; }
+    std::memcpy(contents,sprites,inputBytes);
+    IOSMetalCullParameters params=parameters;
+    params.spriteCount=spriteCount;
+    id<MTLCommandBuffer> commandBuffer=[owner->commandQueue commandBuffer];
+    if (!commandBuffer) { error="Metal could not create a culling command buffer"; return false; }
+    id<MTLComputeCommandEncoder> encoder=[commandBuffer computeCommandEncoder];
+    if (!encoder) { error="Metal could not create a culling encoder"; return false; }
+    [encoder setComputePipelineState:owner->cullPipeline];
+    [encoder setBuffer:owner->cullInputBuffer offset:0 atIndex:0];
+    [encoder setBytes:&params length:sizeof(params) atIndex:1];
+    [encoder setTexture:owner->metalTexture atIndex:0];
+    const NSUInteger threads=std::max<NSUInteger>(1,owner->cullPipeline.threadExecutionWidth);
+    const NSUInteger groups=(static_cast<NSUInteger>(spriteCount)+threads-1)/threads;
+    [encoder dispatchThreadgroups:MTLSizeMake(groups,1,1) threadsPerThreadgroup:MTLSizeMake(threads,1,1)];
+    [encoder endEncoding];
+    [commandBuffer commit];
+    // GLES samples this same CVPixelBuffer after dispatch, so fence Metal here.
+    [commandBuffer waitUntilCompleted];
+    if (commandBuffer.status!=MTLCommandBufferStatusCompleted) {
+        assignError(error,"Metal sprite-culling command failed",commandBuffer.error);
+        return false;
+    }
+    CVOpenGLESTextureCacheFlush(owner->openGLESTextureCache,0);
     return true;
 }
 
 bool IOSMetalInteropTexture::runSelfTest(std::string& error) {
     error.clear();
-    if (!isReady()) {
-        error = "Metal/OpenGL ES shared texture has not been initialized";
+    if (!isReady()) { error="Metal/GLES shared texture is not initialized"; return false; }
+    if (m_width<2 || m_height<1) { error="visibility texture needs at least two pixels"; return false; }
+    const IOSMetalCullSprite samples[]={
+        {5.f,5.f,1.f,0.f,0.f,1.f,0.f,0.f},
+        {500.f,5.f,1.f,0.f,0.f,1.f,0.f,0.f}
+    };
+    IOSMetalCullParameters params;
+    params.cameraWidth=100.f;
+    params.cameraHeight=100.f;
+    if (!dispatchCulling(samples,2,params,error)) return false;
+    BismuthMetalInteropOwner* owner=(__bridge BismuthMetalInteropOwner*)m_impl;
+    const CVReturn lock=CVPixelBufferLockBaseAddress(owner->pixelBuffer,kCVPixelBufferLock_ReadOnly);
+    if (lock!=kCVReturnSuccess) { error="could not lock shared pixel buffer for visibility verification"; return false; }
+    const auto* bytes=static_cast<const std::uint8_t*>(CVPixelBufferGetBaseAddress(owner->pixelBuffer));
+    const std::size_t rowBytes=CVPixelBufferGetBytesPerRow(owner->pixelBuffer);
+    const bool foreground=bytes && rowBytes>=8 && bytes[0]>=253 && bytes[1]>=253 && bytes[2]>=253 && bytes[3]>=253;
+    const bool background=bytes && rowBytes>=8 && bytes[4]<=2 && bytes[5]<=2 && bytes[6]<=2 && bytes[7]>=253;
+    CVPixelBufferUnlockBaseAddress(owner->pixelBuffer,kCVPixelBufferLock_ReadOnly);
+    if (!foreground || !background) {
+        error="Metal did not write the expected visible/offscreen mask values";
         return false;
     }
-
-    BismuthMetalInteropOwner* owner = (__bridge BismuthMetalInteropOwner*)m_impl;
-    id<MTLCommandBuffer> commandBuffer = [owner->commandQueue commandBuffer];
-    if (!commandBuffer) {
-        error = "Metal command queue could not create a command buffer";
-        return false;
-    }
-
-    id<MTLComputeCommandEncoder> encoder = [commandBuffer computeCommandEncoder];
-    if (!encoder) {
-        error = "Metal command buffer could not create a compute encoder";
-        return false;
-    }
-
-    [encoder setComputePipelineState:owner->probePipeline];
-    [encoder setTexture:owner->metalTexture atIndex:0];
-
-    const NSUInteger threadWidth = std::min<NSUInteger>(4, owner->probePipeline.threadExecutionWidth);
-    const NSUInteger threadHeight = std::max<NSUInteger>(
-        1,
-        std::min<NSUInteger>(4, owner->probePipeline.maxTotalThreadsPerThreadgroup /
-                                  std::max<NSUInteger>(1, threadWidth))
-    );
-    const MTLSize threadsPerGroup = MTLSizeMake(threadWidth, threadHeight, 1);
-    const MTLSize threadgroups = MTLSizeMake(
-        (owner->width + threadWidth - 1) / threadWidth,
-        (owner->height + threadHeight - 1) / threadHeight,
-        1
-    );
-
-    [encoder dispatchThreadgroups:threadgroups threadsPerThreadgroup:threadsPerGroup];
-    [encoder endEncoding];
-    [commandBuffer commit];
-    [commandBuffer waitUntilCompleted];
-
-    if (commandBuffer.status != MTLCommandBufferStatusCompleted) {
-        assignError(error, "Metal interop probe command failed", commandBuffer.error);
-        return false;
-    }
-
-    // Verify that Metal's writes reached the same CVPixelBuffer backing before
-    // exposing the GL view to the renderer. This is initialization-only work.
-    CVReturn lockResult = CVPixelBufferLockBaseAddress(owner->pixelBuffer,
-                                                       kCVPixelBufferLock_ReadOnly);
-    if (lockResult != kCVReturnSuccess) {
-        error = "could not lock the shared pixel buffer for interop verification";
-        return false;
-    }
-
-    const auto* base = static_cast<const std::uint8_t*>(
-        CVPixelBufferGetBaseAddress(owner->pixelBuffer)
-    );
-    const std::size_t bytesPerRow = CVPixelBufferGetBytesPerRow(owner->pixelBuffer);
-    bool pixelMatches = false;
-    if (base && bytesPerRow >= 4) {
-        // BGRA8Unorm is exposed as BGRA bytes in the shared CVPixelBuffer.
-        pixelMatches =
-            std::abs(static_cast<int>(base[0]) - 191) <= 2 &&
-            std::abs(static_cast<int>(base[1]) - 128) <= 2 &&
-            std::abs(static_cast<int>(base[2]) - 64) <= 2 &&
-            base[3] >= 253;
-    }
-    CVPixelBufferUnlockBaseAddress(owner->pixelBuffer, kCVPixelBufferLock_ReadOnly);
-
-    if (!pixelMatches) {
-        error = "Metal completed, but its expected RGBA probe value was not visible in the shared CVPixelBuffer";
-        return false;
-    }
-
-    if (!validateOpenGLESTexture(owner, m_glTextureName, error))
-        return false;
-
-    m_selfTestPassed = true;
+    if (!validateOpenGLESTexture(owner,m_glTextureName,error)) return false;
+    m_selfTestPassed=true;
     return true;
 }
 

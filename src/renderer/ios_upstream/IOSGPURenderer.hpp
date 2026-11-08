@@ -55,6 +55,7 @@ private:
     bool uploadOrderedVertices();
     bool uploadDirtyVertexRanges();
     bool createLayerNodes();
+    bool updateMetalCulling();
     void hideStockBatches();
     void updateDebugOverlay();
     void fail(const std::string& reason);
@@ -65,6 +66,7 @@ private:
     PlayLayer* layer = nullptr;
     SceneData sceneData;
     IOSMetalInteropTexture metalInterop;
+    std::vector<IOSMetalCullSprite> metalCullInputs;
     Shader* shader = nullptr;
     u32 vertexBuffer = 0;
     u64 uploadedOrderRevision = 0;

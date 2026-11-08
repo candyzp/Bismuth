@@ -5,9 +5,9 @@
 	},
 	"id": "iliashdz.bismuth",
 	"name": "Bismuth (experimental)",
-	"version": "v0.1.8-alpha",
+	"version": "v0.1.9-alpha",
 	"developer": "IliasHDZ",
-	"description": "iOS GPU-only GLES2 port of Bismuth\u0027s ordered-object-batch renderer architecture.",
+	"description": "iOS Metal-compute visibility culling with Geometry Dash OpenGL ES shared-texture rendering.",
 	"dependencies": {
 		"geode.node-ids": ">=v1.20.0"
 	},

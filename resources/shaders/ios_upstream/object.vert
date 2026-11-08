@@ -12,8 +12,11 @@ varying mediump vec4 v_color;
 uniform sampler2D u_objectDataTexture;
 uniform sampler2D u_groupDataTexture;
 uniform sampler2D u_byteDataTexture;
+uniform sampler2D u_metalVisibilityTexture;
 
 uniform vec2 u_objectDataTextureSize;
+uniform vec2 u_metalVisibilityTextureSize;
+uniform float u_useMetalVisibility;
 uniform vec2 u_groupDataTextureSize;
 uniform vec2 u_byteDataTextureSize;
 
@@ -325,21 +328,27 @@ void main() {
 
     vec2 objectPosition = mat2(group0.xy, group0.zw) * a_objectStartPosition + group2.xy;
 
-    // Match the owner's conservative object-anchor camera culling. All vertices
-    // of this sprite share the same object/group metadata.
-    vec2 cameraOffset = objectPosition - u_cameraPosition;
-    vec2 screenPosition = vec2(
-        dot(u_cameraRight, cameraOffset),
-        dot(u_cameraUp, cameraOffset)
-    );
-    const float cullMargin = 100.0;
-    if (screenPosition.x < -cullMargin ||
-        screenPosition.x > u_cameraSize.x + cullMargin ||
-        screenPosition.y < -cullMargin ||
-        screenPosition.y > u_cameraSize.y + cullMargin) {
-        gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
-        v_texCoord = a_texCoord;
-        v_color = vec4(0.0);
+    // Metal computes one visibility bit per sprite into the shared pixel
+    // buffer. GLES samples it, but retains the original culling math as fallback.
+    bool spriteVisible=true;
+    if (u_useMetalVisibility>0.5) {
+        float maskX=mod(spriteIndex,u_metalVisibilityTextureSize.x);
+        float maskY=floor(spriteIndex/u_metalVisibilityTextureSize.x);
+        vec2 maskUV=(vec2(maskX,maskY)+vec2(0.5))/u_metalVisibilityTextureSize;
+        spriteVisible=texture2D(u_metalVisibilityTexture,maskUV).r>=0.5;
+    } else {
+        vec2 cameraOffset=objectPosition-u_cameraPosition;
+        vec2 screenPosition=vec2(dot(u_cameraRight,cameraOffset),dot(u_cameraUp,cameraOffset));
+        const float cullMargin=100.0;
+        spriteVisible=screenPosition.x>=-cullMargin &&
+            screenPosition.x<=u_cameraSize.x+cullMargin &&
+            screenPosition.y>=-cullMargin &&
+            screenPosition.y<=u_cameraSize.y+cullMargin;
+    }
+    if (!spriteVisible) {
+        gl_Position=vec4(2.0,2.0,2.0,1.0);
+        v_texCoord=a_texCoord;
+        v_color=vec4(0.0);
         return;
     }
 
