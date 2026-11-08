@@ -1,4 +1,5 @@
 #include "common.hpp"
+#include "CorporateCatcher.hpp"
 #include "Geode/cocos/CCDirector.h"
 #include "renderer/Buffer.hpp"
 
@@ -45,6 +46,7 @@ void drawFullscreenQuad() {
 #include <geode/modify/CCDirector.hpp>
 class $modify(CommonCCDirector, CCDirector) {
     void purgeDirector() {
+        CORPORATE_CATCHER_PROFILE_HOOK("CCDirector::purgeDirector");
         if (fullscreenQuadVAO)
             glDeleteVertexArrays(1, &fullscreenQuadVAO);
         if (fullscreenQuadVBO)
