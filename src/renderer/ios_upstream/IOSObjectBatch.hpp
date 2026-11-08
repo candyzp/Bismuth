@@ -64,6 +64,8 @@ private:
         // changing the GameObject root. Refresh these sources from live Cocos
         // node transforms instead of leaving the initial transform frozen.
         bool refreshTransform = false;
+        bool refreshTexture = false;
+        bool refreshAppearance = false;
         cocos2d::CCRect lastTextureRect {};
         cocos2d::CCTexture2D* lastTexture = nullptr;
         bool lastTextureRectRotated = false;
@@ -119,6 +121,9 @@ private:
     std::vector<InputSprite> sourceInputSprites;
     std::vector<SpriteAppearance> sourceSpriteAppearances;
     std::vector<SpriteSource> sourceSpritePointers;
+    // The original renderer keeps static sprite data resident. Only track
+    // sprites whose Cocos appearance/texture/child transform can mutate.
+    std::vector<u32> dynamicSpriteIndices;
 
     // Only geometry is duplicated into scheduler draw order. Its per-vertex
     // sprite/object/group indices continue to address the source-order metadata

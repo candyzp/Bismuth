@@ -7,6 +7,9 @@ hooks = (ROOT / "src/renderer/hooks.cpp").read_text()
 gpu = (ROOT / "src/renderer/ios_upstream/IOSGPURenderer.cpp").read_text()
 header = (ROOT / "src/renderer/ios_upstream/IOSGPURenderer.hpp").read_text()
 scene = (ROOT / "src/renderer/ios_upstream/IOSSceneData.cpp").read_text()
+batch = (ROOT / "src/renderer/ios_upstream/IOSObjectBatch.cpp").read_text()
+batch_header = (ROOT / "src/renderer/ios_upstream/IOSObjectBatch.hpp").read_text()
+exit_guard = (ROOT / "src/renderer/ios/PlayLayerExitGuard.cpp").read_text()
 decomp = (ROOT / "src/decomp/GJBaseGameLayer.cpp").read_text()
 
 def require(condition, message):
@@ -59,5 +62,19 @@ require("updateObjectParticles();" in scene,
         "SceneData must maintain cached object particle ownership")
 require("IOSUpstream::GroupManager& groupManager" in decomp,
         "the optimized iOS rotation implementation must remain available")
+scene_dtor = scene[scene.index("SceneData::~SceneData()"):scene.index("SceneData* SceneData::getCurrent()")]
+require("releaseObjectParticles()" not in scene_dtor,
+        "SceneData destructor must not call into a dying particle manager")
+require("suspendForPlayLayerExit()" in exit_guard and
+        "resumeAfterPlayLayerExit()" in exit_guard,
+        "PlayLayer exit and pause/transition resume must suspend and reclaim GPU ownership")
+require("dynamicSpriteIndices" in batch_header and
+        "for (const u32 spriteIndex : dynamicSpriteIndices)" in batch,
+        "live appearance/geometry checks must iterate only the dynamic sprite list")
+require("for (usize i = 0; i < sourceSpritePointers.size(); ++i)" not in batch,
+        "the old full-level sprite scan must not return")
+require("source.refreshTexture = object->getHasSyncedAnimation();" in batch and
+        "source.refreshAppearance =" in batch,
+        "direct-tint sprites and known animations must be selectively tracked")
 
 print("PASS: iOS GPU-only activation, frame state, blend order, group triggers, reset lifecycle, and strict stock-batch ownership")

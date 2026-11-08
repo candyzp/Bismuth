@@ -77,7 +77,9 @@ bool getObjectLayerCameraBounds(
 }
 
 SceneData::~SceneData() {
-    releaseObjectParticles();
+    // Never call GameObject::unclaimParticle() from a child-node destructor:
+    // PlayLayer may already have destroyed its particle manager at this point.
+    // IOSGPURenderer explicitly releases claimed systems from the pre-exit hook.
     if (g_currentSceneData == this)
         g_currentSceneData = nullptr;
 }

@@ -296,7 +296,7 @@ void IOSGPURenderer::updateDebugOverlay() {
         "Table pack:{:.1f}ms upload:{:.1f}ms\n"
         "Table data:{:.1f}KB / {} texels\n"
         "GPU draws:{} verts:{} triangles:{}\n"
-        "VBO:{:.1f}KB | frame:{} loop:{:.1f}ms FPS:{:.1f}\n"
+        "VBO:{:.1f}KB | frame:{} work:{:.1f}ms cadence:{:.1f}Hz\n"
         "Nodes:{} ranges:{} missing:{} visits:{}",
         layer && layer->m_objects ? layer->m_objects->count() : 0,
         batch.getSpriteCount(),
@@ -319,7 +319,8 @@ void IOSGPURenderer::updateDebugOverlay() {
         static_cast<double>(lastVboUploadBytes) / 1024.0,
         frameNumber,
         lastFrameMilliseconds,
-        lastFrameMilliseconds > 0.f ? 1000.f / lastFrameMilliseconds : 0.f,
+        lastFrameIntervalMilliseconds > 0.f
+            ? 1000.f / lastFrameIntervalMilliseconds : 0.f,
         layerNodes.size(),
         activeLayerCount,
         missingLayerNodeCount,
@@ -357,6 +358,14 @@ std::string IOSGPURenderer::getCrashDiagnosticSnapshot() const {
 }
 
 void IOSGPURenderer::beginFrame() {
+    const auto frameStart = std::chrono::steady_clock::now();
+    if (previousFrameStartTime.time_since_epoch().count() != 0) {
+        lastFrameIntervalMilliseconds = std::chrono::duration<float, std::milli>(
+            frameStart - previousFrameStartTime
+        ).count();
+    }
+    previousFrameStartTime = frameStart;
+
     layerVisitsThisFrame = 0;
     drawAttemptsThisFrame = 0;
     drawsThisFrame = 0;
@@ -375,7 +384,7 @@ void IOSGPURenderer::beginFrame() {
     vboUploadBytesThisFrame = 0;
     gpuVerticesSubmittedThisFrame = 0;
     gpuTrianglesSubmittedThisFrame = 0;
-    frameStartTime = std::chrono::steady_clock::now();
+    frameStartTime = frameStart;
 }
 
 void IOSGPURenderer::finishFrame() {
@@ -408,7 +417,8 @@ void IOSGPURenderer::finishFrame() {
 
     // CCLabelTTF::setString regenerates a text texture. Keep counters per-frame,
     // but refresh the visible label at 10 Hz to avoid making the HUD itself costly.
-    overlayRefreshElapsedMilliseconds += lastFrameMilliseconds;
+    overlayRefreshElapsedMilliseconds += lastFrameIntervalMilliseconds > 0.f
+        ? lastFrameIntervalMilliseconds : lastFrameMilliseconds;
     if (overlayRefreshElapsedMilliseconds >= 100.f) {
         overlayRefreshElapsedMilliseconds = 0.f;
         updateDebugOverlay();
@@ -452,6 +462,9 @@ IOSGPURenderer* IOSGPURenderer::create(PlayLayer* playLayer) {
 
     if (currentRenderer && currentRenderer->getPlayLayer() != playLayer) {
         auto previous = currentRenderer;
+        // Idempotent safety net for unusual replacement-scene order. Normal
+        // PlayLayer::onExit releases these systems before this point.
+        previous->suspendForPlayLayerExit();
         if (previous->getParent())
             previous->removeFromParentAndCleanup(true);
     }
@@ -859,6 +872,9 @@ bool IOSGPURenderer::initForPlayLayer(PlayLayer* playLayer) {
 }
 
 void IOSGPURenderer::prepareForLevelReset() {
+    // Release particles while this PlayLayer and its particle manager are valid.
+    sceneData.releaseObjectParticles();
+
     // Retire draw nodes while the old object-layer containers are still alive.
     for (auto node : layerNodes) {
         if (!node)
@@ -869,6 +885,37 @@ void IOSGPURenderer::prepareForLevelReset() {
     }
     layerNodes.clear();
     layerNodeKeys.clear();
+}
+
+void IOSGPURenderer::suspendForPlayLayerExit() {
+    if (suspended)
+        return;
+
+    // Called from PlayLayer::onExit before the particle manager is destroyed.
+    // Never defer unclaimParticle() to SceneData's child-node destructor.
+    suspended = true;
+    sceneData.releaseObjectParticles();
+    for (auto node : layerNodes) {
+        if (node)
+            node->setVisible(false);
+    }
+}
+
+void IOSGPURenderer::resumeAfterPlayLayerExit() {
+    if (!suspended)
+        return;
+
+    suspended = false;
+    if (failed || !initialized)
+        return;
+
+    // Resuming never reveals Geometry Dash's stock batches or enables the hybrid path.
+    hideStockBatches();
+    for (auto node : layerNodes) {
+        if (node)
+            node->setVisible(true);
+    }
+    updateDebugOverlay();
 }
 
 void IOSGPURenderer::reset() {
@@ -928,7 +975,7 @@ bool IOSGPURenderer::refreshBlendOrder() {
 
 void IOSGPURenderer::drawLayer(const LayerKey& key) {
     ++layerVisitsThisFrame;
-    if (failed || !sceneData.isReady() || !shader || !vertexBuffer)
+    if (!isReadyForDrawing() || !sceneData.isReady() || !shader || !vertexBuffer)
         return;
     ++drawAttemptsThisFrame;
 

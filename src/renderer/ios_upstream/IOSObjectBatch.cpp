@@ -169,6 +169,7 @@ void ObjectBatch::clear() {
     sourceInputSprites.clear();
     sourceSpriteAppearances.clear();
     sourceSpritePointers.clear();
+    dynamicSpriteIndices.clear();
     orderedVertices.clear();
     orderedVertexStarts.clear();
     dirtyVertexRanges.clear();
@@ -472,12 +473,20 @@ bool ObjectBatch::addSprite(
     source.refreshTransform =
         object->getHasRotateAction() ||
         object->getType() == GameObjectType::Collectible;
+    source.refreshTexture = object->getHasSyncedAnimation();
+    source.refreshAppearance =
+        directTint ||
+        source.refreshTransform ||
+        source.refreshTexture ||
+        object->m_unk367;
     source.lastTextureRect = sprite->getTextureRect();
     source.lastTexture = sprite->getTexture();
     source.lastTextureRectRotated = sprite->isTextureRectRotated();
     source.lastFlipX = sprite->isFlipX();
     source.lastFlipY = sprite->isFlipY();
     sourceSpritePointers.push_back(source);
+    if (source.refreshAppearance)
+        dynamicSpriteIndices.push_back(currentSpriteIndex);
 
     workGroupScheduler.addSprite(
         object, sprite, type, currentSpriteIndex, triangleCount, groupCombinationIndex
@@ -762,29 +771,42 @@ void ObjectBatch::refreshSpriteAppearances() {
         return;
 
     bool geometryChanged = false;
-    for (usize i = 0; i < sourceSpritePointers.size(); ++i) {
-        ++lastAppearanceSpritesScanned;
-        auto& source = sourceSpritePointers[i];
-        const auto& input = sourceInputSprites[i];
-        const bool directTint =
-            (input.colorChannelFlags & IOS_COLOR_CHANNEL_DIRECT_FLAG) != 0;
-        sourceSpriteAppearances[i] = captureSpriteAppearance(source.sprite, directTint);
-
-        if (!source.sprite || !source.object)
+    // Static sprites remain resident exactly like upstream. Only poll sprites
+    // whose Cocos state is known to change after initial extraction.
+    for (const u32 spriteIndex : dynamicSpriteIndices) {
+        if (spriteIndex >= sourceSpritePointers.size() ||
+            spriteIndex >= sourceInputSprites.size() ||
+            spriteIndex >= sourceSpriteAppearances.size())
             continue;
 
-        const CCRect currentRect = source.sprite->getTextureRect();
-        auto* currentTexture = source.sprite->getTexture();
-        const bool currentRotated = source.sprite->isTextureRectRotated();
-        const bool currentFlipX = source.sprite->isFlipX();
-        const bool currentFlipY = source.sprite->isFlipY();
+        ++lastAppearanceSpritesScanned;
+        auto& source = sourceSpritePointers[spriteIndex];
+        const auto& input = sourceInputSprites[spriteIndex];
+        const bool directTint =
+            (input.colorChannelFlags & IOS_COLOR_CHANNEL_DIRECT_FLAG) != 0;
+        if (source.refreshAppearance) {
+            sourceSpriteAppearances[spriteIndex] =
+                captureSpriteAppearance(source.sprite, directTint);
+        }
 
-        // Cocos advances animated CCSprite frames, and the GPU vertex stream
-        // must refresh its atlas mapping when the frame changes. A smaller set
-        // of visual objects also changes child-node transforms every frame
-        // (rotate actions and collectible hover); those transforms are not
-        // represented by the static object/group data in the GPU vertex stream.
-        const bool frameChanged =
+        if (!source.sprite || !source.object ||
+            (!source.refreshTexture && !source.refreshTransform))
+            continue;
+
+        CCRect currentRect = source.lastTextureRect;
+        auto* currentTexture = source.lastTexture;
+        bool currentRotated = source.lastTextureRectRotated;
+        bool currentFlipX = source.lastFlipX;
+        bool currentFlipY = source.lastFlipY;
+        if (source.refreshTexture) {
+            currentRect = source.sprite->getTextureRect();
+            currentTexture = source.sprite->getTexture();
+            currentRotated = source.sprite->isTextureRectRotated();
+            currentFlipX = source.sprite->isFlipX();
+            currentFlipY = source.sprite->isFlipY();
+        }
+
+        const bool frameChanged = source.refreshTexture && (
             currentRect.origin.x != source.lastTextureRect.origin.x ||
             currentRect.origin.y != source.lastTextureRect.origin.y ||
             currentRect.size.width != source.lastTextureRect.size.width ||
@@ -792,7 +814,8 @@ void ObjectBatch::refreshSpriteAppearances() {
             currentTexture != source.lastTexture ||
             currentRotated != source.lastTextureRectRotated ||
             currentFlipX != source.lastFlipX ||
-            currentFlipY != source.lastFlipY;
+            currentFlipY != source.lastFlipY
+        );
 
         CCAffineTransform currentTransform = source.transform;
         bool transformChanged = false;
@@ -826,7 +849,7 @@ void ObjectBatch::refreshSpriteAppearances() {
             ccPointToGLM(source.object->m_startPosition);
         const u32 firstSourceVertex = input.indexStart * 3u;
         const u32 vertexCount = input.indexCount * 3u;
-        const u32 orderedFirstVertex = orderedVertexStarts[i];
+        const u32 orderedFirstVertex = orderedVertexStarts[spriteIndex];
 
         if (firstSourceVertex > sourceVertices.size() ||
             vertexCount > sourceVertices.size() - firstSourceVertex ||
@@ -837,7 +860,7 @@ void ObjectBatch::refreshSpriteAppearances() {
             vertexCount > orderedVertices.size() - orderedFirstVertex) {
             log::error(
                 "Bismuth iOS animation refresh rejected sprite {}: source/ordered vertex range is invalid",
-                i
+                spriteIndex
             );
             continue;
         }
@@ -864,11 +887,13 @@ void ObjectBatch::refreshSpriteAppearances() {
         }
 
         source.transform = currentTransform;
-        source.lastTextureRect = currentRect;
-        source.lastTexture = currentTexture;
-        source.lastTextureRectRotated = currentRotated;
-        source.lastFlipX = currentFlipX;
-        source.lastFlipY = currentFlipY;
+        if (source.refreshTexture) {
+            source.lastTextureRect = currentRect;
+            source.lastTexture = currentTexture;
+            source.lastTextureRectRotated = currentRotated;
+            source.lastFlipX = currentFlipX;
+            source.lastFlipY = currentFlipY;
+        }
         dirtyVertexRanges.push_back({orderedFirstVertex, vertexCount});
         ++lastAppearanceSpritesChanged;
         geometryChanged = true;
@@ -910,7 +935,6 @@ void ObjectBatch::refreshSpriteAppearances() {
     dirtyVertexRanges = std::move(mergedRanges);
     ++geometryRevision;
 }
-
 } // namespace IOSUpstream
 
 #endif

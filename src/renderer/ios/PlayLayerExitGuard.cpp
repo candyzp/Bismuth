@@ -1,6 +1,7 @@
 #ifdef GEODE_IS_IOS
 
 #include "../Renderer.hpp"
+#include "../ios_upstream/IOSGPURenderer.hpp"
 #include <Geode/modify/PauseLayer.hpp>
 #include <Geode/modify/PlayLayer.hpp>
 
@@ -19,9 +20,17 @@ class $modify(RendererExitGuardPlayLayer, PlayLayer) {
         // information GD exposes during setup and leaves the renderer IDLE.
         if (auto renderer = Renderer::forPlayLayer(this))
             renderer->resumeGPU();
+
+        if (auto gpuRenderer = IOSUpstream::IOSGPURenderer::getCurrent();
+            gpuRenderer && gpuRenderer->getPlayLayer() == this)
+            gpuRenderer->resumeAfterPlayLayerExit();
     }
 
     void onExit() {
+        if (auto gpuRenderer = IOSUpstream::IOSGPURenderer::getCurrent();
+            gpuRenderer && gpuRenderer->getPlayLayer() == this)
+            gpuRenderer->suspendForPlayLayerExit();
+
         auto renderer = Renderer::forPlayLayer(this);
         if (renderer) {
             // Restore stock atlas quads while the PlayLayer and its batches are
@@ -41,10 +50,15 @@ class $modify(RendererExitGuardPlayLayer, PlayLayer) {
 // resumeGPU() is intentionally a no-op unless that renderer was suspended.
 class $modify(RendererResumePauseLayer, PauseLayer) {
     void onResume(cocos2d::CCObject* sender) {
-        auto renderer = Renderer::forPlayLayer(PlayLayer::get());
+        auto playLayer = PlayLayer::get();
+        auto renderer = Renderer::forPlayLayer(playLayer);
         PauseLayer::onResume(sender);
         if (renderer)
             renderer->resumeGPU();
+
+        if (auto gpuRenderer = IOSUpstream::IOSGPURenderer::getCurrent();
+            gpuRenderer && gpuRenderer->getPlayLayer() == playLayer)
+            gpuRenderer->resumeAfterPlayLayerExit();
     }
 };
 

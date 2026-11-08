@@ -26,6 +26,8 @@ public:
     bool initForPlayLayer(PlayLayer* layer);
     void reset();
     void prepareForLevelReset();
+    void suspendForPlayLayerExit();
+    void resumeAfterPlayLayerExit();
     void reportFailure(const std::string& reason) { fail(reason); }
     void enforceGPUOwnership();
     bool updateScene(float dt);
@@ -41,7 +43,7 @@ public:
 
     PlayLayer* getPlayLayer() const { return layer; }
     bool isFailed() const { return failed; }
-    bool isReadyForDrawing() const { return initialized && !failed; }
+    bool isReadyForDrawing() const { return initialized && !failed && !suspended; }
     const char* getFailureReason() const { return failureReason.c_str(); }
     std::string getCrashDiagnosticSnapshot() const;
 
@@ -80,7 +82,9 @@ private:
     u32 missingLayerNodeCount = 0;
     u64 frameNumber = 0;
     float lastFrameMilliseconds = 0.f;
+    float lastFrameIntervalMilliseconds = 0.f;
     std::chrono::steady_clock::time_point frameStartTime {};
+    std::chrono::steady_clock::time_point previousFrameStartTime {};
 
     // Main-thread CPU work and GL submission counters. These are workload
     // metrics, not hardware GPU cycle or fragment-invocation counters.
@@ -117,6 +121,7 @@ private:
     u64 lastGPUTrianglesSubmitted = 0;
     bool initialized = false;
     bool failed = false;
+    bool suspended = false;
     bool hasFinishedFrame = false;
     bool reportedDrawFailure = false;
 };
