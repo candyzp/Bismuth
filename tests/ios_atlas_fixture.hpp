@@ -202,6 +202,7 @@ struct CCTextureAtlas {
 };
 struct CCSpriteBatchNode;
 struct CCSprite : CCNode {
+    bool getDontDraw(){return false;}
     int id=0;
     bool dirty=true, m_bShouldBeHidden=false;
     CCAffineTransform m_transformToBatch;
