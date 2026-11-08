@@ -42,7 +42,6 @@ void main() {
     }
 
     vec2 worldPosition;
-    mat2 rootTransform = mat2(o0.xy, o0.zw);
     float groupFlags = floor(o2.w + 0.5);
     bool groupManaged = mod(groupFlags, 2.0) > 0.5;
     if (groupManaged) {
@@ -54,10 +53,11 @@ void main() {
         mat2 positionalTransform = mat2(g0.xy, g0.zw);
         mat2 groupLocalTransform = mat2(g1.xy, g1.zw);
 
-        // Keep the root's initial affine matrix resident. Split its translation
-        // from the authored start position so Cocos' CPU-side group movement is
-        // not sampled and then applied a second time by this shader.
-        vec2 localOffset = rootTransform * a_localPosition + (o1.xy - o2.xy);
+        // Match the original renderer: the group's transformed start position
+        // anchors the object, and the prebuilt vertex is already object-local.
+        // Do not apply the Cocos root matrix here; it contains the root anchor
+        // translation and would offset the same geometry a second time.
+        vec2 localOffset = a_localPosition;
         bool applyLocalTransform = mod(floor(groupFlags / 2.0), 2.0) > 0.5;
         if (applyLocalTransform)
             localOffset = groupLocalTransform * localOffset;
