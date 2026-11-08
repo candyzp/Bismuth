@@ -30,8 +30,11 @@ require("METAL_FRAMEWORK" in cmake and "COREVIDEO_FRAMEWORK" in cmake and
         "iOS target must link Metal, CoreVideo and Foundation")
 require("kCVPixelBufferOpenGLESCompatibilityKey" in metal and
         "kCVPixelBufferMetalCompatibilityKey" in metal and
-        "kCVPixelBufferIOSurfacePropertiesKey" in metal,
-        "shared CVPixelBuffer must be created with both API compatibility flags and IOSurface backing")
+        "kCVPixelFormatType_32BGRA" in metal and
+        "MTLPixelFormatBGRA8Unorm" in metal and
+        "GL_BGRA_EXT" in metal and
+        "GL_UNSIGNED_INT_8_8_8_8_REV" in metal,
+        "shared pixel-buffer/Metal/GL formats must match Apple's iOS interoperability format table")
 require("CVMetalTextureCacheCreateTextureFromImage" in metal and
         "CVOpenGLESTextureCacheCreateTextureFromImage" in metal,
         "one CVPixelBuffer must expose both Metal and OpenGL ES texture views")

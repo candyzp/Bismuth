@@ -7,6 +7,11 @@
 #import <CoreVideo/CVOpenGLESTextureCache.h>
 #import <OpenGLES/EAGL.h>
 #import <OpenGLES/ES2/gl.h>
+#import <OpenGLES/ES2/glext.h>
+
+#ifndef GL_UNSIGNED_INT_8_8_8_8_REV
+#define GL_UNSIGNED_INT_8_8_8_8_REV 0x8367
+#endif
 
 #include "IOSMetalInterop.hpp"
 
@@ -182,17 +187,18 @@ bool IOSMetalInteropTexture::initialize(
         return false;
     }
 
+    // Match Apple's documented iOS interop format table: Core Video creates
+    // one BGRA pixel buffer that both Metal and OpenGL ES can view directly.
     NSDictionary* pixelBufferAttributes = @{
         (__bridge NSString*)kCVPixelBufferOpenGLESCompatibilityKey : @YES,
-        (__bridge NSString*)kCVPixelBufferMetalCompatibilityKey : @YES,
-        (__bridge NSString*)kCVPixelBufferIOSurfacePropertiesKey : @{}
+        (__bridge NSString*)kCVPixelBufferMetalCompatibilityKey : @YES
     };
 
     CVReturn cvResult = CVPixelBufferCreate(
         kCFAllocatorDefault,
         width,
         height,
-        kCVPixelFormatType_32RGBA,
+        kCVPixelFormatType_32BGRA,
         (__bridge CFDictionaryRef)pixelBufferAttributes,
         &owner->pixelBuffer
     );
@@ -218,7 +224,7 @@ bool IOSMetalInteropTexture::initialize(
         owner->metalTextureCache,
         owner->pixelBuffer,
         nullptr,
-        MTLPixelFormatRGBA8Unorm,
+        MTLPixelFormatBGRA8Unorm,
         width,
         height,
         0,
@@ -256,8 +262,8 @@ bool IOSMetalInteropTexture::initialize(
         GL_RGBA,
         width,
         height,
-        GL_RGBA,
-        GL_UNSIGNED_BYTE,
+        GL_BGRA_EXT,
+        GL_UNSIGNED_INT_8_8_8_8_REV,
         0,
         &owner->openGLESTextureRef
     );
@@ -359,10 +365,11 @@ bool IOSMetalInteropTexture::runSelfTest(std::string& error) {
     const std::size_t bytesPerRow = CVPixelBufferGetBytesPerRow(owner->pixelBuffer);
     bool pixelMatches = false;
     if (base && bytesPerRow >= 4) {
+        // BGRA8Unorm is exposed as BGRA bytes in the shared CVPixelBuffer.
         pixelMatches =
-            std::abs(static_cast<int>(base[0]) - 64) <= 2 &&
+            std::abs(static_cast<int>(base[0]) - 191) <= 2 &&
             std::abs(static_cast<int>(base[1]) - 128) <= 2 &&
-            std::abs(static_cast<int>(base[2]) - 191) <= 2 &&
+            std::abs(static_cast<int>(base[2]) - 64) <= 2 &&
             base[3] >= 253;
     }
     CVPixelBufferUnlockBaseAddress(owner->pixelBuffer, kCVPixelBufferLock_ReadOnly);
