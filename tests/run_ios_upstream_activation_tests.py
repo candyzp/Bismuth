@@ -15,7 +15,7 @@ def require(condition, message):
 
 require("IOSUpstream::IOSGPURenderer::create(this)" in hooks,
         "PlayLayer must create the iOS GPU renderer")
-require("renderer->prepareForLevelReset()" in hooks and
+require("existing->prepareForLevelReset()" in hooks and
         "renderer->enforceGPUOwnership()" in hooks,
         "PlayLayer reset must retire stale layer nodes and reassert GPU ownership")
 require("optimized_updateVisibility(dt)" in hooks and
