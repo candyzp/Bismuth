@@ -94,6 +94,20 @@ inline void glBindBuffer(GLenum target,GLuint x) {
 inline void glGenBuffers(int n,GLuint* out) { while(n--) *out++=fixture::nextBuffer++; }
 inline void glDeleteBuffers(int n,const GLuint* values) { while(n--) fixture::buffers.erase(*values++); }
 inline GLenum glGetError() { auto e=fixture::error; fixture::error=0; return e; }
+inline void glBufferSubData(GLenum target,usize offset,usize bytes,const void* data) {
+    assert(target==GL_ARRAY_BUFFER);
+    assert(offset==0);
+    if (fixture::atlasBuffers.contains(fixture::arrayBuffer)) {
+        ++fixture::atlasUploads;
+        if (fixture::failAtlasSync) { fixture::error=1; return; }
+        const auto first=static_cast<const int*>(data);
+        fixture::vaoSpriteIDs[fixture::atlasBuffers.at(fixture::arrayBuffer)].assign(
+            first, first+bytes/sizeof(int)
+        );
+        return;
+    }
+    assert(false);
+}
 inline void glBufferData(GLenum target,usize bytes,const void* data,GLenum) {
     assert(target==GL_ARRAY_BUFFER);
     if (fixture::atlasBuffers.contains(fixture::arrayBuffer)) {

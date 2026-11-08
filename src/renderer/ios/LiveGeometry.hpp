@@ -105,9 +105,31 @@ public:
     bool flush(u32 buffer) {
         if (dirty.empty())
             return true;
-        if (!buffer)
+        if (!buffer || vertices.size() != records.size() * 4)
             return false;
+
         std::sort(dirty.begin(), dirty.end());
+        dirty.erase(std::unique(dirty.begin(), dirty.end()), dirty.end());
+
+        // Highly animated decorations can dirty thousands of isolated sprite
+        // quads. Thousands of tiny glBufferSubData calls cost more than a few
+        // coalesced spans on mobile drivers. Merge gaps of up to two sprites,
+        // and upload the full owner buffer once when the dirty set is dense.
+        constexpr usize COALESCE_GAP_SPRITES = 2;
+        constexpr usize MAX_PARTIAL_RANGES = 48;
+
+        usize rangeCount = 1;
+        usize rangeLast = dirty.front();
+        for (usize i = 1; i < dirty.size(); ++i) {
+            if (dirty[i] > rangeLast + COALESCE_GAP_SPRITES + 1)
+                ++rangeCount;
+            rangeLast = dirty[i];
+        }
+
+        const bool fullUpload =
+            dirty.size() * 3 >= records.size() ||
+            rangeCount > MAX_PARTIAL_RANGES;
+
         GLint previous = 0;
         glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &previous);
 
@@ -117,16 +139,34 @@ public:
         while (glGetError() != GL_NO_ERROR) {}
 
         glBindBuffer(GL_ARRAY_BUFFER, buffer);
-        usize first = dirty.front(), last = first;
-        const auto upload = [&]() {
-            glBufferSubData(GL_ARRAY_BUFFER, first * 4 * sizeof(AssistVertex),
-                (last - first + 1) * 4 * sizeof(AssistVertex), vertices.data() + first * 4);
-        };
-        for (usize i = 1; i < dirty.size(); ++i) {
-            if (dirty[i] <= last + 1) { last = std::max(last, dirty[i]); continue; }
-            upload(); first = last = dirty[i];
+        if (fullUpload) {
+            glBufferSubData(
+                GL_ARRAY_BUFFER, 0,
+                vertices.size() * sizeof(AssistVertex), vertices.data()
+            );
+        } else {
+            usize first = dirty.front();
+            usize last = first;
+            const auto upload = [&]() {
+                const usize firstVertex = first * 4;
+                const usize vertexCount = (last - first + 1) * 4;
+                glBufferSubData(
+                    GL_ARRAY_BUFFER,
+                    firstVertex * sizeof(AssistVertex),
+                    vertexCount * sizeof(AssistVertex),
+                    vertices.data() + firstVertex
+                );
+            };
+            for (usize i = 1; i < dirty.size(); ++i) {
+                if (dirty[i] <= last + COALESCE_GAP_SPRITES + 1) {
+                    last = std::max(last, dirty[i]);
+                    continue;
+                }
+                upload();
+                first = last = dirty[i];
+            }
+            upload();
         }
-        upload();
 
         bool uploadOK = true;
         while (glGetError() != GL_NO_ERROR)

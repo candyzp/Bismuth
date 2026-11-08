@@ -223,9 +223,9 @@ static bool uploadDirtyAtlas(cocos2d::CCTextureAtlas* atlas) {
     if (totalQuads == 0 || totalQuads > MAX_REASONABLE_ATLAS_QUADS)
         return totalQuads == 0;
 
-    // Synchronize the existing VBO without submitting every quad invisibly.
-    // Starting at zero also avoids Cocos' partial dirty-draw (n-start) underflow
-    // and mapped-buffer memcpy. This is an upload, not a second render pass.
+    // Synchronize the existing VBO without reallocating its storage. Starting at
+    // zero avoids Cocos' partial dirty-draw (n-start) underflow and mapped-buffer
+    // memcpy; glBufferSubData updates the active quads in place.
     if (totalQuads > atlas->getCapacity() || !atlas->m_pBuffersVBO[0])
         return false;
     const auto quads = atlas->getQuads();
@@ -235,7 +235,7 @@ static bool uploadDirtyAtlas(cocos2d::CCTextureAtlas* atlas) {
     glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &previousBuffer);
     glBindBuffer(GL_ARRAY_BUFFER, atlas->m_pBuffersVBO[0]);
     drainGLErrors();
-    glBufferData(GL_ARRAY_BUFFER, totalQuads * sizeof(*quads), quads, GL_DYNAMIC_DRAW);
+    glBufferSubData(GL_ARRAY_BUFFER, 0, totalQuads * sizeof(*quads), quads);
     const bool uploadOK = consumeGLErrors();
     glBindBuffer(GL_ARRAY_BUFFER, static_cast<GLuint>(previousBuffer));
     if (!uploadOK)
@@ -602,6 +602,7 @@ bool AtlasInterleaveRegistry::drawBatch(
     // This turns the expensive refresh from "all eligible sprites" into "actual
     // GPU work" and keeps CPU-only frames genuinely cheap.
     if (hasGPU) {
+        usize actualSprites = 0;
         for (usize slot = 0; slot < totalQuads; ++slot) {
             const auto record = state.atlasOwners[slot];
             if (record.empty())
@@ -609,16 +610,11 @@ bool AtlasInterleaveRegistry::drawBatch(
             auto& geometry = record.immediate
                 ? record.immediate->liveGeometry
                 : record.deferred->liveGeometry;
-            if (!geometry.refresh(record.baseVertex / 4))
+            if (!geometry.refresh(record.baseVertex / 4)) {
                 state.atlasOwners[slot] = {};
-        }
-
-        usize actualSprites = 0;
-        for (usize slot = 0; slot < totalQuads; ++slot) {
-            const auto& owner = state.atlasOwners[slot];
-            if (owner.empty())
-                continue;
-            ++actualSprites;
+            } else {
+                ++actualSprites;
+            }
         }
         hasGPU = actualSprites != 0;
     }
@@ -637,10 +633,16 @@ bool AtlasInterleaveRegistry::drawBatch(
     // the state-texture update cost.
     renderer->prepareGPUFrame();
 
+#ifndef NDEBUG
+    // The first pass already proves a complete permutation: descendant count
+    // equals quad count, every slot is in range, and duplicates are rejected.
+    // Keep the exhaustive hole check in diagnostic builds, not on every release
+    // frame of a heavily decorated level.
     for (usize i = 0; i < totalQuads; ++i) {
         if (!state.atlasSprites[i])
             return fail("missing-atlas-slot", static_cast<int>(i), static_cast<u32>(totalQuads));
     }
+#endif
 
     auto& cache = state.indexCaches[batch];
     const bool saneCache = cachedPlanSane(cache, totalQuads);
@@ -673,6 +675,7 @@ bool AtlasInterleaveRegistry::drawBatch(
 
     if (atlas->getTotalQuads() != totalQuads || descendants->count() != totalQuads)
         return fail("atlas-mutated-after-transform", -1, static_cast<u32>(totalQuads));
+#ifndef NDEBUG
     for (usize i = 0; i < totalQuads; ++i) {
         auto sprite = typeinfo_cast<cocos2d::CCSprite*>(descendants->objectAtIndex(i));
         if (!sprite || sprite->getBatchNode() != batch)
@@ -681,6 +684,7 @@ bool AtlasInterleaveRegistry::drawBatch(
         if (slot >= totalQuads || state.atlasSprites[slot] != sprite)
             return fail("post-transform-order-change", static_cast<int>(slot), static_cast<u32>(totalQuads));
     }
+#endif
 
     bool hasStock = false;
     for (const auto& run : cache.runs) {

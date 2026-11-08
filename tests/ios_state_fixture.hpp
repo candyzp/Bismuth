@@ -28,17 +28,29 @@ struct CCTexture2D {
     u32 id=4; float width=1024,height=1024;
     u32 getName(){return id;} float getPixelsWide(){return width;} float getPixelsHigh(){return height;}
 };
+inline CCAffineTransform CCAffineTransformConcat(CCAffineTransform a, CCAffineTransform b) {
+    return {
+        a.a*b.a+a.b*b.c, a.a*b.b+a.b*b.d,
+        a.c*b.a+a.d*b.c, a.c*b.b+a.d*b.d,
+        a.tx*b.a+a.ty*b.c+b.tx, a.tx*b.b+a.ty*b.d+b.ty
+    };
+}
 struct CCNode {
     virtual ~CCNode()=default;
     bool isVisible(){return true;}
     CCNode* parent=nullptr;
     CCArray children;
+    CCAffineTransform transform;
     int zOrder=0;
     CCNode* getParent(){return parent;}
     CCArray* getChildren(){return &children;}
     int getZOrder(){return zOrder;}
+    CCAffineTransform nodeToParentTransform(){return transform;}
 };
+struct CCSpriteBatchNode : CCNode {};
 struct CCSprite : CCNode {
+    CCSpriteBatchNode* batch=nullptr;
+    CCSpriteBatchNode* getBatchNode(){return batch;}
     bool getDontDraw(){return false;}
     ccColor3B color; u8 opacity=255;
     bool visible=true, rotated=false, flipX=false, flipY=false, premultiplied=false;

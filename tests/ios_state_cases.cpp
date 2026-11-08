@@ -73,6 +73,41 @@ int main() {
         assert(diagnostics.invalidChildNodes == 2);
     }
     {
+        // Dynamic roots nested below plain CCNode containers must upload their
+        // complete transform to the stock atlas, not only the GameObject-local
+        // matrix. Moving the container changes the composed GPU transform too.
+        GameObject moving;
+        cocos2d::CCNode container;
+        cocos2d::CCSpriteBatchNode batch;
+        moving.parent = &container;
+        container.parent = &batch;
+        moving.batch = &batch;
+        moving.transform = {1.f, 0.f, 0.f, 1.f, 10.f, 20.f};
+        container.transform = {0.f, -1.f, 1.f, 0.f, 100.f, 50.f};
+
+        std::vector<cocos2d::CCSprite*> accepted;
+        ResolvedStateLayer::CollectionDiagnostics diagnostics;
+        assert(state.classifyObject(&moving, accepted, diagnostics) ==
+            ResolvedStateLayer::SafetyClass::DynamicSafe);
+        auto initial = state.captureObjectState(&moving);
+        auto expected = cocos2d::CCAffineTransformConcat(
+            moving.transform, container.transform
+        );
+        assert(initial.transform.a == expected.a && initial.transform.b == expected.b);
+        assert(initial.transform.c == expected.c && initial.transform.d == expected.d);
+        assert(initial.transform.tx == expected.tx && initial.transform.ty == expected.ty);
+
+        container.transform.tx += 40.f;
+        auto moved = state.captureFrameObjectState(
+            &moving, ResolvedStateLayer::SafetyClass::DynamicSafe, initial
+        );
+        expected = cocos2d::CCAffineTransformConcat(
+            moving.transform, container.transform
+        );
+        assert(moved.transform.tx == expected.tx && moved.transform.ty == expected.ty);
+        assert(moved.transform.tx != initial.transform.tx);
+    }
+    {
         GameObject glow, detail;
         object.m_objectType=GameObjectType::Hazard;
         object.m_glowSprite=&glow; object.m_colorSprite=&detail;
@@ -220,5 +255,5 @@ int main() {
         assert(pending.isGPUStateReady() && pending.dirtyObjectRecords.empty());
         assert(objects.uploads==2);
     }
-    std::cout << "PASS: exact affine state, static transform reuse, detached visibility, small transform changes, live geometry eligibility, per-frame validation cache, 65,536 stock opacity/color pairs, current-state teardown\n";
+    std::cout << "PASS: exact affine state, inherited CCNode transforms, static transform reuse, detached visibility, small transform changes, live geometry eligibility, per-frame validation cache, 65,536 stock opacity/color pairs, current-state teardown\n";
 }

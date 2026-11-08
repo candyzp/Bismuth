@@ -295,17 +295,28 @@ class $modify(RendererOwnedCCSprite, cocos2d::CCSprite) {
         }
 
         if (auto children = this->getChildren(); children && children->count()) {
-            // Stock children still need their parent's affine/visibility state,
-            // even though this owned quad is expanded by the GPU. Visit children
-            // so each keeps its own stock/GPU ownership and update order.
-            this->m_transformToBatch = this->nodeToParentTransform();
-            this->m_bShouldBeHidden = !this->isVisible();
-            if (auto parent = typeinfo_cast<cocos2d::CCSprite*>(this->getParent());
-                parent && this->getParent() != this->getBatchNode()) {
-                this->m_transformToBatch = cocos2d::CCAffineTransformConcat(
-                    this->m_transformToBatch, parent->m_transformToBatch);
-                this->m_bShouldBeHidden |= parent->m_bShouldBeHidden;
+            // This GPU-owned quad is expanded by the shader, but stock descendants
+            // still need the complete transform to the atlas. Include plain CCNode
+            // containers as well as CCSprite parents; otherwise nested decoration
+            // children lose an ancestor transform and appear offset or missing.
+            auto batch = this->getBatchNode();
+            auto transform = this->nodeToParentTransform();
+            bool hidden = !this->isVisible() || this->getDontDraw();
+
+            for (auto parent = this->getParent(); parent && parent != batch;
+                parent = parent->getParent()) {
+                transform = cocos2d::CCAffineTransformConcat(
+                    transform, parent->nodeToParentTransform()
+                );
+                hidden |= !parent->isVisible();
+                if (auto parentSprite = typeinfo_cast<cocos2d::CCSprite*>(parent)) {
+                    hidden |= parentSprite->getDontDraw() ||
+                        parentSprite->m_bShouldBeHidden;
+                }
             }
+
+            this->m_transformToBatch = transform;
+            this->m_bShouldBeHidden = hidden;
             cocos2d::CCNode::updateTransform();
         }
         this->setDirty(true);

@@ -38,6 +38,32 @@ bool isDescendantOf(cocos2d::CCNode* node, cocos2d::CCNode* ancestor) {
     return false;
 }
 
+// The legacy shader expects each GameObject transform in its stock atlas' local
+// space. A GameObject can sit below an ordinary CCNode container, so its
+// nodeToParentTransform() alone is not always the complete transform.
+cocos2d::CCAffineTransform getObjectTransformToBatch(GameObject* object) {
+    if (!object)
+        return cocos2d::CCAffineTransformMakeIdentity();
+
+    const auto local = object->nodeToParentTransform();
+    auto batch = object->getBatchNode();
+    if (!batch)
+        return local;
+
+    auto transform = cocos2d::CCAffineTransformMakeIdentity();
+    auto current = static_cast<cocos2d::CCNode*>(object);
+    while (current && current != batch) {
+        transform = cocos2d::CCAffineTransformConcat(
+            transform, current->nodeToParentTransform()
+        );
+        current = current->getParent();
+    }
+
+    // Detached/deferred roots do not have a batch yet. Keep their local matrix
+    // until Geometry Dash inserts them into their final stock atlas.
+    return current == batch ? transform : local;
+}
+
 inline bool changedFloat(float a, float b, float epsilon = 0.0001f) {
     return std::abs(a - b) > epsilon;
 }
@@ -192,9 +218,13 @@ ResolvedStateLayer::SafetyClass ResolvedStateLayer::classifyObject(
         return SafetyClass::StockOnly;
     }
 
+    const auto batch = object->getBatchNode();
+    const bool inheritedNodeTransform =
+        batch && object->getParent() && object->getParent() != batch;
     const bool dynamic =
         object->m_groupCount > 0 ||
-        object->getHasRotateAction() || object->m_usesAudioScale;
+        object->getHasRotateAction() || object->m_usesAudioScale ||
+        inheritedNodeTransform;
 
     return dynamic ? SafetyClass::DynamicSafe : SafetyClass::StaticSafe;
 }
@@ -224,7 +254,7 @@ ResolvedStateLayer::ObjectState ResolvedStateLayer::captureObjectState(GameObjec
     if (!object)
         return state;
 
-    state.transform = object->nodeToParentTransform();
+    state.transform = getObjectTransformToBatch(object);
     state.vertexZ = object->getVertexZ();
     state.opacity = (float)object->getDisplayedOpacity() / 255.f;
     state.visible = object->getParent() && object->isVisible() &&
@@ -247,7 +277,7 @@ ResolvedStateLayer::ObjectState ResolvedStateLayer::captureFrameObjectState(
         // The GPU state texture does not consume root opacity. Avoid asking Cocos
         // for displayed opacity on every dynamic object and sample only fields
         // that the vertex shader actually reads.
-        state.transform = object->nodeToParentTransform();
+        state.transform = getObjectTransformToBatch(object);
         state.vertexZ = object->getVertexZ();
     }
 
