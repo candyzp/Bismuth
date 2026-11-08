@@ -44,6 +44,12 @@
 			"type": "bool",
 			"default": false,
 			"description": "Writes renderer-stage and large-level progress breadcrumbs to Geode's native log and the mod save folder (crash-breadcrumbs.log). Per-object log spam is disabled; no second crash handler is installed."
+		},
+		"corporate_catcher_enabled": {
+			"name": "Corporate Catcher diagnostics",
+			"type": "bool",
+			"default": true,
+			"description": "Profiles all 20 active Bismuth Geode hook points and reports FPS once per second. Any measured frame rate below 60 FPS is counted as a lag spike. Timing instrumentation adds a small amount of CPU overhead; disable for normal play."
 		}
 	}
 }
