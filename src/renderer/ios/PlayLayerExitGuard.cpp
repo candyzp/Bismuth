@@ -1,6 +1,7 @@
 #ifdef GEODE_IS_IOS
 
 #include "../Renderer.hpp"
+#include "CorporateCatcher.hpp"
 #include "../ios_upstream/IOSGPURenderer.hpp"
 #include <Geode/modify/PauseLayer.hpp>
 #include <Geode/modify/PlayLayer.hpp>
@@ -13,6 +14,7 @@ using namespace geode::prelude;
 // PlayLayer's m_batchNodes storage had already entered teardown.
 class $modify(RendererExitGuardPlayLayer, PlayLayer) {
     void onEnterTransitionDidFinish() {
+        CORPORATE_CATCHER_PROFILE_HOOK("PlayLayer::onEnterTransitionDidFinish");
         PlayLayer::onEnterTransitionDidFinish();
 
         // Ownership is compiled during the normal PlayLayer setup path. Do not
@@ -27,6 +29,7 @@ class $modify(RendererExitGuardPlayLayer, PlayLayer) {
     }
 
     void onExit() {
+        CORPORATE_CATCHER_PROFILE_HOOK("PlayLayer::onExit");
         if (auto gpuRenderer = IOSUpstream::IOSGPURenderer::getCurrent();
             gpuRenderer && gpuRenderer->getPlayLayer() == this)
             gpuRenderer->suspendForPlayLayerExit();
@@ -50,6 +53,7 @@ class $modify(RendererExitGuardPlayLayer, PlayLayer) {
 // resumeGPU() is intentionally a no-op unless that renderer was suspended.
 class $modify(RendererResumePauseLayer, PauseLayer) {
     void onResume(cocos2d::CCObject* sender) {
+        CORPORATE_CATCHER_PROFILE_HOOK("PauseLayer::onResume");
         auto playLayer = PlayLayer::get();
         auto renderer = Renderer::forPlayLayer(playLayer);
         PauseLayer::onResume(sender);
