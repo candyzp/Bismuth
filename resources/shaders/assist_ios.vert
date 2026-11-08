@@ -53,11 +53,13 @@ void main() {
         mat2 positionalTransform = mat2(g0.xy, g0.zw);
         mat2 groupLocalTransform = mat2(g1.xy, g1.zw);
 
-        // Match the original renderer: the group's transformed start position
-        // anchors the object, and the prebuilt vertex is already object-local.
-        // Do not apply the Cocos root matrix here; it contains the root anchor
-        // translation and would offset the same geometry a second time.
-        vec2 localOffset = a_localPosition;
+        // Geometry is expressed in GameObject-local coordinates. Restore the
+        // root affine transform (rotation, scale, skew and anchor-relative
+        // translation) before applying the group's local transform.
+        // Keep the root translation relative to the authored start position so
+        // the group's positional transform remains the sole world-space anchor.
+        mat2 rootTransform = mat2(o0.xy, o0.zw);
+        vec2 localOffset = rootTransform * a_localPosition + (o1.xy - o2.xy);
         bool applyLocalTransform = mod(floor(groupFlags / 2.0), 2.0) > 0.5;
         if (applyLocalTransform)
             localOffset = groupLocalTransform * localOffset;

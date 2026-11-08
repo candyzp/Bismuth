@@ -35,10 +35,9 @@ link=gl('glLinkProgram',None,uint);getProgram=gl('glGetProgramiv',None,uint,uint
 programLog=gl('glGetProgramInfoLog',None,uint,integer,ptr,ptr)
 root=Path(__file__).resolve().parents[1]/'resources/shaders'
 assist_source=(root/'assist_ios.vert').read_text()
-assert 'vec2 localOffset = a_localPosition;' in assist_source
+assert 'mat2 rootTransform = mat2(o0.xy, o0.zw);' in assist_source
+assert 'vec2 localOffset = rootTransform * a_localPosition + (o1.xy - o2.xy);' in assist_source
 assert 'worldPosition = positionalTransform * o2.xy + g2.xy + localOffset;' in assist_source
-assert 'o1.xy - o2.xy' not in assist_source
-assert 'rootTransform' not in assist_source
 def program(vertex):
     p=createProgram()
     for path,kind in ((vertex,0x8B31),('assist_ios.frag',0x8B30)):
