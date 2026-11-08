@@ -25,9 +25,7 @@ pieces=[
     state[state.index('void ResolvedStateLayer::update('):state.rindex('#endif')],
     (root/'tests/ios_state_cases.cpp').read_text(),
 ]
-hooks=(root/'src/renderer/hooks.cpp').read_text()
-assert 'resolved->isGPUGroupManagedObject(object)' in hooks
-assert 'pruneGPUGroupManagedObjects(this);' in hooks
+# ResolvedStateLayer remains compiled as dormant legacy code; active iOS hooks use IOSUpstream.
 with tempfile.TemporaryDirectory(prefix='bismuth-state-tests-') as directory:
     path=Path(directory); (path/'test.cpp').write_text('\n'.join(pieces))
     subprocess.run(['g++','-std=c++23','-O1','-g','-Wall','-Wextra','-fsanitize=address,undefined',
