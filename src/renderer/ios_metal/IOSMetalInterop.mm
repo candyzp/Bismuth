@@ -142,10 +142,12 @@ IOSMetalInteropTexture::~IOSMetalInteropTexture() {
 
 void IOSMetalInteropTexture::reset() {
     if (m_impl) {
-        auto owner = (__bridge BismuthMetalInteropOwner*)m_impl;
-        (void)owner;
-        CFRelease((__bridge CFTypeRef)m_impl);
+        // initialize() stores this Objective-C owner with __bridge_retained.
+        // Transfer that +1 retain back to ARC instead of casting void* to CFTypeRef.
+        BismuthMetalInteropOwner* owner =
+            (__bridge_transfer BismuthMetalInteropOwner*)m_impl;
         m_impl = nullptr;
+        (void)owner;
     }
     m_glTextureName = 0;
     m_selfTestPassed = false;
