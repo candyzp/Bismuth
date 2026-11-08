@@ -25,7 +25,7 @@ require("IOSUpstream::IOSGPURenderer::create(this)" in play_ios,
 require("prepareForLevelReset()" in play_ios and
         "enforceGPUOwnership()" in play_ios,
         "level reset must retire old layer nodes and reassert GPU ownership")
-require("Renderer::create(this)" not in play_ios,
+require("auto renderer = Renderer::create(this);" not in play_ios,
         "iOS reset must not instantiate the legacy hybrid Renderer")
 
 visibility = body(hooks, "    void updateVisibility(float dt)", "\n};")
