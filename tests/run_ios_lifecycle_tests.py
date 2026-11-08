@@ -128,7 +128,7 @@ setup = hooks_source[hooks_source.index('static bool newPlayLayer'):hooks_source
 # The isolated PlayLayer fixture does not compile the GJBaseGameLayer helper;
 # this stub lets it exercise the reset call sites while source assertions above
 # verify that production hooks contain the real selective implementation.
-setup = 'static void pruneGPUGroupManagedObjects(PlayLayer*) {}\\n' + setup
+setup = 'static void pruneGPUGroupManagedObjects(PlayLayer*) {}' + chr(10) + setup
 limits = source('src/renderer/ios/AssistBufferLimits.hpp')
 chunks = limits + '\n' + renderer[renderer.index('struct StandaloneObjectDesc'):renderer.index('struct IOSRendererState')]
 chunks += function('static std::vector<StandaloneChunkDesc> buildStandaloneChunks(')
