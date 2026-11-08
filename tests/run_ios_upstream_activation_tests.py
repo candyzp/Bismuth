@@ -23,8 +23,9 @@ require("IOSUpstream::IOSGPURenderer::create(this)" in hooks,
         "PlayLayer must create the iOS GPU renderer")
 require("enable_language(OBJCXX)" in cmake and
         "IOSMetalInterop.mm" in cmake and
-        "-fobjc-arc" in cmake,
-        "iOS build must compile the Objective-C++ Metal bridge")
+        "-fobjc-arc" in cmake and
+        'COMPILE_DEFINITIONS "GEODE_IS_IOS"' in cmake,
+        "iOS build must compile the Objective-C++ Metal bridge with its iOS-only API guard")
 require("METAL_FRAMEWORK" in cmake and "COREVIDEO_FRAMEWORK" in cmake and
         "FOUNDATION_FRAMEWORK" in cmake,
         "iOS target must link Metal, CoreVideo and Foundation")

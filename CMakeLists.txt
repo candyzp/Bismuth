@@ -32,7 +32,9 @@ file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS src/*.cpp)
 list(APPEND SOURCES src/renderer/ios_metal/IOSMetalInterop.mm)
 set_source_files_properties(
     src/renderer/ios_metal/IOSMetalInterop.mm
-    PROPERTIES COMPILE_OPTIONS "-fobjc-arc"
+    PROPERTIES
+        COMPILE_OPTIONS "-fobjc-arc"
+        COMPILE_DEFINITIONS "GEODE_IS_IOS"
 )
 
 add_library(${PROJECT_NAME} SHARED ${SOURCES})
