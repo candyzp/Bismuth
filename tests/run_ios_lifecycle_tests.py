@@ -121,8 +121,14 @@ methods = '\n'.join(function(sig) for sig in [
     'Ref<Renderer> Renderer::forPlayLayer(', 'void Renderer::suspendGPU()',
     'void Renderer::resumeGPU()',
 ])
-setup = source('src/renderer/hooks.cpp')
-setup = setup[setup.index('static bool newPlayLayer'):setup.index('    void updateVisibility')]+ '};'
+hooks_source = source('src/renderer/hooks.cpp')
+assert 'pruneGPUGroupManagedObjects(this);' in hooks_source
+assert 'resolved->isGPUGroupManagedObject(object)' in hooks_source
+setup = hooks_source[hooks_source.index('static bool newPlayLayer'):hooks_source.index('    void updateVisibility')]+ '};'
+# The isolated PlayLayer fixture does not compile the GJBaseGameLayer helper;
+# this stub lets it exercise the reset call sites while source assertions above
+# verify that production hooks contain the real selective implementation.
+setup = 'static void pruneGPUGroupManagedObjects(PlayLayer*) {}\\n' + setup
 limits = source('src/renderer/ios/AssistBufferLimits.hpp')
 chunks = limits + '\n' + renderer[renderer.index('struct StandaloneObjectDesc'):renderer.index('struct IOSRendererState')]
 chunks += function('static std::vector<StandaloneChunkDesc> buildStandaloneChunks(')
