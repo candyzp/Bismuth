@@ -60,7 +60,12 @@ template<class T> struct Ref {
     T* data() const{return p;}
     operator T*() const{return p;}
 };
-namespace prelude { namespace log { template<class... T> void error(T&&...) {} } }
+namespace prelude {
+namespace log {
+    template<class... T> void error(T&&...) {}
+    template<class... T> void warn(T&&...) {}
+}
+}
 }
 using namespace geode;
 using namespace geode::prelude;
@@ -80,13 +85,20 @@ struct ResolvedStateLayer {
     static ResolvedStateLayer* getCurrent(){return current;}
     void setCurrent(bool active){if(active)current=this;else if(current==this)current=nullptr;}
     void resync(){++syncs;} void reseedActiveFromStock(){++seeds;}
+    bool syncGroupStateTexture(){++syncs;return true;}
     void update(bool){++updates;} void finishEventFrame(){++finishes;}
+};
+struct GroupManager {
+    int prepares=0;
+    void prepareGroupStateBuffer(){++prepares;}
 };
 struct AssistShadowBatch {};
 struct StandaloneAssistBatch { int begins=0; void beginFrame(){++begins;} };
 struct AtlasInterleaveRegistry { inline static int begins=0; static void beginFrame(){++begins;} };
 struct Renderer {
     PlayLayer* layer=nullptr; bool enabled=true; float gameTimer=0; int debugCalls=0, restores=0;
+    GroupManager groupManager;
+    GroupManager& getGroupManager(){return groupManager;}
     static Ref<Renderer> get(); static Ref<Renderer> create(PlayLayer*);
     static Ref<Renderer> forPlayLayer(PlayLayer*);
     PlayLayer* getPlayLayer(){return layer;} bool isEnabled(){return enabled;}
