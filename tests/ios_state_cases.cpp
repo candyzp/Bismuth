@@ -69,6 +69,7 @@ int main() {
         assert(state.classifyObject(&decoration, collected, diagnostics) ==
             ResolvedStateLayer::SafetyClass::StaticSafe);
         assert(collected.size() == 3);
+        assert(diagnostics.invalidChildNodes == 2);
 
         decoration.m_groupCount = 1;
         assert(state.classifyObject(&decoration, collected, diagnostics) ==
@@ -81,7 +82,6 @@ int main() {
         assert(collected[0] == &decoration);
         assert(collected[1] == &firstPiece);
         assert(collected[2] == &secondPiece);
-        assert(diagnostics.invalidChildNodes == 2);
     }
     {
         // Dynamic roots nested below plain CCNode containers must upload their
