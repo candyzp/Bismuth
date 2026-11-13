@@ -18,6 +18,7 @@ include(${CMAKE_CURRENT_LIST_DIR}/../cmake/Bgfx.cmake)
 
 set(ROOT ${CMAKE_CURRENT_LIST_DIR}/..)
 add_library(bismuth_core STATIC
+    ${CMAKE_CURRENT_LIST_DIR}/DiagnosticsStub.cpp
     ${ROOT}/src/gfx/HostGL.cpp
     ${ROOT}/src/gfx/Device.cpp
     ${ROOT}/src/gfx/Compositor.cpp
