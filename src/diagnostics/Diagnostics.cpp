@@ -18,11 +18,17 @@ namespace {
 using Clock = std::chrono::steady_clock;
 constexpr std::int64_t kStallThresholdNs = 4'000'000'000LL;
 constexpr std::int64_t kConfirmWindowNs = 1'250'000'000LL;
+constexpr std::int64_t kRenderStallThresholdNs = 2'000'000'000LL;
+constexpr std::int64_t kRenderConfirmWindowNs = 1'000'000'000LL;
 constexpr auto kPollInterval = std::chrono::milliseconds(400);
 
 std::atomic<bool> g_started{false};
 std::atomic<bool> g_freezeReported{false};
+std::atomic<bool> g_renderMonitoring{false};
+std::atomic<bool> g_renderFreezeReported{false};
 std::atomic<std::int64_t> g_lastHeartbeatNs{0};
+std::atomic<std::int64_t> g_lastRenderHeartbeatNs{0};
+std::atomic<std::uint64_t> g_renderFrames{0};
 std::atomic<std::uint32_t> g_objects{0};
 std::atomic<std::uint32_t> g_sprites{0};
 std::atomic<std::uint32_t> g_freezeIndex{0};
@@ -111,70 +117,91 @@ void writeEvent(const char* event, const char* message) {
     writeStateFileLocked(event, message);
 }
 
-void writeFreezeReport(std::int64_t stalledForNs) {
+void writeFreezeReport(const char* source, std::int64_t stalledForNs) {
     const auto index = g_freezeIndex.fetch_add(1, std::memory_order_relaxed) + 1;
-    const auto filename = std::string("freeze-stall-")
+    const bool rendererStall = source && std::string(source) == "renderer draw";
+    const auto filename = std::string(rendererStall ? "freeze-render-stall-" : "freeze-main-loop-stall-")
         + std::to_string(wallNowMs()) + "-"
         + std::to_string(index) + ".txt";
     std::ofstream out(g_diagDir / filename, std::ios::out | std::ios::trunc);
     if (!out)
         return;
 
-    out << "BISMUTH MAIN-LOOP STALL REPORT\n";
+    out << (rendererStall ? "BISMUTH RENDERER-FRAME STALL REPORT\n" : "BISMUTH MAIN-LOOP STALL REPORT\n");
     out << "timestamp_epoch_ms: " << wallNowMs() << "\n";
+    out << "stall_source: " << (source ? source : "unknown") << "\n";
     out << "stall_duration_ms: " << (stalledForNs / 1'000'000) << "\n";
-    out << "detection_threshold_ms: " << (kStallThresholdNs / 1'000'000) << "\n";
     out << "last_phase: " << loadText(g_phase) << "\n";
     out << "backend: " << loadText(g_backend) << "\n";
     out << "culling: " << loadText(g_culling) << "\n";
     out << "level_objects: " << g_objects.load(std::memory_order_relaxed) << "\n";
     out << "level_sprites: " << g_sprites.load(std::memory_order_relaxed) << "\n";
+    out << "renderer_frames_seen: " << g_renderFrames.load(std::memory_order_relaxed) << "\n";
     out << "\nDiagnosis:\n";
-    out << "- The main game-loop heartbeat stopped advancing while this watchdog thread remained active.\n";
-    out << "- This indicates a main-thread stall, blocked graphics/driver call, deadlock, or an unusually long operation.\n";
+    if (rendererStall) {
+        out << "- Main-loop heartbeat continued but Bismuth::Renderer::draw did not report another frame.\n";
+        out << "- This can indicate a scene/render scheduling stall or a renderer node that stopped being visited.\n";
+        out << "- It cannot detect a GPU that silently keeps displaying an old frame while draw calls continue returning.\n";
+    } else {
+        out << "- The main game-loop heartbeat stopped advancing while this watchdog thread remained active.\n";
+        out << "- This indicates a main-thread stall, blocked graphics/driver call, deadlock, or an unusually long operation.\n";
+    }
     out << "- The last_phase/backend/culling fields identify the last recorded Bismuth code path.\n";
-    out << "- This report does not prove that Metal itself crashed and does not contain a native stack trace.\n";
+    out << "- This report does not prove that Metal itself crashed and does not contain a native thread stack.\n";
     out << "- Match this timestamp with the Geode crash log and the iOS device analytics/crash report.\n";
     out << "- A hard process kill or full-device freeze may prevent any in-process report from being written.\n";
     out.flush();
 }
-
 void watchdogLoop() {
     std::int64_t candidateSinceNs = 0;
     std::int64_t candidateHeartbeatNs = 0;
+    std::int64_t renderCandidateSinceNs = 0;
+    std::int64_t renderCandidateHeartbeatNs = 0;
 
     for (;;) {
         std::this_thread::sleep_for(kPollInterval);
 
-        const auto heartbeatNs = g_lastHeartbeatNs.load(std::memory_order_acquire);
-        if (!heartbeatNs)
-            continue;
-
         const auto nowNs = steadyNowNs();
-        const auto stalledForNs = nowNs - heartbeatNs;
+        const auto heartbeatNs = g_lastHeartbeatNs.load(std::memory_order_acquire);
+        if (heartbeatNs) {
+            const auto stalledForNs = nowNs - heartbeatNs;
+            if (stalledForNs < kStallThresholdNs) {
+                candidateSinceNs = 0;
+                candidateHeartbeatNs = 0;
+            } else if (candidateHeartbeatNs != heartbeatNs) {
+                candidateHeartbeatNs = heartbeatNs;
+                candidateSinceNs = nowNs;
+            } else if (candidateSinceNs && nowNs - candidateSinceNs >= kConfirmWindowNs) {
+                if (!g_freezeReported.exchange(true, std::memory_order_acq_rel))
+                    writeFreezeReport("main loop", stalledForNs);
+                candidateSinceNs = 0;
+            }
+        }
 
-        if (stalledForNs < kStallThresholdNs) {
-            candidateSinceNs = 0;
-            candidateHeartbeatNs = 0;
+        if (!g_renderMonitoring.load(std::memory_order_acquire)) {
+            renderCandidateSinceNs = 0;
+            renderCandidateHeartbeatNs = 0;
             continue;
         }
 
-        // Confirm the exact same heartbeat is still stale. The extra window
-        // reduces false reports during iOS suspend/resume transitions.
-        if (candidateHeartbeatNs != heartbeatNs) {
-            candidateHeartbeatNs = heartbeatNs;
-            candidateSinceNs = nowNs;
+        const auto renderHeartbeatNs = g_lastRenderHeartbeatNs.load(std::memory_order_acquire);
+        if (!renderHeartbeatNs)
             continue;
-        }
 
-        if (candidateSinceNs && nowNs - candidateSinceNs >= kConfirmWindowNs) {
-            if (!g_freezeReported.exchange(true, std::memory_order_acq_rel))
-                writeFreezeReport(stalledForNs);
-            candidateSinceNs = 0;
+        const auto renderStalledForNs = nowNs - renderHeartbeatNs;
+        if (renderStalledForNs < kRenderStallThresholdNs) {
+            renderCandidateSinceNs = 0;
+            renderCandidateHeartbeatNs = 0;
+        } else if (renderCandidateHeartbeatNs != renderHeartbeatNs) {
+            renderCandidateHeartbeatNs = renderHeartbeatNs;
+            renderCandidateSinceNs = nowNs;
+        } else if (renderCandidateSinceNs && nowNs - renderCandidateSinceNs >= kRenderConfirmWindowNs) {
+            if (!g_renderFreezeReported.exchange(true, std::memory_order_acq_rel))
+                writeFreezeReport("renderer draw", renderStalledForNs);
+            renderCandidateSinceNs = 0;
         }
     }
 }
-
 } // namespace
 
 void start() {
@@ -206,7 +233,7 @@ void start() {
     storeText(g_culling, "not initialized");
 
     checkpoint("diagnostic recorder started");
-    note("Watchdog confirms a main-loop stall after about 5.25 seconds. Files are in this mod's save directory under diagnostics/.");
+    note("Watchdog checks the main loop (~5.25s) and Bismuth gameplay draw calls (~3s while a level renderer is active). Files are in this mod's save directory under diagnostics/.");
 
     // The worker reads atomics and writes a separate freeze report. It never
     // calls Metal, OpenGL, cocos2d, or Geode UI functions.
@@ -222,6 +249,27 @@ void heartbeat() {
 
     if (g_freezeReported.exchange(false, std::memory_order_acq_rel))
         checkpoint("main loop resumed after a detected stall");
+}
+
+void setRenderMonitoringEnabled(bool enabled) {
+    if (enabled && !g_started.load(std::memory_order_acquire))
+        start();
+
+    g_renderMonitoring.store(enabled, std::memory_order_release);
+    if (enabled) {
+        g_lastRenderHeartbeatNs.store(steadyNowNs(), std::memory_order_release);
+        g_renderFreezeReported.store(false, std::memory_order_release);
+        note("Renderer draw monitoring enabled for active gameplay.");
+    } else {
+        g_lastRenderHeartbeatNs.store(0, std::memory_order_release);
+    }
+}
+
+void renderHeartbeat() {
+    g_renderFrames.fetch_add(1, std::memory_order_relaxed);
+    g_lastRenderHeartbeatNs.store(steadyNowNs(), std::memory_order_release);
+    if (g_renderFreezeReported.exchange(false, std::memory_order_acq_rel))
+        checkpoint("Renderer::draw resumed after a detected renderer-frame stall");
 }
 
 void updatePhase(const char* phase) {

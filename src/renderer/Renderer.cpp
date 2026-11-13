@@ -383,6 +383,7 @@ bool Renderer::init(PlayLayer* layer, CCArray* levelObjects) {
     }
 
     log::info("Renderer initialized");
+    diag::setRenderMonitoringEnabled(true);
     diag::checkpoint("Renderer::init completed; waiting for first gameplay draw");
     return true;
 }
@@ -406,6 +407,8 @@ void Renderer::terminate() {
     if (currentRenderer != this)
         return;
 
+    diag::setRenderMonitoringEnabled(false);
+    diag::checkpoint("Renderer terminated; gameplay render monitoring disabled");
     auto interop = gfx::Device::get().getInterop();
     for (auto& target : sharedTargets) {
         if (interop && target.platform)
@@ -424,6 +427,8 @@ void Renderer::deactivate(const char* reason) {
     if (!active)
         return;
 
+    diag::setRenderMonitoringEnabled(false);
+    diag::note(reason);
     log::warn("Bismuth: disabled for this level: {}", reason);
     setEnabled(false);
     active = false;
@@ -679,6 +684,8 @@ void Renderer::draw() {
     if (!enabled || !active)
         return;
 
+    diag::renderHeartbeat();
+    diag::updatePhase("Renderer::draw: frame entry");
     PROFILER_PUSH("Renderer::draw");
 
     auto& device = gfx::Device::get();
