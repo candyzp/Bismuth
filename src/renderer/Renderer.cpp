@@ -954,6 +954,7 @@ void Renderer::setEnabled(bool enabled) {
         enabled = false;
 
     this->enabled = enabled;
+    diag::setRenderMonitoringEnabled(enabled && active);
     this->setVisible(enabled);
     for (auto node : batchNodes)
         node->setVisible(enabled);
