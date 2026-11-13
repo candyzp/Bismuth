@@ -1,4 +1,5 @@
 #include "Device.hpp"
+#include "../diagnostics/Diagnostics.hpp"
 
 #include <chrono>
 
@@ -137,33 +138,49 @@ bool Device::init(const DeviceOptions& options, std::string& report) {
     if (isInitialized())
         return true;
 
+    diag::checkpoint("Device::init started");
+    diag::note("Attempting graphics backend initialization on Geometry Dash's current GL context.");
     report.clear();
     hostLost = false;
 
+    diag::updatePhase("Device::init: query host OpenGL context");
     if (!queryHostGL(host)) {
         report = "Couldn't access Geometry Dash's OpenGL context.";
+        diag::note(report.c_str());
         return false;
     }
 
     logf(LogLevel::Info, "Bismuth: host GL: %s | %s | %s", host.version.c_str(), host.renderer.c_str(), host.vendor.c_str());
+    const auto hostInfo = std::string("Host GL: ") + host.version + " | " + host.renderer + " | " + host.vendor;
+    diag::note(hostInfo.c_str());
 
     // bgfx runs on the calling (GL) thread: calling renderFrame before init
     // selects single-threaded mode.
+    diag::updatePhase("Device::init: bgfx renderFrame setup");
     bgfx::renderFrame();
 
     bool ok = false;
-    if (options.backend != BackendPreference::OpenGL)
+    if (options.backend != BackendPreference::OpenGL) {
+        diag::checkpoint("Device::init: attempting native Metal/Vulkan backend");
         ok = initNative(report);
-    if (!ok && options.backend != BackendPreference::Native)
+    }
+    if (!ok && options.backend != BackendPreference::Native) {
+        diag::checkpoint("Device::init: native backend unavailable; attempting host OpenGL fallback");
         ok = initHostGL(report);
+    }
 
     if (!ok) {
         backend = Backend::None;
+        diag::note(report.c_str());
+        diag::checkpoint("Device::init failed: no graphics backend initialized");
         return false;
     }
 
     chooseCullingPath(options.culling);
     logf(LogLevel::Info, "Bismuth: %s", describe().c_str());
+    diag::setRendererState(backendName(backend),
+        cullingPath == CullingPath::Gpu ? "GPU culling" : "CPU culling");
+    diag::checkpoint("Device::init completed successfully");
     return true;
 }
 
@@ -177,6 +194,7 @@ bool Device::initNative(std::string& report) {
 #endif
     const char* name = backendName(nativeBackend);
 
+    diag::updatePhase("Device::initNative: prepare native backend");
     std::string error;
     if (!Interop::prepareInit(type, host, error)) {
         report += std::string(name) + ": " + error + "\n";
@@ -200,6 +218,7 @@ bool Device::initNative(std::string& report) {
     init.resolution.width = 16;
     init.resolution.height = 16;
 
+    diag::updatePhase("Device::initNative: bgfx initialization on Metal/Vulkan");
     const bool initialized = tryInit(init, type);
 #if defined(__APPLE__)
     // BGFX retains the layer when its Metal swap chain is created.
@@ -216,6 +235,7 @@ bool Device::initNative(std::string& report) {
         logf(LogLevel::Warn, "Bismuth: %s lacks texture blit support", name);
     }
 
+    diag::updatePhase("Device::initNative: create host interop and compositor");
     interop = Interop::create(host, error);
     if (!interop || !compositor.init(host)) {
         interop = nullptr;
@@ -256,6 +276,7 @@ bool Device::initHostGL(std::string& report) {
     }
 #endif
 
+    diag::updatePhase("Device::initHostGL: prepare Geometry Dash OpenGL context");
     GLStateGuard guard(host);
 
     auto init = makeInit(type);
@@ -267,6 +288,7 @@ bool Device::initHostGL(std::string& report) {
 
     bgfx::glSetHostFramebuffer((u32)guard.snapshot().drawFramebuffer);
 
+    diag::updatePhase("Device::initHostGL: bgfx initialization on host OpenGL");
     if (!tryInit(init, type)) {
         report += "OpenGL: initialization failed\n";
         return false;
@@ -385,6 +407,7 @@ void Device::setHostViewRect(bgfx::ViewId view) {
 }
 
 void Device::flushHost() {
+    diag::updatePhase("Device::flushHost: bgfx host-frame submission");
     using Clock = std::chrono::steady_clock;
     auto ms = [](Clock::duration d) { return std::chrono::duration<double, std::milli>(d).count(); };
 
@@ -408,8 +431,11 @@ void Device::flushHost() {
 }
 
 void Device::submitNative() {
+    diag::updatePhase("Device::submitNative: prepare shared frame");
     interop->beforeNativeFrame();
+    diag::updatePhase("Device::submitNative: bgfx::frame on native backend");
     lastFrameNumber = bgfx::frame();
+    diag::updatePhase("Device::submitNative: publish native frame to host GL");
     interop->afterNativeFrame();
     accumulateStats();
 }

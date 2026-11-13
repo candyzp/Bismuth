@@ -6,6 +6,7 @@
 #include "../cl.hpp"
 #include <gfx/Device.hpp>
 #include <platform/FpsUnlock.hpp>
+#include "../diagnostics/Diagnostics.hpp"
 
 using namespace geode::prelude;
 
@@ -146,13 +147,18 @@ static void removeDecoObjects(CCArray* array) {
 #include <Geode/modify/GJBaseGameLayer.hpp>
 class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
     void update(float dt) {
+        auto renderer = Renderer::get();
+        if (renderer)
+            bismuth::diag::updatePhase("GJBaseGameLayer::update (game simulation)");
+
         auto timer = BProfiler::start("GJBaseGameLayer::update");
         GJBaseGameLayer::update(dt);
         timer.end();
 
-        auto renderer = Renderer::get();
-        if (renderer)
+        if (renderer) {
+            bismuth::diag::updatePhase("Renderer::update (post simulation)");
             renderer->update(dt);
+        }
     }
 
     void processMoveActions() {
@@ -303,21 +309,29 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
 #include <Geode/modify/CCDisplayLinkDirector.hpp>
 class $modify(RendererCCDisplayLinkDirector, CCDisplayLinkDirector) {
     void mainLoop() {
+        bismuth::diag::start();
+        bismuth::diag::heartbeat();
+        bismuth::diag::updatePhase("CCDisplayLinkDirector::mainLoop (enter)");
+
         bismuth::fps::beforeFrame();
 
         auto ren = Renderer::get();
         if (!ren) {
+            bismuth::diag::updatePhase("CCDisplayLinkDirector::mainLoop (menu/vanilla frame)");
             CCDisplayLinkDirector::mainLoop();
             bismuth::fps::afterFrame();
+            bismuth::diag::heartbeat();
             return;
         }
 
         auto timer = BProfiler::start("Frame time");
+        bismuth::diag::updatePhase("CCDisplayLinkDirector::mainLoop (Bismuth gameplay frame)");
         CCDisplayLinkDirector::mainLoop();
         timer.end();
 
         BProfiler::frameEnd();
         bismuth::fps::afterFrame();
+        bismuth::diag::heartbeat();
     }
 };
 
@@ -329,11 +343,16 @@ static bool hasAlreadyDoneMenuLoad = false;
 class OnMenuLoad : public CCNode {
 public:
     void showLoadAlerts() {
-        if (!Mod::get()->getSettingValue<bool>("enabled"))
+        bismuth::diag::start();
+        bismuth::diag::checkpoint("menu renderer initialization");
+        if (!Mod::get()->getSettingValue<bool>("enabled")) {
+            bismuth::diag::note("Bismuth is disabled in settings; renderer initialization skipped.");
             return;
+        }
 
         std::string report;
         if (!ensureBismuthDevice(report)) {
+            bismuth::diag::note(report.c_str());
             FLAlertLayer::create(
                 "Bismuth error!",
                 ("Bismuth couldn't start any renderer on this device, levels will render normally.\n\n" + report).c_str(),
@@ -342,8 +361,10 @@ public:
             return;
         }
 
+        bismuth::diag::checkpoint("menu renderer initialized; preloading sprite sheets");
         // Copy the sprite sheets now rather than when the first level opens.
         Renderer::preloadSpriteSheets();
+        bismuth::diag::checkpoint("menu sprite-sheet preload finished");
 
         auto& device = bismuth::gfx::Device::get();
         if (device.getCullingPath() == bismuth::gfx::CullingPath::Gpu && getGPUCoreCount() == -1) {

@@ -16,6 +16,7 @@
 #include <BProfiler.hpp>
 #include "profiler.hpp"
 #include "ObjectSorter.hpp"
+#include "../diagnostics/Diagnostics.hpp"
 
 using namespace geode::prelude;
 using namespace bismuth;
@@ -202,6 +203,8 @@ public:
 bool Renderer::init(PlayLayer* layer, CCArray* levelObjects) {
     if (currentRenderer)
         return false;
+    diag::checkpoint("Renderer::init started");
+    diag::setLevelStats(levelObjects ? levelObjects->count() : 0, 0);
     currentRenderer = this;
 
     this->layer = layer;
@@ -236,12 +239,15 @@ bool Renderer::init(PlayLayer* layer, CCArray* levelObjects) {
 
     LoadTimer loadTimer;
 
+    diag::updatePhase("Renderer::init: import Geometry Dash sprite sheets");
     importSpriteSheets(spriteSheets, spriteSheetHandles);
     loadTimer.step("sprite sheets");
 
+    diag::updatePhase("Renderer::init: load sprite mesh dictionary");
     SpriteMeshDictionary::loadFromFile("spriteMeshes.json");
     loadTimer.step("sprite meshes");
 
+    diag::updatePhase("Renderer::init: build group state");
     groupManager.initWithObjects(levelObjects);
     loadTimer.step("groups");
 
@@ -280,6 +286,7 @@ bool Renderer::init(PlayLayer* layer, CCArray* levelObjects) {
     renderedGameObjectCount = objects.size();
 
     bismuth::StaticBatchData staticData;
+    diag::updatePhase("Renderer::init: generate static rendering buffer");
     generateStaticRenderingBuffer(objects, staticData);
     loadTimer.step("static rendering buffer");
 
@@ -302,6 +309,7 @@ bool Renderer::init(PlayLayer* layer, CCArray* levelObjects) {
 
     fetchBlendingStates();
 
+    diag::updatePhase("Renderer::init: generate object vertex batches");
     for (auto object : objects)
         objectBatch.writeGameObject(object);
     objectBatch.finishWriting(staticData);
@@ -309,7 +317,10 @@ bool Renderer::init(PlayLayer* layer, CCArray* levelObjects) {
     loadTimer.step("vertex buffer");
 
     log::info("Sprite count: {}", objectBatch.getSpriteCount());
+    diag::setLevelStats(levelObjects ? levelObjects->count() : 0, objectBatch.getSpriteCount());
+    diag::checkpoint("Renderer::init: object batches generated");
 
+    diag::updatePhase("Renderer::init: create bgfx shader and batch resources");
     if (!batchRenderer.init(std::move(staticData), device.getCullingPath(), device.getRendererType())) {
         log::error("Bismuth: failed to create GPU resources");
         return false;
@@ -372,6 +383,7 @@ bool Renderer::init(PlayLayer* layer, CCArray* levelObjects) {
     }
 
     log::info("Renderer initialized");
+    diag::checkpoint("Renderer::init completed; waiting for first gameplay draw");
     return true;
 }
 
@@ -690,6 +702,7 @@ void Renderer::draw() {
         groupManager.writeFrameData(frameData);
     }
 
+    diag::updatePhase("Renderer::draw: sort object batches");
     auto sorted = objectBatch.predraw();
     batchRenderer.setSortedBatch(&sorted->data);
 
@@ -698,6 +711,7 @@ void Renderer::draw() {
     if (needsCulling)
         batchRenderer.updateFrame(frameData, gameState);
 
+    diag::updatePhase("Renderer::draw: build compositing groups");
     computeCompositeGroups();
 
     renderingTimer.start();
@@ -710,6 +724,7 @@ void Renderer::draw() {
         directHostDraw = spriteRenderer != nullptr;
 
         if (needsCulling) {
+            diag::updatePhase("Renderer::draw: host-mode culling");
             // bgfx: submitted with the first group's flush, as bgfx runs the
             // compute view before the draw views.
             auto timer = BProfiler::start("Bismuth culling");
@@ -733,6 +748,7 @@ void Renderer::draw() {
         const u32 height = (u32)std::max(viewport[3], 1);
 
         // Creating targets submits bgfx frames, so it must happen before any other work.
+        diag::updatePhase("Renderer::draw: allocate Metal/OpenGL shared render targets");
         u32 targetCount = (u32)groups.size() + (overdrawView.isEnabled() ? 1 : 0);
         if (!ensureSharedTargets(targetCount, width, height)) {
             deactivate("couldn't create render targets shared with OpenGL");
@@ -742,6 +758,7 @@ void Renderer::draw() {
         }
 
         if (needsCulling) {
+            diag::updatePhase("Renderer::draw: GPU compute culling dispatch");
             auto timer = BProfiler::start("Bismuth culling");
             batchRenderer.cull(RendererViews::Compute);
             timer.end();
@@ -761,6 +778,7 @@ void Renderer::draw() {
         if (overdrawView.isEnabled())
             overdrawView.renderHeatMap(&sharedTargets[groups.size()], width, height);
 
+        diag::updatePhase("Renderer::draw: submit Metal frame and publish shared target");
         device.submitNative();
         nativeFrameSubmitted = true;
     }
@@ -768,6 +786,7 @@ void Renderer::draw() {
     hasCulledOnce = true;
     lastSortedBatch = &sorted->data;
 
+    diag::updatePhase("Renderer::draw: frame submitted");
     PROFILER_POP();
 }
 
@@ -782,6 +801,7 @@ void Renderer::drawLayerNode(ObjectBatchNode* node) {
     PROFILER_PUSH("Renderer::drawLayerNode");
 
     auto& device = gfx::Device::get();
+    diag::updatePhase("Renderer::drawLayerNode: composite gameplay sprites into Geometry Dash");
     if (device.isHostMode() && directHostDraw) {
         auto timer = BProfiler::start("Bismuth drawing");
         drawGroupDirect(groups[g]);
@@ -800,6 +820,7 @@ void Renderer::drawLayerNode(ObjectBatchNode* node) {
 }
 
 void Renderer::finish() {
+    diag::updatePhase("Renderer::finish: end gameplay frame");
     renderingTimer.stop();
 
     auto& device = gfx::Device::get();

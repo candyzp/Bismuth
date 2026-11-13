@@ -13,6 +13,7 @@
 */
 
 #include "Interop.hpp"
+#include "../diagnostics/Diagnostics.hpp"
 #include <bgfx/platform.h>
 
 #include <TargetConditionals.h>
@@ -112,6 +113,7 @@ public:
     }
 
     bool createTarget(SharedTarget& target, u32 width, u32 height) override {
+        diag::updatePhase("InteropMetal::createTarget: begin shared-target allocation");
         destroyTarget(target);
 
         auto* data = new MetalTargetData();
@@ -128,6 +130,7 @@ public:
         };
 
 #if TARGET_OS_IPHONE
+        diag::updatePhase("InteropMetal::createTarget: CVPixelBufferCreate");
         NSDictionary* attributes = @{
             (NSString*)kCVPixelBufferIOSurfacePropertiesKey: @{},
             (NSString*)kCVPixelBufferMetalCompatibilityKey: @YES,
@@ -137,6 +140,7 @@ public:
                                 (CFDictionaryRef)attributes, &data->pixelBuffer) != kCVReturnSuccess)
             return fail("CVPixelBufferCreate failed");
 
+        diag::updatePhase("InteropMetal::createTarget: create Metal texture from CVPixelBuffer");
         if (CVMetalTextureCacheCreateTextureFromImage(kCFAllocatorDefault, metalCache, data->pixelBuffer, nullptr,
                 MTLPixelFormatBGRA8Unorm, width, height, 0, &data->metalTexture) != kCVReturnSuccess)
             return fail("CVMetalTextureCacheCreateTextureFromImage failed");
@@ -144,6 +148,7 @@ public:
         [data->texture retain];
 
         {
+            diag::updatePhase("InteropMetal::createTarget: create GLES texture from CVPixelBuffer");
             GLStateGuard guard(*host);
             if (CVOpenGLESTextureCacheCreateTextureFromImage(kCFAllocatorDefault, glCache, data->pixelBuffer, nullptr,
                     GL_TEXTURE_2D, GL_RGBA, (GLsizei)width, (GLsizei)height, GL_BGRA_EXT, GL_UNSIGNED_BYTE, 0,
@@ -197,19 +202,25 @@ public:
 #endif
 
         // bgfx needs its own texture object first; then it is pointed at our MTLTexture.
+        diag::updatePhase("InteropMetal::createTarget: create bgfx texture handle");
         target.texture = bgfx::createTexture2D(
             (u16)width, (u16)height, false, 1, bgfx::TextureFormat::BGRA8,
             BGFX_TEXTURE_RT | BGFX_SAMPLER_POINT | BGFX_SAMPLER_UVW_CLAMP
         );
+        diag::updatePhase("InteropMetal::createTarget: submit texture creation");
         bgfx::frame();
 
+        diag::updatePhase("InteropMetal::createTarget: override bgfx texture with Metal texture");
         if (0 == bgfx::overrideInternal(target.texture, (uintptr_t)data->texture))
             return fail("bgfx::overrideInternal failed for a shared Metal texture");
 
+        diag::updatePhase("InteropMetal::createTarget: create shared framebuffer");
         target.framebuffer = bgfx::createFrameBuffer(1, &target.texture, false);
+        diag::updatePhase("InteropMetal::createTarget: submit framebuffer creation");
         bgfx::frame();
 
         registerTarget(&target);
+        diag::updatePhase("InteropMetal::createTarget: shared target ready");
         return true;
     }
 
@@ -242,6 +253,7 @@ public:
     }
 
     void beforeNativeFrame() override {
+        diag::updatePhase("InteropMetal::beforeNativeFrame: wait for host GLES reads");
         // Metal reuses these IOSurface-backed pixel buffers. A flush only submits
         // GLES reads; it does not guarantee they have stopped sampling the surface.
         if (glReadPending) {
@@ -251,6 +263,7 @@ public:
     }
 
     void afterNativeFrame() override {
+        diag::updatePhase("InteropMetal::afterNativeFrame: wait for Metal command completion");
         // GLES samples the shared surface immediately after this call, so the
         // Metal command buffer must be complete, not merely scheduled.
         bgfx::mtlWaitForLastFrame(true);
