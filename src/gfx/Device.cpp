@@ -21,6 +21,8 @@ UPtr<Interop> createVulkanInterop(const HostGLInfo& host, std::string& error);
 bool prepareVulkanInit(const HostGLInfo& host, std::string& error);
 #if defined(__APPLE__)
 UPtr<Interop> createMetalInterop(const HostGLInfo& host, std::string& error);
+void* createHeadlessMetalLayer();
+void releaseHeadlessMetalLayer(void* layer);
 #endif
 
 UPtr<Interop> Interop::create(const HostGLInfo& host, std::string& error) {
@@ -182,12 +184,28 @@ bool Device::initNative(std::string& report) {
     }
 
     auto init = makeInit(type);
-    // Headless: GD owns the window, Bismuth only renders into shared textures.
+    // BGFX's Metal backend still requires a CAMetalLayer during initialization,
+    // even when every real draw targets an offscreen shared texture. Give it an
+    // unattached layer so it can create its device and its private default target
+    // without taking ownership of Geometry Dash's EAGL drawable.
     init.platformData = bgfx::PlatformData();
+#if defined(__APPLE__)
+    void* headlessMetalLayer = createHeadlessMetalLayer();
+    if (!headlessMetalLayer) {
+        report += "Metal: couldn't create the headless CAMetalLayer\n";
+        return false;
+    }
+    init.platformData.nwh = headlessMetalLayer;
+#endif
     init.resolution.width = 16;
     init.resolution.height = 16;
 
-    if (!tryInit(init, type)) {
+    const bool initialized = tryInit(init, type);
+#if defined(__APPLE__)
+    // BGFX retains the layer when its Metal swap chain is created.
+    releaseHeadlessMetalLayer(headlessMetalLayer);
+#endif
+    if (!initialized) {
         report += std::string(name) + ": initialization failed\n";
         return false;
     }

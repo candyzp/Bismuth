@@ -17,6 +17,7 @@
 
 #include <TargetConditionals.h>
 #import <Metal/Metal.h>
+#import <QuartzCore/CAMetalLayer.h>
 #import <IOSurface/IOSurfaceRef.h> // IOSurface.h is macOS-only
 #import <CoreVideo/CoreVideo.h>
 
@@ -33,6 +34,25 @@
 #include <string>
 
 namespace bismuth::gfx {
+
+// BGFX's Metal backend insists on a CAMetalLayer even when Bismuth renders
+// exclusively into offscreen textures shared with Geometry Dash's EAGL context.
+// This layer is intentionally unattached: BGFX uses its pixel format and device
+// for initialization, while the actual level frames use CVPixelBuffer targets.
+void* createHeadlessMetalLayer() {
+    CAMetalLayer* layer = [[CAMetalLayer alloc] init];
+    if (!layer)
+        return nullptr;
+    layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
+    layer.drawableSize = CGSizeMake(16, 16);
+    layer.framebufferOnly = NO;
+    return (void*)layer; // +1 ownership is transferred to Device::initNative.
+}
+
+void releaseHeadlessMetalLayer(void* layer) {
+    if (layer)
+        [(CAMetalLayer*)layer release];
+}
 
 namespace {
 
@@ -222,15 +242,18 @@ public:
     }
 
     void beforeNativeFrame() override {
-        // GL's reads of the surfaces must be submitted before Metal overwrites them.
+        // Metal reuses these IOSurface-backed pixel buffers. A flush only submits
+        // GLES reads; it does not guarantee they have stopped sampling the surface.
         if (glReadPending) {
-            glFlush();
+            glFinish();
             glReadPending = false;
         }
     }
 
     void afterNativeFrame() override {
-        bgfx::mtlWaitForLastFrame(false);
+        // GLES samples the shared surface immediately after this call, so the
+        // Metal command buffer must be complete, not merely scheduled.
+        bgfx::mtlWaitForLastFrame(true);
 #if TARGET_OS_IPHONE
         CVOpenGLESTextureCacheFlush(glCache, 0);
 #endif
