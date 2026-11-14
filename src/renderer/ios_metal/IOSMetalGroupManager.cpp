@@ -452,10 +452,11 @@ void GroupManager::resetGroupStates() {
     std::fill(toggled.begin(), toggled.end(), true);
 }
 
-std::set<GameObject*> GroupManager::getVanillaRotateGroup(GroupID groupId) const {
+const std::set<GameObject*>& GroupManager::getVanillaRotateGroup(GroupID groupId) const {
+    static const std::set<GameObject*> emptyGroup;
     if (groupId < 0 ||
         static_cast<std::size_t>(groupId) >= vanillaRotateGroups.size())
-        return {};
+        return emptyGroup;
     return vanillaRotateGroups[static_cast<std::size_t>(groupId)];
 }
 
