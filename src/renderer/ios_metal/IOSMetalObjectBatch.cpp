@@ -5,7 +5,7 @@
 #include <Geode/binding/EnhancedGameObject.hpp>
 #include <Geode/binding/RingObject.hpp>
 #include <Geode/cocos/CCDirector.h>
-#include <SpriteMeshDictionary.hpp>
+#include "../SpriteMeshDictionary.hpp"
 #include <glm/gtc/packing.hpp>
 
 #include <algorithm>
