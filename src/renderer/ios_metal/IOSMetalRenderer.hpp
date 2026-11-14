@@ -22,6 +22,7 @@ public:
     PlayLayer* getPlayLayer() const { return layer; }
     bool hasTakenOwnership() const { return takenOwnership; }
     bool isReady() const { return ready; }
+    GroupManager& getGroupManager() { return groupManager; }
 
     void update(float dt);
     void draw() override;
