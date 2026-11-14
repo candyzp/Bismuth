@@ -8,6 +8,7 @@
 
 #include <Geode/binding/PlayLayer.hpp>
 #include <Geode/cocos/sprite_nodes/CCSpriteBatchNode.h>
+#include <string>
 #include <vector>
 
 namespace BismuthIOSMetal {
@@ -39,6 +40,8 @@ private:
     void fetchBlendStates(BlendStates& output) const;
     void fetchColorChannels();
     FrameState captureFrameState(glm::mat4& mvp) const;
+    void createDebugOverlay();
+    void updateDebugOverlay();
 
 private:
     static Renderer* current;
@@ -62,9 +65,21 @@ private:
 
     OutputFrame activeOutput {};
     glm::mat4 activeMVP {1.f};
+    cocos2d::CCLabelBMFont* debugOverlay = nullptr;
     float gameTimer = 0.f;
+    float estimatedFPS = 0.f;
+    float overlayRefreshTimer = 0.f;
+
+    double cpuColorFetchMs = 0.0;
+    double cpuGroupStateMs = 0.0;
+    double cpuFrameStateMs = 0.0;
+    double cpuSubmitMs = 0.0;
+    std::uint64_t submittedFrameCount = 0;
+    std::string dispatchStatus = "INITIALIZING";
+    std::string lastDispatchError;
 
     std::uint32_t drawsThisFrame = 0;
+    std::uint32_t drawFailuresThisFrame = 0;
     bool frameHasOutput = false;
     bool ready = false;
     bool takenOwnership = false;
