@@ -294,7 +294,7 @@ void IOSGPURenderer::updateStartupDiagnostic(const std::string& message) {
 
     if (!startupDiagnosticLabel) {
         startupDiagnosticLabel = cocos2d::CCLabelTTF::create(
-            "BISMUTH iOS GPU: STARTING",
+            "BISMUTH iOS RENDERER: STARTING",
             "Arial",
             11.0f
         );
@@ -334,22 +334,22 @@ void IOSGPURenderer::updateDebugOverlay() {
     const auto& batch = sceneData.getObjectBatch();
 
     std::string status = failed
-        ? "BISMUTH iOS GPU: FAILED"
+        ? "BISMUTH iOS RENDERER: FAILED"
         : initialized
-            ? "BISMUTH iOS GPU: ACTIVE"
-            : "BISMUTH iOS GPU: STARTING";
+            ? "BISMUTH iOS RENDERER: ACTIVE"
+            : "BISMUTH iOS RENDERER: STARTING";
 
     if (!failed && initialized) {
         if (batch.getSpriteCount() == 0 || batch.getOrderedVertices().empty())
-            status = "BISMUTH iOS GPU: READY, ZERO GEOMETRY";
+            status = "BISMUTH iOS RENDERER: READY, ZERO GEOMETRY";
         else if (activeLayerCount == 0)
-            status = "BISMUTH iOS GPU: READY, ZERO ACTIVE LAYERS";
+            status = "BISMUTH iOS RENDERER: READY, ZERO ACTIVE LAYERS";
         else if (layerNodes.empty())
-            status = "BISMUTH iOS GPU: READY, NO GPU LAYER NODES";
+            status = "BISMUTH iOS RENDERER: READY, NO GPU LAYER NODES";
         else if (hasFinishedFrame && lastFrameLayerVisits == 0)
-            status = "BISMUTH iOS GPU: NO GPU LAYER VISITS";
+            status = "BISMUTH iOS RENDERER: NO GPU LAYER VISITS";
         else if (hasFinishedFrame && lastFrameDraws == 0)
-            status = "BISMUTH iOS GPU: VISITED, NO GPU DRAWS";
+            status = "BISMUTH iOS RENDERER: VISITED, NO GPU DRAWS";
     }
 
     std::string detail = failed
@@ -402,14 +402,14 @@ void IOSGPURenderer::updateDebugOverlay() {
         "vertex shader", "CPU visibility texture", "Metal shared mask", "disabled"
     };
     detail = fmt::format(
-        "METHOD {:02}/20: {}\\nUPLOAD: {} | CULL: {}\\n",
+        "METHOD {:02}/20: {}\nUPLOAD: {} | CULL: {}\n",
         renderMethod,
         renderMethodName(renderMethod),
         uploadNames[std::min<u32>(uploadMethodFor(renderMethod), 4)],
         cullingNames[std::min<u32>(cullingMethodFor(renderMethod), 3)]
     ) + detail;
     detail += fmt::format(
-        "Metal mask:{} GL tex:{} | CPU mask:{}\\n",
+        "Metal mask:{} GL tex:{} | CPU mask:{}\n",
         metalInterop.selfTestPassed() ? "READY" : "OFF",
         metalInterop.openGLESTextureName(),
         cpuVisibilityTexture ? "READY" : "OFF"
@@ -575,10 +575,10 @@ IOSGPURenderer* IOSGPURenderer::create(PlayLayer* playLayer) {
     if (currentRenderer && currentRenderer->getPlayLayer() == playLayer) {
         updateStartupDiagnostic(
             currentRenderer->isReadyForDrawing()
-                ? "BISMUTH iOS GPU: ACTIVE\nRenderer create: REUSED EXISTING OWNER"
+                ? "BISMUTH iOS RENDERER: ACTIVE\nRenderer create: REUSED EXISTING OWNER"
                 : currentRenderer->isFailed()
-                    ? std::string("BISMUTH iOS GPU: FAILED\n") + currentRenderer->getFailureReason()
-                    : "BISMUTH iOS GPU: STARTING\nRenderer create: REUSED EXISTING OWNER"
+                    ? std::string("BISMUTH iOS RENDERER: FAILED\n") + currentRenderer->getFailureReason()
+                    : "BISMUTH iOS RENDERER: STARTING\nRenderer create: REUSED EXISTING OWNER"
         );
         return currentRenderer;
     }
@@ -586,7 +586,7 @@ IOSGPURenderer* IOSGPURenderer::create(PlayLayer* playLayer) {
     auto ret = new IOSGPURenderer();
     if (!ret->cocos2d::CCNode::init()) {
         delete ret;
-        updateStartupDiagnostic("BISMUTH iOS GPU: FAILED\nRenderer CCNode::init returned false");
+        updateStartupDiagnostic("BISMUTH iOS RENDERER: FAILED\nRenderer CCNode::init returned false");
         return nullptr;
     }
 
@@ -677,12 +677,17 @@ bool IOSGPURenderer::queryAndValidateCapabilities() {
         fail("active context is not OpenGL ES");
         return false;
     }
-    if (capabilities.maxVertexTextureUnits < 3 ||
+    const u32 cullingMethod = cullingMethodFor(renderMethod);
+    const GLint requiredVertexTextureUnits =
+        cullingMethod == 1 || cullingMethod == 2 ? 4 : 3;
+    if (capabilities.maxVertexTextureUnits < requiredVertexTextureUnits ||
         !capabilities.hasVertexTextureSampling) {
-        fail("requires at least three vertex texture image units");
+        fail(fmt::format(
+            "selected renderer method requires {} vertex texture image units",
+            requiredVertexTextureUnits
+        ));
         return false;
     }
-    const u32 cullingMethod = cullingMethodFor(renderMethod);
     const GLint requiredCombinedUnits = cullingMethod == 0 || cullingMethod == 3 ? 4 : 5;
     if (capabilities.maxCombinedTextureUnits < requiredCombinedUnits ||
         capabilities.maxFragmentTextureUnits < 1) {
@@ -1041,7 +1046,7 @@ bool IOSGPURenderer::initForPlayLayer(PlayLayer* playLayer) {
     currentRenderer = this;
     renderMethod = selectedRenderMethodFromSettings();
     updateStartupDiagnostic(fmt::format(
-        "BISMUTH iOS RENDER METHOD {:02}/20\\n{}",
+        "BISMUTH iOS RENDER METHOD {:02}/20\n{}",
         renderMethod,
         renderMethodName(renderMethod)
     ));
@@ -1052,7 +1057,7 @@ bool IOSGPURenderer::initForPlayLayer(PlayLayer* playLayer) {
     }
 
     updateStartupDiagnostic(fmt::format(
-        "BISMUTH iOS RENDER METHOD {:02}/20\\n{}\\nRenderer init: ENTERED",
+        "BISMUTH iOS RENDER METHOD {:02}/20\n{}\nRenderer init: ENTERED",
         renderMethod,
         renderMethodName(renderMethod)
     ));
