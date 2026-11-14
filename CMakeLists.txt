@@ -95,5 +95,11 @@ endif()
 
 add_subdirectory($ENV{GEODE_SDK} ${CMAKE_CURRENT_BINARY_DIR}/geode)
 
+# Geode's generated iOS bindings refer to FMOD C API types before including
+# their defining header. Force-include the SDK header for that generated target.
+if (BISMUTH_IOS_BUILD AND TARGET GeodeBindings)
+    target_compile_options(GeodeBindings PRIVATE "SHELL:-include Geode/fmod/fmod.h")
+endif()
+
 # Set up dependencies, resources, and link Geode.
 setup_geode_mod(${PROJECT_NAME})
