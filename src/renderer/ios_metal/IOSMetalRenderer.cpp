@@ -466,11 +466,12 @@ bool Renderer::createGLESProgram() {
     glesProgram = program;
     stateTextureUniform = glGetUniformLocation(program, "u_metalSpriteStateTexture");
     stateTextureSizeUniform = glGetUniformLocation(program, "u_metalSpriteStateTextureSize");
+    stateTextureNeedsYFlipUniform = glGetUniformLocation(program, "u_metalSpriteStateNeedsYFlip");
     mvpUniform = glGetUniformLocation(program, "u_mvp");
     spriteSheetUniform = glGetUniformLocation(program, "u_spriteSheetTexture");
 
     if (stateTextureUniform < 0 || stateTextureSizeUniform < 0 ||
-        mvpUniform < 0 || spriteSheetUniform < 0) {
+        stateTextureNeedsYFlipUniform < 0 || mvpUniform < 0 || spriteSheetUniform < 0) {
         log::error("Bismuth iOS Metal ES2 shader is missing a required uniform");
         glDeleteProgram(glesProgram);
         glesProgram = 0;
@@ -760,6 +761,10 @@ void Renderer::drawLayer(const LayerKey& key) {
         static_cast<float>(activeOutput.textureWidth),
         static_cast<float>(activeOutput.textureHeight)
     );
+    glUniform1f(
+        stateTextureNeedsYFlipUniform,
+        activeOutput.stateTextureNeedsYFlip ? 1.f : 0.f
+    );
 
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, texture->getName());
@@ -885,6 +890,7 @@ void Renderer::updateDebugOverlay() {
         "GPU visibility stages: groups {}   in-view {}   alpha-visible {}\n"
         "Threads: {} groups x {} threads\n"
         "Output state texture: {} x {} ({:.2f} MiB)\n"
+        "GLES state Y flip: {}\n"
         "\n"
         "OPENGL ES DRAW\n"
         "Successful draws: {} / {}   GL failures: {}\n"
@@ -921,6 +927,7 @@ void Renderer::updateDebugOverlay() {
         activeOutput.textureWidth,
         activeOutput.textureHeight,
         static_cast<double>(totalGpuStateBytes) / (1024.0 * 1024.0),
+        frameHasOutput && activeOutput.stateTextureNeedsYFlip ? "YES" : "NO",
         drawsThisFrame,
         drawLayerKeys.size(),
         drawFailuresThisFrame,
