@@ -360,7 +360,7 @@ void decomp_GJBaseGameLayer::optimized_processRotationActions() {
         runWithManager(renderer->getGroupManager());
 }
 
-oid decomp_GJBaseGameLayer::processFollowActions() {
+void decomp_GJBaseGameLayer::processFollowActions() {
     for (auto node : m_effectManager->m_unkVector6d8) {
         auto targetObjects = getGroup(node->getTag());
         auto followObject = tryGetMainObject(node->m_unk074);
@@ -508,7 +508,7 @@ void decomp_GJBaseGameLayer::optimized_processFollowActions() {
         runWithManager(renderer->getGroupManager());
 }
 
-oid decomp_GJBaseGameLayer::processPlayerFollowActions(float dt) {
+void decomp_GJBaseGameLayer::processPlayerFollowActions(float dt) {
     
 }
 
