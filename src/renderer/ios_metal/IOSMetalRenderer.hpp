@@ -60,6 +60,7 @@ private:
     GLuint glesProgram = 0;
     GLint stateTextureUniform = -1;
     GLint stateTextureSizeUniform = -1;
+    GLint stateTextureNeedsYFlipUniform = -1;
     GLint mvpUniform = -1;
     GLint spriteSheetUniform = -1;
 
