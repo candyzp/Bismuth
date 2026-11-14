@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Guard activation and core lifecycle wiring of the iOS GPU-only renderer."""
+"""Guard activation and core lifecycle wiring of the selectable iOS renderer."""
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -47,8 +47,9 @@ require("CVOpenGLESTextureCacheFlush" in metal and
         "output.write(float4(value, value, value, 1.0)" in metal,
         "Metal visibility results must be written to the shared pixel buffer")
 require("updateMetalCulling()" in gpu and "getPreCulledSprites()" in gpu and
-        "getGroupStates()" in gpu and "u_metalVisibilityTexture" in gpu,
-        "the active renderer must feed group/sprite inputs and bind the Metal mask")
+        "getGroupStates()" in gpu and "u_visibilityTexture" in gpu and
+        "cullingMethodFor(renderMethod)" in gpu,
+        "the selectable renderer must feed group/sprite inputs and bind its selected visibility mask")
 metal_cull_start = gpu.index("bool IOSGPURenderer::updateMetalCulling()")
 metal_cull_end = gpu.index("void IOSGPURenderer::drawLayer", metal_cull_start)
 metal_cull = gpu[metal_cull_start:metal_cull_end]
@@ -60,18 +61,17 @@ require("metalInterop.isReady()" in metal_cull and
         "Metal culling must fail closed on initialization, scheduler, and dispatch errors")
 require("using GLES culling" not in gpu and "GLES fallback" not in gpu,
         "no runtime code or status label may silently advertise a GLES culling fallback")
-metal_init_start = gpu.index("const usize spriteCount=sceneData.getObjectBatch().getSpriteCount();")
-metal_init_end = gpu.index("updateStartupDiagnostic(\n        \"BISMUTH iOS GPU STARTUP\\nScene extraction/state tables: PASS", metal_init_start)
-metal_init = gpu[metal_init_start:metal_init_end]
-require("fail(" in metal_init and "metalInterop.initialize(" in metal_init and
-        "metalInterop.runSelfTest(" in metal_init,
-        "Metal initialization and self-test failures must fail renderer initialization")
-vertex_shader=(ROOT/"resources/shaders/ios_upstream/object.vert").read_text()
-require("u_useMetalVisibility" not in vertex_shader and
-        "cullMargin" not in vertex_shader and
-        "cameraOffset=objectPosition-u_cameraPosition" not in vertex_shader and
-        "texture2D(u_metalVisibilityTexture,maskUV)" in vertex_shader.replace(" ",""),
-        "the GLES vertex shader must sample only the Metal-produced visibility mask")
+selected_culling = body(gpu, "bool IOSGPURenderer::initializeSelectedCulling()", "bool IOSGPURenderer::initializeCPUVisibility()")
+require("if (cullingMethod == 0 || cullingMethod == 3)" in selected_culling and
+        "metalInterop.initialize(" in selected_culling and
+        "metalInterop.runSelfTest(" in selected_culling,
+        "Metal must be an optional selected culling method, not a startup requirement")
+vertex_shader=(ROOT/"resources/shaders/object_es2.vert").read_text()
+require("u_visibilityMode < 0.5" in vertex_shader and
+        "u_visibilityMode < 1.5" in vertex_shader and
+        "u_visibilityTexture" in vertex_shader and
+        "u_cameraPosition" in vertex_shader,
+        "the active ES2 shader must support shader, CPU-mask, Metal-mask and no-cull modes")
 require("metalInterop.runSelfTest(metalInteropError)" in gpu and
         "metalInterop.selfTestPassed()" in gpu,
         "the active iOS renderer must initialize and report the interop self-test")
@@ -113,8 +113,12 @@ require("IOSGPURenderer::prepareForLevelReset()" in gpu and
         "layerNodeKeys.clear()" in gpu,
         "old per-layer nodes must be retired on level reset")
 fail_body = gpu[gpu.index("void IOSGPURenderer::fail"):gpu.index("void IOSGPURenderer::hideStockBatches")]
-require("hideStockBatches();" in fail_body,
-        "strict GPU-only failure path must not restore stock batch rendering")
+require("restoreStockBatches();" in fail_body and "hideStockBatches();" not in fail_body,
+        "failed rendering must restore Geometry Dash's stock batch visibility")
+ownership = body(gpu, "void IOSGPURenderer::finishFrame()", "void IOSGPURenderer::recordGameLayerUpdate")
+require("lastFrameDraws >= activeLayerCount" in ownership and
+        "PASSED FIRST FRAME" in ownership,
+        "GPU rendering must prove a full frame before taking Cocos visual ownership")
 require("updateObjectParticles();" in scene,
         "SceneData must maintain cached object particle ownership")
 require("IOSUpstream::GroupManager& groupManager" in decomp,
@@ -134,4 +138,4 @@ require("source.refreshTexture = object->getHasSyncedAnimation();" in batch and
         "source.refreshAppearance =" in batch,
         "direct-tint sprites and known animations must be selectively tracked")
 
-print("PASS: iOS GPU-only activation, frame state, blend order, group triggers, reset lifecycle, and strict stock-batch ownership")
+print("PASS: selectable iOS renderer activation, shader/culling modes, Metal optionality, frame state, and safe stock-batch ownership")
