@@ -1,6 +1,11 @@
 #pragma once
 
+#if defined(GEODE_IS_IOS)
+#include <OpenGLES/ES2/gl.h>
+#include <OpenGLES/ES2/glext.h>
+#else
 #include <Geode/cocos/platform/win32/CCGL.h>
+#endif
 
 /*
     This file adds the required OpenGL 4.3 functions as
