@@ -44,6 +44,40 @@
 			"type": "bool",
 			"default": false,
 			"description": "Writes renderer-stage and large-level progress breadcrumbs to Geode's native log and the mod save folder (crash-breadcrumbs.log). Per-object log spam is disabled; no second crash handler is installed."
+		},
+		"ios_interop_probe_mode": {
+			"name": "iOS interop probe mode",
+			"type": "bool",
+			"default": true,
+			"description": "Run the selected isolated Metal/OpenGL ES test without replacing Geometry Dash's renderer. Turn this off only when you want to try the full Bismuth renderer."
+		},
+		"ios_interop_method": {
+			"name": "iOS interop method (1–20)",
+			"type": "string",
+			"default": "01 - Host EAGL context",
+			"one-of": [
+				"01 - Host EAGL context",
+				"02 - Metal device creation",
+				"03 - Metal command queue",
+				"04 - Metal shader compilation",
+				"05 - Metal compute pipeline",
+				"06 - Metal-only CVPixelBuffer",
+				"07 - GLES-only CVPixelBuffer",
+				"08 - Shared BGRA CVPixelBuffer",
+				"09 - CVMetalTextureCache",
+				"10 - CVOpenGLESTextureCache",
+				"11 - CVPixelBuffer to Metal texture",
+				"12 - CVPixelBuffer to GLES texture",
+				"13 - Shared Metal + GLES texture binding",
+				"14 - Metal compute + blocking completion",
+				"15 - Metal compute + completion handler",
+				"16 - Metal compute + MTLSharedEvent",
+				"17 - Shared MTLBuffer + CPU readback",
+				"18 - Shared MTLBuffer + GLES texture upload",
+				"19 - Double-buffered CVPixelBuffer",
+				"20 - Full current interop self-test"
+			],
+			"description": "Select one isolated test. It runs when a new level loads; Geometry Dash keeps its original rendering path during every probe. Results are written to the Geode log and on-screen diagnostic."
 		}
 	}
 }
