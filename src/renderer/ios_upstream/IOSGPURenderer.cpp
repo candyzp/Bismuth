@@ -730,7 +730,8 @@ bool IOSGPURenderer::createVertexBuffer() {
         glDeleteBuffers(3, oldBuffers);
         vertexRingBuffers = {};
     } else if (vertexBuffer) {
-        glDeleteBuffers(1, reinterpret_cast<const GLuint*>(&vertexBuffer));
+        const GLuint oldBuffer = static_cast<GLuint>(vertexBuffer);
+        glDeleteBuffers(1, &oldBuffer);
     }
     vertexBuffer = 0;
     vertexBufferCapacity = 0;
@@ -1038,21 +1039,28 @@ bool IOSGPURenderer::syncLayerNodes() {
 bool IOSGPURenderer::initForPlayLayer(PlayLayer* playLayer) {
     layer = playLayer;
     currentRenderer = this;
-    updateStartupDiagnostic("BISMUTH iOS GPU STARTUP\ninitForPlayLayer: ENTERED");
+    renderMethod = selectedRenderMethodFromSettings();
+    updateStartupDiagnostic(fmt::format(
+        "BISMUTH iOS RENDER METHOD {:02}/20\\n{}",
+        renderMethod,
+        renderMethodName(renderMethod)
+    ));
 
     if (!layer) {
         fail("PlayLayer is null");
         return false;
     }
 
-    updateStartupDiagnostic("BISMUTH iOS GPU STARTUP\nPlayLayer hook: ENTERED\nRenderer init: ENTERED");
+    updateStartupDiagnostic(fmt::format(
+        "BISMUTH iOS RENDER METHOD {:02}/20\\n{}\\nRenderer init: ENTERED",
+        renderMethod,
+        renderMethodName(renderMethod)
+    ));
 
-    // Keep Geometry Dash's stock batches visible throughout initialization.
-    // finishFrame() transfers ownership only after a complete first GPU frame.
-
+    // Geometry Dash keeps visual ownership until the selected renderer has
+    // completed a full first frame.
     if (!queryAndValidateCapabilities())
         return false;
-    updateStartupDiagnostic("BISMUTH iOS GPU STARTUP\nOpenGL ES capability validation: PASS");
 
     // Scene extraction supplies the sprite order and group combinations
     // used to build the live Metal visibility records.
@@ -1067,35 +1075,14 @@ bool IOSGPURenderer::initForPlayLayer(PlayLayer* playLayer) {
     }
     crashBreadcrumb("IOSGPURenderer::initForPlayLayer SceneData::init PASS");
 
-    const usize spriteCount=sceneData.getObjectBatch().getSpriteCount();
-    const u32 cullTextureWidth=static_cast<u32>(std::min(1024,std::max(2,capabilities.maxTextureSize)));
-    const usize cullTextureHeight=std::max<usize>(1,(std::max<usize>(2,spriteCount)+cullTextureWidth-1)/cullTextureWidth);
-    std::string metalInteropError;
-    if (cullTextureHeight>static_cast<usize>(capabilities.maxTextureSize)) {
-        fail(fmt::format(
-            "Metal visibility mask needs {} rows, exceeding GL_MAX_TEXTURE_SIZE {}",
-            cullTextureHeight,
-            capabilities.maxTextureSize
-        ));
+    if (!initializeSelectedCulling())
         return false;
-    }
-    if (!metalInterop.initialize(cullTextureWidth,static_cast<u32>(cullTextureHeight),metalInteropError)) {
-        fail(fmt::format(
-            "Metal culling initialization failed: {}",
-            metalInteropError.empty() ? "unknown initialization error" : metalInteropError
-        ));
-        return false;
-    }
-    if (!metalInterop.runSelfTest(metalInteropError)) {
-        metalInterop.reset();
-        fail(fmt::format(
-            "Metal culling self-test failed: {}",
-            metalInteropError.empty() ? "unknown self-test error" : metalInteropError
-        ));
-        return false;
-    }
-    log::info("Bismuth iOS Metal sprite culling ready: {} sprites, shared GL texture {}",
-              spriteCount,metalInterop.openGLESTextureName());
+
+    crashBreadcrumb(fmt::format(
+        "iOS renderer method {:02} ({}) selected culling path initialized",
+        renderMethod,
+        renderMethodName(renderMethod)
+    ));
 
     updateStartupDiagnostic(
         "BISMUTH iOS GPU STARTUP\nScene extraction/state tables: PASS\nSprites: " +
