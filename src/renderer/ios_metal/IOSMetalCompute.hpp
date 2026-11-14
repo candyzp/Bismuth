@@ -119,7 +119,7 @@ struct OutputFrame {
     std::uint32_t threadsPerThreadgroup = 0;
     double gpuTimeMilliseconds = 0.0;
     bool hasGpuTiming = false;
-    bool stateTextureIsFlipped = false;
+    bool stateTextureNeedsYFlip = false;
 };
 
 class ComputeRenderer {
