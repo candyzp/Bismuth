@@ -109,6 +109,12 @@ struct OutputFrame {
     std::uint64_t sequence = 0;
     std::uint32_t textureWidth = 0;
     std::uint32_t textureHeight = 0;
+    std::uint32_t visibleSpriteCount = 0;
+    std::uint32_t totalSpriteCount = 0;
+    std::uint32_t threadgroupCount = 0;
+    std::uint32_t threadsPerThreadgroup = 0;
+    double gpuTimeMilliseconds = 0.0;
+    bool hasGpuTiming = false;
 };
 
 class ComputeRenderer {
