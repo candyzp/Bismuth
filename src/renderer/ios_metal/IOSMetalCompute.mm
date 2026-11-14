@@ -310,6 +310,7 @@ kernel void bismuthObjectCompute(
     device const PulseEntry* pulses [[buffer(5)]],
     constant FrameState& frame [[buffer(6)]],
     texture2d<float, access::write> output [[texture(0)]],
+    device atomic_uint* visibleCounter [[buffer(7)]],
     uint index [[thread_position_in_grid]]
 ) {
     if (index >= frame.spriteCount)
@@ -487,6 +488,8 @@ kernel void bismuthObjectCompute(
     if (!visible) {
         color = float4(0.0);
         localTransform = float2x2(1.0);
+    } else {
+        atomic_fetch_add_explicit(visibleCounter, 1u, memory_order_relaxed);
     }
 
     uint texel = spriteIndex * 3u;
@@ -535,9 +538,17 @@ struct OutputSlot {
     __strong id<MTLBuffer> groupBuffer = nil;
     __strong id<MTLBuffer> colorBuffer = nil;
     __strong id<MTLBuffer> pulseBuffer = nil;
+    __strong id<MTLBuffer> visibleCounterBuffer = nil;
     NSUInteger groupCapacity = 0;
     NSUInteger colorCapacity = 0;
     NSUInteger pulseCapacity = 0;
+    NSUInteger visibleCounterCapacity = 0;
+    std::uint32_t visibleSpriteCount = 0;
+    std::uint32_t totalSpriteCount = 0;
+    std::uint32_t threadgroupCount = 0;
+    std::uint32_t threadsPerThreadgroup = 0;
+    double gpuTimeMilliseconds = 0.0;
+    bool hasGpuTiming = false;
     std::atomic<bool> inFlight {false};
     std::atomic<bool> ready {false};
     std::atomic<bool> leased {false};
@@ -564,6 +575,13 @@ struct OutputSlot {
         groupBuffer = nil;
         colorBuffer = nil;
         pulseBuffer = nil;
+        visibleCounterBuffer = nil;
+        visibleSpriteCount = 0;
+        totalSpriteCount = 0;
+        threadgroupCount = 0;
+        threadsPerThreadgroup = 0;
+        gpuTimeMilliseconds = 0.0;
+        hasGpuTiming = false;
         inFlight.store(false);
         ready.store(false);
         leased.store(false);
@@ -960,8 +978,16 @@ bool ComputeRenderer::dispatchFrame(
         !ensureSharedBuffer(owner->device, slot.colorBuffer,
             slot.colorCapacity, colorBytes, error, "color-channel state") ||
         !ensureSharedBuffer(owner->device, slot.pulseBuffer,
-            slot.pulseCapacity, pulseBytes, error, "pulse-entry state"))
+            slot.pulseCapacity, pulseBytes, error, "pulse-entry state") ||
+        !ensureSharedBuffer(owner->device, slot.visibleCounterBuffer,
+            slot.visibleCounterCapacity, sizeof(std::uint32_t), error, "GPU visibility counter"))
         return false;
+
+    *static_cast<std::uint32_t*>(slot.visibleCounterBuffer.contents) = 0u;
+    slot.visibleSpriteCount = 0;
+    slot.totalSpriteCount = static_cast<std::uint32_t>(owner->spriteCount);
+    slot.gpuTimeMilliseconds = 0.0;
+    slot.hasGpuTiming = false;
 
     std::memcpy(slot.groupBuffer.contents, groupStates, groupBytes);
     std::memcpy(slot.colorBuffer.contents, colorChannels, colorBytes);
@@ -997,12 +1023,15 @@ bool ComputeRenderer::dispatchFrame(
     [encoder setBuffer:slot.pulseBuffer offset:0 atIndex:5];
     [encoder setBytes:&parameters length:sizeof(parameters) atIndex:6];
     [encoder setTexture:slot.metalTexture atIndex:0];
+    [encoder setBuffer:slot.visibleCounterBuffer offset:0 atIndex:7];
 
     const NSUInteger threadWidth = std::max<NSUInteger>(
         1, owner->computePipeline.threadExecutionWidth
     );
     const NSUInteger threadgroups =
         (owner->spriteCount + threadWidth - 1) / threadWidth;
+    slot.threadgroupCount = static_cast<std::uint32_t>(threadgroups);
+    slot.threadsPerThreadgroup = static_cast<std::uint32_t>(threadWidth);
     [encoder dispatchThreadgroups:MTLSizeMake(threadgroups, 1, 1)
              threadsPerThreadgroup:MTLSizeMake(threadWidth, 1, 1)];
     [encoder endEncoding];
@@ -1015,6 +1044,14 @@ bool ComputeRenderer::dispatchFrame(
     [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> completed) {
         OutputSlot& finished = owner->slots[slotIndex];
         if (completed.status == MTLCommandBufferStatusCompleted) {
+            const double gpuStart = completed.GPUStartTime;
+            const double gpuEnd = completed.GPUEndTime;
+            finished.hasGpuTiming = gpuEnd > gpuStart && gpuStart > 0.0;
+            finished.gpuTimeMilliseconds = finished.hasGpuTiming
+                ? (gpuEnd - gpuStart) * 1000.0
+                : 0.0;
+            finished.visibleSpriteCount =
+                *static_cast<const std::uint32_t*>(finished.visibleCounterBuffer.contents);
             finished.ready.store(true);
         } else {
             std::lock_guard<std::mutex> lock(owner->errorMutex);
@@ -1075,6 +1112,12 @@ bool ComputeRenderer::acquireLatestFrame(OutputFrame& output) {
     output.sequence = slot.sequence;
     output.textureWidth = static_cast<std::uint32_t>(owner->textureWidth);
     output.textureHeight = static_cast<std::uint32_t>(owner->textureHeight);
+    output.visibleSpriteCount = slot.visibleSpriteCount;
+    output.totalSpriteCount = slot.totalSpriteCount;
+    output.threadgroupCount = slot.threadgroupCount;
+    output.threadsPerThreadgroup = slot.threadsPerThreadgroup;
+    output.gpuTimeMilliseconds = slot.gpuTimeMilliseconds;
+    output.hasGpuTiming = slot.hasGpuTiming;
     return output.textureName != 0;
 }
 
