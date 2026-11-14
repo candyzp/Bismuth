@@ -6,6 +6,7 @@
 #include "IOSGPUCapabilities.hpp"
 #include "../ios_metal/IOSMetalInterop.hpp"
 #include <Geode/cocos/base_nodes/CCNode.h>
+#include <array>
 #include <set>
 #include <chrono>
 #include <string>
@@ -58,6 +59,9 @@ private:
     bool uploadDirtyVertexRanges();
     bool createLayerNodes();
     bool updateMetalCulling();
+    bool updateCPUVisibility();
+    bool initializeCPUVisibility();
+    bool initializeSelectedCulling();
     void hideStockBatches();
     void restoreStockBatches();
     void updateDebugOverlay();
@@ -70,8 +74,16 @@ private:
     SceneData sceneData;
     IOSMetalInteropTexture metalInterop;
     std::vector<IOSMetalCullSprite> metalCullInputs;
+    std::vector<u8> cpuVisibilityPixels;
     Shader* shader = nullptr;
     u32 vertexBuffer = 0;
+    std::array<u32, 3> vertexRingBuffers {};
+    u32 vertexBufferCapacity = 0;
+    u32 currentRingIndex = 0;
+    u32 renderMethod = 1;
+    u32 visibilityTextureWidth = 0;
+    u32 visibilityTextureHeight = 0;
+    u32 cpuVisibilityTexture = 0;
     u64 uploadedOrderRevision = 0;
     u64 uploadedGeometryRevision = 0;
     std::vector<cocos2d::CCNode*> layerNodes;
