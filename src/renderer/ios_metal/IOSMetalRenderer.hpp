@@ -25,7 +25,7 @@ public:
     bool isReady() const { return ready; }
     GroupManager& getGroupManager() { return groupManager; }
 
-    void update(float dt);
+    void update(float dt) override;
     void draw() override;
     void drawLayer(const LayerKey& key);
     void finishDrawFrame();
