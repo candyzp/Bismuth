@@ -258,6 +258,13 @@ bool ObjectBatch::addSprite(
     if (object->m_hasNoGlow && type == SpriteType::GLOW)
         return true;
 
+    const SpriteSheet sheet = ObjectUtils::getSpritesheetOfObject(object, type);
+    // These sheets are intentionally not managed by Bismuth's custom
+    // renderer on desktop either. Leave them in their original Cocos batch
+    // instead of letting one unsupported sprite abort the entire level.
+    if (sheet == SpriteSheet::SPECIAL || sheet == SpriteSheet::_UNK)
+        return true;
+
     const auto objectIt = objectIndices.find(object);
     if (objectIt == objectIndices.end())
         return false;
@@ -271,9 +278,12 @@ bool ObjectBatch::addSprite(
         groupIndex >= MAX_EXACT_FLOAT_INDEX)
         return false;
 
-    const SpriteSheet sheet = ObjectUtils::getSpritesheetOfObject(object, type);
     cocos2d::CCTexture2D* texture = textureForSheet
-        ? textureForSheet(sheet) : sprite->getTexture();
+        ? textureForSheet(sheet) : nullptr;
+    // Use the sprite's own texture for a valid sheet when a lookup entry is
+    // unavailable. SPECIAL/_UNK have already been left on the vanilla path.
+    if (!texture)
+        texture = sprite->getTexture();
     if (!texture)
         return false;
 
@@ -284,24 +294,34 @@ bool ObjectBatch::addSprite(
     const std::uint32_t firstTriangle =
         static_cast<std::uint32_t>(sourceVertices.size() / 3);
 
+    const auto writeDefaultQuad = [&] {
+        writeSpriteVertex({0.f, 0.f}, transforms, objectStartPosition, spriteIndex);
+        writeSpriteVertex({1.f, 0.f}, transforms, objectStartPosition, spriteIndex);
+        writeSpriteVertex({1.f, 1.f}, transforms, objectStartPosition, spriteIndex);
+        writeSpriteVertex({1.f, 1.f}, transforms, objectStartPosition, spriteIndex);
+        writeSpriteVertex({0.f, 1.f}, transforms, objectStartPosition, spriteIndex);
+        writeSpriteVertex({0.f, 0.f}, transforms, objectStartPosition, spriteIndex);
+    };
+
     if (hasCustomVanillaMesh(object)) {
         const auto quad = sprite->getQuad();
         const CCPoint offset = sprite->getOffsetPosition();
         const CCPoint size = sprite->getTextureRect().size;
 
-        if (size.x == 0.f || size.y == 0.f)
-            return false;
-
-        const CCPoint bl = (ccp(quad.bl.vertices.x, quad.bl.vertices.y) - offset) / size;
-        const CCPoint br = (ccp(quad.br.vertices.x, quad.br.vertices.y) - offset) / size;
-        const CCPoint tl = (ccp(quad.tl.vertices.x, quad.tl.vertices.y) - offset) / size;
-        const CCPoint tr = (ccp(quad.tr.vertices.x, quad.tr.vertices.y) - offset) / size;
-        writeSpriteVertex(ccPointToGLM(bl), transforms, objectStartPosition, spriteIndex);
-        writeSpriteVertex(ccPointToGLM(br), transforms, objectStartPosition, spriteIndex);
-        writeSpriteVertex(ccPointToGLM(tr), transforms, objectStartPosition, spriteIndex);
-        writeSpriteVertex(ccPointToGLM(tr), transforms, objectStartPosition, spriteIndex);
-        writeSpriteVertex(ccPointToGLM(tl), transforms, objectStartPosition, spriteIndex);
-        writeSpriteVertex(ccPointToGLM(bl), transforms, objectStartPosition, spriteIndex);
+        if (size.x == 0.f || size.y == 0.f) {
+            writeDefaultQuad();
+        } else {
+            const CCPoint bl = (ccp(quad.bl.vertices.x, quad.bl.vertices.y) - offset) / size;
+            const CCPoint br = (ccp(quad.br.vertices.x, quad.br.vertices.y) - offset) / size;
+            const CCPoint tl = (ccp(quad.tl.vertices.x, quad.tl.vertices.y) - offset) / size;
+            const CCPoint tr = (ccp(quad.tr.vertices.x, quad.tr.vertices.y) - offset) / size;
+            writeSpriteVertex(ccPointToGLM(bl), transforms, objectStartPosition, spriteIndex);
+            writeSpriteVertex(ccPointToGLM(br), transforms, objectStartPosition, spriteIndex);
+            writeSpriteVertex(ccPointToGLM(tr), transforms, objectStartPosition, spriteIndex);
+            writeSpriteVertex(ccPointToGLM(tr), transforms, objectStartPosition, spriteIndex);
+            writeSpriteVertex(ccPointToGLM(tl), transforms, objectStartPosition, spriteIndex);
+            writeSpriteVertex(ccPointToGLM(bl), transforms, objectStartPosition, spriteIndex);
+        }
     } else {
         const ConvexList* mesh = SpriteMeshDictionary::getSpriteMeshForSprite(sprite);
         if (mesh) {
@@ -310,13 +330,12 @@ bool ObjectBatch::addSprite(
                 writeSpriteVertex(b, transforms, objectStartPosition, spriteIndex);
                 writeSpriteVertex(c, transforms, objectStartPosition, spriteIndex);
             });
+            // An empty dictionary entry is equivalent to a missing custom
+            // mesh: retain the standard six-vertex sprite quad.
+            if (sourceVertices.size() / 3 == firstTriangle)
+                writeDefaultQuad();
         } else {
-            writeSpriteVertex({0.f, 0.f}, transforms, objectStartPosition, spriteIndex);
-            writeSpriteVertex({1.f, 0.f}, transforms, objectStartPosition, spriteIndex);
-            writeSpriteVertex({1.f, 1.f}, transforms, objectStartPosition, spriteIndex);
-            writeSpriteVertex({1.f, 1.f}, transforms, objectStartPosition, spriteIndex);
-            writeSpriteVertex({0.f, 1.f}, transforms, objectStartPosition, spriteIndex);
-            writeSpriteVertex({0.f, 0.f}, transforms, objectStartPosition, spriteIndex);
+            writeDefaultQuad();
         }
     }
 
