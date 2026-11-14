@@ -582,6 +582,7 @@ struct OutputSlot {
     std::uint32_t threadsPerThreadgroup = 0;
     double gpuTimeMilliseconds = 0.0;
     bool hasGpuTiming = false;
+    bool stateTextureIsFlipped = false;
     std::atomic<bool> inFlight {false};
     std::atomic<bool> ready {false};
     std::atomic<bool> leased {false};
@@ -617,6 +618,7 @@ struct OutputSlot {
         threadsPerThreadgroup = 0;
         gpuTimeMilliseconds = 0.0;
         hasGpuTiming = false;
+        stateTextureIsFlipped = false;
         inFlight.store(false);
         ready.store(false);
         leased.store(false);
@@ -791,6 +793,9 @@ bool createOutputSlot(
         error = "Core Video could not create the OpenGL ES RGBA32Float view";
         return false;
     }
+    // Core Video exposes the orientation of the shared GL texture. The
+    // Metal-written state texture must be sampled with this exact origin.
+    slot.stateTextureIsFlipped = CVOpenGLESTextureIsFlipped(slot.glTextureRef);
 
     const GLuint textureName = CVOpenGLESTextureGetName(slot.glTextureRef);
     if (textureName == 0 || !glIsTexture(textureName)) {
@@ -1184,6 +1189,7 @@ bool ComputeRenderer::acquireLatestFrame(OutputFrame& output) {
     output.threadsPerThreadgroup = slot.threadsPerThreadgroup;
     output.gpuTimeMilliseconds = slot.gpuTimeMilliseconds;
     output.hasGpuTiming = slot.hasGpuTiming;
+    output.stateTextureIsFlipped = slot.stateTextureIsFlipped;
     return output.textureName != 0;
 }
 
