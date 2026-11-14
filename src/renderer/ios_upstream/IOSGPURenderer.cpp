@@ -80,7 +80,7 @@ constexpr GLint OBJECT_DATA_TEXTURE_UNIT = 0;
 constexpr GLint GROUP_DATA_TEXTURE_UNIT = 1;
 constexpr GLint BYTE_DATA_TEXTURE_UNIT = 2;
 constexpr GLint SPRITE_SHEET_TEXTURE_UNIT = 3;
-constexpr GLint METAL_VISIBILITY_TEXTURE_UNIT = 4;
+constexpr GLint VISIBILITY_TEXTURE_UNIT = 4;
 
 static_assert(sizeof(ObjectVertex) == sizeof(float) * 10,
     "ES2 object vertex must contain exactly five vec2 attributes");
@@ -677,18 +677,12 @@ bool IOSGPURenderer::queryAndValidateCapabilities() {
         fail("active context is not OpenGL ES");
         return false;
     }
-    const u32 cullingMethod = cullingMethodFor(renderMethod);
-    const GLint requiredVertexTextureUnits =
-        cullingMethod == 1 || cullingMethod == 2 ? 4 : 3;
-    if (capabilities.maxVertexTextureUnits < requiredVertexTextureUnits ||
+    if (capabilities.maxVertexTextureUnits < 4 ||
         !capabilities.hasVertexTextureSampling) {
-        fail(fmt::format(
-            "selected renderer method requires {} vertex texture image units",
-            requiredVertexTextureUnits
-        ));
+        fail("renderer shader requires four vertex texture image units");
         return false;
     }
-    const GLint requiredCombinedUnits = cullingMethod == 0 || cullingMethod == 3 ? 4 : 5;
+    const GLint requiredCombinedUnits = 5;
     if (capabilities.maxCombinedTextureUnits < requiredCombinedUnits ||
         capabilities.maxFragmentTextureUnits < 1) {
         fail(fmt::format(
@@ -1322,7 +1316,7 @@ bool IOSGPURenderer::initializeCPUVisibility() {
 
     GLint previousActiveTexture = GL_TEXTURE0;
     glGetIntegerv(GL_ACTIVE_TEXTURE, &previousActiveTexture);
-    glActiveTexture(GL_TEXTURE0 + METAL_VISIBILITY_TEXTURE_UNIT);
+    glActiveTexture(GL_TEXTURE0 + VISIBILITY_TEXTURE_UNIT);
 
     GLint previousBinding = 0;
     glGetIntegerv(GL_TEXTURE_BINDING_2D, &previousBinding);
@@ -1430,7 +1424,7 @@ bool IOSGPURenderer::updateCPUVisibility() {
 
     GLint previousActiveTexture = GL_TEXTURE0;
     glGetIntegerv(GL_ACTIVE_TEXTURE, &previousActiveTexture);
-    glActiveTexture(GL_TEXTURE0 + METAL_VISIBILITY_TEXTURE_UNIT);
+    glActiveTexture(GL_TEXTURE0 + VISIBILITY_TEXTURE_UNIT);
 
     GLint previousBinding = 0;
     glGetIntegerv(GL_TEXTURE_BINDING_2D, &previousBinding);
@@ -1592,7 +1586,7 @@ void IOSGPURenderer::drawLayer(const LayerKey& key) {
     const u32 cullingMethod = cullingMethodFor(renderMethod);
     const float visibilityMode =
         cullingMethod == 0 ? 0.f : cullingMethod == 3 ? 2.f : 1.f;
-    shader->setInt("u_visibilityTexture", METAL_VISIBILITY_TEXTURE_UNIT);
+    shader->setInt("u_visibilityTexture", VISIBILITY_TEXTURE_UNIT);
     shader->setFloat("u_visibilityMode", visibilityMode);
 
     if (cullingMethod == 1 || cullingMethod == 2) {
@@ -1612,7 +1606,7 @@ void IOSGPURenderer::drawLayer(const LayerKey& key) {
             static_cast<float>(textureWidth),
             static_cast<float>(textureHeight)
         ));
-        glActiveTexture(GL_TEXTURE0 + METAL_VISIBILITY_TEXTURE_UNIT);
+        glActiveTexture(GL_TEXTURE0 + VISIBILITY_TEXTURE_UNIT);
         glBindTexture(GL_TEXTURE_2D, visibilityTexture);
     } else {
         shader->setVec2("u_visibilityTextureSize", glm::vec2(1.f, 1.f));
