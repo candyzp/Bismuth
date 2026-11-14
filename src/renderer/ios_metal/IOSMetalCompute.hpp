@@ -1,5 +1,7 @@
 #pragma once
 
+#include <Geode/platform/cplatform.h>
+
 #if defined(GEODE_IS_IOS)
 
 #include <cstdint>
