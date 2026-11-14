@@ -1,6 +1,8 @@
 #include "common.hpp"
 #include "Geode/cocos/CCDirector.h"
+#if !defined(GEODE_IS_IOS)
 #include "renderer/Buffer.hpp"
+#endif
 
 using namespace geode::prelude;
 
@@ -53,6 +55,7 @@ void glObjectLabel(GLenum id, GLuint name, GLsizei length, const char* label) {
     #endif
 }
 
+#if !defined(GEODE_IS_IOS)
 static float fullscreenQuad[] = {
     -1.0, -1.0,
     -1.0,  1.0,
@@ -93,6 +96,10 @@ class $modify(CommonCCDirector, CCDirector) {
         CCDirector::purgeDirector();
     }
 };
+
+#else
+void drawFullscreenQuad() {}
+#endif
 
 std::optional<std::string> readResourceFile(const fs::path& path) {
     std::ifstream t(Mod::get()->getResourcesDir() / path);
