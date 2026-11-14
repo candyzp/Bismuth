@@ -6,6 +6,7 @@ attribute float a_spriteIndex;
 
 uniform sampler2D u_metalSpriteStateTexture;
 uniform vec2 u_metalSpriteStateTextureSize;
+uniform float u_metalSpriteStateNeedsYFlip;
 uniform mat4 u_mvp;
 
 varying mediump vec2 v_texCoord;
@@ -14,6 +15,8 @@ varying lowp vec4 v_color;
 vec2 stateUV(float texelIndex) {
     float x = mod(texelIndex, u_metalSpriteStateTextureSize.x);
     float y = floor(texelIndex / u_metalSpriteStateTextureSize.x);
+    if (u_metalSpriteStateNeedsYFlip > 0.5)
+        y = (u_metalSpriteStateTextureSize.y - 1.0) - y;
     return (vec2(x, y) + vec2(0.5)) / u_metalSpriteStateTextureSize;
 }
 
