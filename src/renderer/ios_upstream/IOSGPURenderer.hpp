@@ -9,6 +9,7 @@
 #include <set>
 #include <chrono>
 #include <string>
+#include <utility>
 #include <vector>
 
 class Shader;
@@ -45,6 +46,7 @@ public:
     PlayLayer* getPlayLayer() const { return layer; }
     bool isFailed() const { return failed; }
     bool isReadyForDrawing() const { return initialized && !failed && !suspended; }
+    bool hasTakenOwnership() const { return stockOwnershipTransferred; }
     const char* getFailureReason() const { return failureReason.c_str(); }
     std::string getCrashDiagnosticSnapshot() const;
 
@@ -57,6 +59,7 @@ private:
     bool createLayerNodes();
     bool updateMetalCulling();
     void hideStockBatches();
+    void restoreStockBatches();
     void updateDebugOverlay();
     void fail(const std::string& reason);
 
@@ -72,6 +75,7 @@ private:
     u64 uploadedOrderRevision = 0;
     u64 uploadedGeometryRevision = 0;
     std::vector<cocos2d::CCNode*> layerNodes;
+    std::vector<std::pair<cocos2d::CCNode*, bool>> stockBatchVisibility;
     std::set<LayerKey> layerNodeKeys;
 
     IOSGPU::Capabilities capabilities;
@@ -124,6 +128,8 @@ private:
     u64 gpuTrianglesSubmittedThisFrame = 0;
     u64 lastGPUTrianglesSubmitted = 0;
     bool initialized = false;
+    bool stockBatchesHidden = false;
+    bool stockOwnershipTransferred = false;
     bool failed = false;
     bool suspended = false;
     bool hasFinishedFrame = false;
