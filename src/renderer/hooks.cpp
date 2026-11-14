@@ -198,7 +198,7 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
                 const auto groupId = static_cast<BismuthIOSMetal::GroupID>(node->getTag());
                 groupManager.moveGroup(groupId, node->m_unk038, node->m_unk040);
 
-                const auto physicsObjects = groupManager.getVanillaRotateGroup(groupId);
+                const auto& physicsObjects = groupManager.getVanillaRotateGroup(groupId);
                 for (auto object : physicsObjects) {
                     if (!object)
                         continue;
