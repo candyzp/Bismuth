@@ -49,6 +49,30 @@ NSString* computeSource() {
 #include <metal_stdlib>
 using namespace metal;
 
+// Keep the MSL constants in sync with the packed records produced by the
+// Objective-C++/C++ side. C++ constexpr values are not visible inside this
+// runtime-compiled Metal source string.
+constant uint COLOR_CHANNEL_BG = 1000u;
+constant uint COLOR_CHANNEL_LBG = 1007u;
+constant uint COLOR_CHANNEL_LIGHTER = 1012u;
+
+constant uint FLAG_AUDIO_SCALE = 1u << 0;
+constant uint FLAG_CUSTOM_AUDIO_SCALE = 1u << 1;
+constant uint FLAG_ORB = 1u << 2;
+constant uint FLAG_INVISIBLE_BLOCK = 1u << 3;
+constant uint FLAG_SPECIAL_GLOW = 1u << 4;
+constant uint FLAG_GLOW_LBG = 1u << 5;
+constant uint FLAG_BASE_HSV = 1u << 6;
+constant uint FLAG_DETAIL_HSV = 1u << 7;
+constant uint FLAG_STATIC_OBJECT = 1u << 8;
+constant uint FLAG_STATIC_GLOW = 1u << 9;
+
+constant uint PULSE_BASE_ONLY = 1u << 26;
+constant uint PULSE_DETAIL_ONLY = 1u << 27;
+constant uint PULSE_HSV = 1u << 28;
+constant uint PULSE_DYNAMIC_HSV = 1u << 29;
+constant uint PULSE_ACTIVE = 1u << 30;
+
 struct SpriteWorkItem {
     float startX;
     float startY;
