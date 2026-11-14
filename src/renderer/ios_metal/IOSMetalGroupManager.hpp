@@ -62,6 +62,7 @@ public:
         std::optional<glm::vec2> centerPoint = std::nullopt
     );
     void toggleGroup(GroupID groupId, bool enabled);
+    std::set<GameObject*> getVanillaRotateGroup(GroupID groupId) const;
 
     void storeCheckpoint(CheckpointObject* checkpoint);
     void restoreCheckpoint(CheckpointObject* checkpoint);
@@ -71,6 +72,7 @@ private:
     void addGroupCombination(const GroupCombination& combination, std::uint32_t index);
     void updateAlphaValues();
     void updatePulseEntries();
+    void fetchVanillaRotateGroups();
 
 private:
     PlayLayer* layer = nullptr;
@@ -95,6 +97,7 @@ private:
     std::set<GroupID> alphaGroupIds;
     GroupID maxGroupId = 0;
     std::uint32_t alphaCombinationCount = 0;
+    std::vector<std::set<GameObject*>> vanillaRotateGroups;
 };
 
 } // namespace BismuthIOSMetal
