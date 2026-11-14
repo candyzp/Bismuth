@@ -699,7 +699,7 @@ void Renderer::draw() {
         groupStates.data(), static_cast<std::uint32_t>(groupStates.size()),
         colorChannels.data(), static_cast<std::uint32_t>(colorChannels.size()),
         pulses.data(), static_cast<std::uint32_t>(pulses.size()),
-        frame, error
+        activeFrameState, error
     );
     cpuSubmitMs = elapsedMilliseconds(stageStart);
 
