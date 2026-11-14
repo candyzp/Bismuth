@@ -1215,17 +1215,245 @@ bool IOSGPURenderer::refreshBlendOrder() {
     if (!isReadyForDrawing() || !sceneData.isReady())
         return false;
 
-    const auto start=std::chrono::steady_clock::now();
-    const bool refreshed=sceneData.refreshBlendOrder();
-    if (!refreshed) { fail("GPU blend-order refresh failed"); return false; }
-    // Capture current camera state and update the Metal visibility mask before
-    // Cocos traverses the GPU layer nodes and submits their GLES draws.
+    const auto start = std::chrono::steady_clock::now();
+    if (!sceneData.refreshBlendOrder()) {
+        fail("GPU blend-order refresh failed");
+        return false;
+    }
+
     sceneData.prepareForDraw();
-    if (!updateMetalCulling()) return false;
-    const float elapsed=std::chrono::duration<float,std::milli>(
-        std::chrono::steady_clock::now()-start
+
+    // A ring slot is reused every third frame, so it must receive the full
+    // current geometry before any layer from this frame is submitted.
+    if (isTripleBufferMethod(renderMethod) && !uploadOrderedVertices())
+        return false;
+
+    switch (cullingMethodFor(renderMethod)) {
+        case 1:
+            if (!updateCPUVisibility())
+                return false;
+            break;
+        case 2:
+            if (!updateMetalCulling())
+                return false;
+            break;
+        default:
+            break;
+    }
+
+    const float elapsed = std::chrono::duration<float, std::milli>(
+        std::chrono::steady_clock::now() - start
     ).count();
     recordBlendRefresh(elapsed);
+    return true;
+}
+
+bool IOSGPURenderer::initializeSelectedCulling() {
+    const u32 cullingMethod = cullingMethodFor(renderMethod);
+    if (cullingMethod == 0 || cullingMethod == 3)
+        return true;
+
+    const usize spriteCount = sceneData.getObjectBatch().getSpriteCount();
+    visibilityTextureWidth = static_cast<u32>(
+        std::min(1024, std::max(2, capabilities.maxTextureSize))
+    );
+    const usize textureHeight = std::max<usize>(
+        1,
+        (std::max<usize>(2, spriteCount) + visibilityTextureWidth - 1) /
+            visibilityTextureWidth
+    );
+    if (textureHeight > static_cast<usize>(capabilities.maxTextureSize)) {
+        fail(fmt::format(
+            "visibility mask needs {} rows, exceeding GL_MAX_TEXTURE_SIZE {}",
+            textureHeight,
+            capabilities.maxTextureSize
+        ));
+        return false;
+    }
+    visibilityTextureHeight = static_cast<u32>(textureHeight);
+
+    if (cullingMethod == 1)
+        return initializeCPUVisibility();
+
+    std::string error;
+    if (!metalInterop.initialize(
+            visibilityTextureWidth, visibilityTextureHeight, error)) {
+        fail(fmt::format(
+            "Metal visibility initialization failed: {}",
+            error.empty() ? "unknown initialization error" : error
+        ));
+        return false;
+    }
+    if (!metalInterop.runSelfTest(error)) {
+        metalInterop.reset();
+        fail(fmt::format(
+            "Metal visibility self-test failed: {}",
+            error.empty() ? "unknown self-test error" : error
+        ));
+        return false;
+    }
+
+    log::info(
+        "Bismuth iOS renderer method {:02}: Metal shared visibility mask ready ({} sprites)",
+        renderMethod,
+        spriteCount
+    );
+    return true;
+}
+
+bool IOSGPURenderer::initializeCPUVisibility() {
+    if (cpuVisibilityTexture)
+        return true;
+
+    const usize pixelCount =
+        static_cast<usize>(visibilityTextureWidth) * visibilityTextureHeight;
+    if (pixelCount == 0 || pixelCount >
+        std::numeric_limits<usize>::max() / 4) {
+        fail("CPU visibility texture dimensions overflowed");
+        return false;
+    }
+
+    cpuVisibilityPixels.assign(pixelCount * 4, 0);
+
+    GLint previousActiveTexture = GL_TEXTURE0;
+    glGetIntegerv(GL_ACTIVE_TEXTURE, &previousActiveTexture);
+    glActiveTexture(GL_TEXTURE0 + METAL_VISIBILITY_TEXTURE_UNIT);
+
+    GLint previousBinding = 0;
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &previousBinding);
+    while (glGetError() != GL_NO_ERROR) {}
+
+    GLuint texture = 0;
+    glGenTextures(1, &texture);
+    if (!texture) {
+        glActiveTexture(static_cast<GLenum>(previousActiveTexture));
+        fail("glGenTextures returned zero for CPU visibility mask");
+        return false;
+    }
+
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexImage2D(
+        GL_TEXTURE_2D,
+        0,
+        GL_RGBA,
+        static_cast<GLsizei>(visibilityTextureWidth),
+        static_cast<GLsizei>(visibilityTextureHeight),
+        0,
+        GL_RGBA,
+        GL_UNSIGNED_BYTE,
+        cpuVisibilityPixels.data()
+    );
+
+    const GLenum error = glGetError();
+    glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(previousBinding));
+    glActiveTexture(static_cast<GLenum>(previousActiveTexture));
+    if (error != GL_NO_ERROR) {
+        glDeleteTextures(1, &texture);
+        fail(fmt::format(
+            "CPU visibility texture allocation failed (GL error 0x{:X})",
+            error
+        ));
+        return false;
+    }
+
+    cpuVisibilityTexture = texture;
+    log::info(
+        "Bismuth iOS renderer method {:02}: CPU visibility texture ready ({}x{})",
+        renderMethod,
+        visibilityTextureWidth,
+        visibilityTextureHeight
+    );
+    return true;
+}
+
+bool IOSGPURenderer::updateCPUVisibility() {
+    if (!cpuVisibilityTexture && !initializeCPUVisibility())
+        return false;
+
+    const auto& batch = sceneData.getObjectBatch();
+    const auto& sprites = batch.getPreCulledSprites();
+    const auto& inputIndices = batch.getSortedBatch().inputSpriteIndices;
+    const auto groupStates = sceneData.getGroupManager().getGroupStates();
+    const auto& camera = sceneData.getGameState();
+    const usize spriteCount = batch.getSpriteCount();
+
+    if (sprites.size() != spriteCount || inputIndices.size() != spriteCount) {
+        fail("CPU culling scheduler records do not match the source sprite count");
+        return false;
+    }
+
+    const usize pixelCount =
+        static_cast<usize>(visibilityTextureWidth) * visibilityTextureHeight;
+    cpuVisibilityPixels.assign(pixelCount * 4, 0);
+
+    for (usize i = 0; i < spriteCount; ++i) {
+        const u32 sourceIndex = inputIndices[i];
+        const auto& sprite = sprites[i];
+        if (sourceIndex >= pixelCount ||
+            sprite.groupCombinationIndex >= groupStates.size()) {
+            fail("CPU culling scheduler returned an invalid sprite or group index");
+            return false;
+        }
+
+        const auto& group = groupStates[sprite.groupCombinationIndex];
+        const glm::vec2 objectPosition =
+            group.positionalTransform * sprite.startPosition + group.offset;
+        const glm::vec2 cameraOffset = objectPosition - camera.cameraPosition;
+        const glm::vec2 screenPosition(
+            glm::dot(camera.cameraRight, cameraOffset),
+            glm::dot(camera.cameraUp, cameraOffset)
+        );
+
+        constexpr float margin = 100.f;
+        const bool visible =
+            screenPosition.x >= -margin &&
+            screenPosition.x <= camera.cameraSize.x + margin &&
+            screenPosition.y >= -margin &&
+            screenPosition.y <= camera.cameraSize.y + margin;
+
+        const u8 value = visible ? 255 : 0;
+        const usize byteOffset = static_cast<usize>(sourceIndex) * 4;
+        cpuVisibilityPixels[byteOffset + 0] = value;
+        cpuVisibilityPixels[byteOffset + 1] = value;
+        cpuVisibilityPixels[byteOffset + 2] = value;
+        cpuVisibilityPixels[byteOffset + 3] = 255;
+    }
+
+    GLint previousActiveTexture = GL_TEXTURE0;
+    glGetIntegerv(GL_ACTIVE_TEXTURE, &previousActiveTexture);
+    glActiveTexture(GL_TEXTURE0 + METAL_VISIBILITY_TEXTURE_UNIT);
+
+    GLint previousBinding = 0;
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &previousBinding);
+    while (glGetError() != GL_NO_ERROR) {}
+
+    glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(cpuVisibilityTexture));
+    glTexSubImage2D(
+        GL_TEXTURE_2D,
+        0,
+        0,
+        0,
+        static_cast<GLsizei>(visibilityTextureWidth),
+        static_cast<GLsizei>(visibilityTextureHeight),
+        GL_RGBA,
+        GL_UNSIGNED_BYTE,
+        cpuVisibilityPixels.data()
+    );
+    const GLenum error = glGetError();
+
+    glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(previousBinding));
+    glActiveTexture(static_cast<GLenum>(previousActiveTexture));
+    if (error != GL_NO_ERROR) {
+        fail(fmt::format(
+            "CPU visibility texture upload failed (GL error 0x{:X})",
+            error
+        ));
+        return false;
+    }
     return true;
 }
 
