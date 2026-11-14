@@ -64,16 +64,16 @@ if (NOT BISMUTH_IOS_BUILD)
         GIT_TAG v2026.05.29
     )
     FetchContent_MakeAvailable(glm glslang OpenCL-Headers)
-    target_link_libraries(${PROJECT_NAME} PRIVATE glm::glm glslang::glslang OpenCL::Headers)
+    target_link_libraries(${PROJECT_NAME} glm::glm glslang::glslang OpenCL::Headers)
 else()
     FetchContent_MakeAvailable(glm glslang)
-    target_link_libraries(${PROJECT_NAME} PRIVATE glm::glm glslang::glslang)
+    target_link_libraries(${PROJECT_NAME} glm::glm glslang::glslang)
 
     find_library(FOUNDATION_FRAMEWORK Foundation REQUIRED)
     find_library(METAL_FRAMEWORK Metal REQUIRED)
     find_library(COREVIDEO_FRAMEWORK CoreVideo REQUIRED)
     find_library(OPENGLES_FRAMEWORK OpenGLES REQUIRED)
-    target_link_libraries(${PROJECT_NAME} PRIVATE
+    target_link_libraries(${PROJECT_NAME}
         ${FOUNDATION_FRAMEWORK}
         ${METAL_FRAMEWORK}
         ${COREVIDEO_FRAMEWORK}
