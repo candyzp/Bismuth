@@ -422,6 +422,16 @@ void IOSGPURenderer::finishFrame() {
     lastGPUTrianglesSubmitted = gpuTrianglesSubmittedThisFrame;
     hasFinishedFrame = true;
 
+    // Do not take visual ownership until every active GPU layer has completed a
+    // real GL submission. Until then, Geometry Dash's own batches remain visible.
+    if (!stockOwnershipTransferred && isReadyForDrawing() && activeLayerCount > 0 &&
+        lastFrameDraws >= activeLayerCount) {
+        hideStockBatches();
+        stockOwnershipTransferred = stockBatchesHidden;
+        if (stockOwnershipTransferred)
+            log::info("Bismuth iOS renderer took ownership after {} successful layer draws", lastFrameDraws);
+    }
+
     // CCLabelTTF::setString regenerates a text texture. Keep counters per-frame,
     // but refresh the visible label at 10 Hz to avoid making the HUD itself costly.
     overlayRefreshElapsedMilliseconds += lastFrameIntervalMilliseconds > 0.f
@@ -519,9 +529,10 @@ void IOSGPURenderer::fail(const std::string& reason) {
             node->setVisible(false);
     }
 
-    // GPU-only means stock Cocos batches stay suppressed even on failure.
-    // The on-screen status label reports why the GPU path stopped drawing.
-    hideStockBatches();
+    // Any error returns visual ownership to Cocos. The previous visibility of
+    // each stock batch is restored instead of forcing every batch visible.
+    restoreStockBatches();
+    stockOwnershipTransferred = false;
     updateDebugOverlay();
 }
 
@@ -529,21 +540,41 @@ void IOSGPURenderer::hideStockBatches() {
     if (!layer || !layer->m_batchNodes)
         return;
 
-    for (auto batch : CCArrayExt<cocos2d::CCNode*>(layer->m_batchNodes)) {
-        if (batch)
-            batch->setVisible(false);
+    if (stockBatchesHidden) {
+        for (auto batch : CCArrayExt<cocos2d::CCNode*>(layer->m_batchNodes)) {
+            if (batch)
+                batch->setVisible(false);
+        }
+        return;
     }
+
+    stockBatchVisibility.clear();
+    for (auto batch : CCArrayExt<cocos2d::CCNode*>(layer->m_batchNodes)) {
+        if (!batch)
+            continue;
+        stockBatchVisibility.emplace_back(batch, batch->isVisible());
+        batch->setVisible(false);
+    }
+    stockBatchesHidden = !stockBatchVisibility.empty();
+}
+
+void IOSGPURenderer::restoreStockBatches() {
+    for (const auto& [batch, wasVisible] : stockBatchVisibility) {
+        if (batch)
+            batch->setVisible(wasVisible);
+    }
+    stockBatchVisibility.clear();
+    stockBatchesHidden = false;
 }
 
 void IOSGPURenderer::enforceGPUOwnership() {
-    // Re-assert exclusive GPU ownership after Geometry Dash performs its level
-    // reset, including the failure case. There is never a stock draw fallback.
-    hideStockBatches();
-    if (isReadyForDrawing()) {
-        // Z-order containers are rebuilt by PlayLayer::resetLevel(). Do not
-        // assume they exist during initForPlayLayer(); synchronize only after
-        // the base reset has completed and keep retrying on later resets.
+    // Attach/synchronize GPU layer nodes first. finishFrame() transfers visual
+    // ownership only after all active layers have successfully drawn once.
+    if (isReadyForDrawing())
         syncLayerNodes();
+    else {
+        restoreStockBatches();
+        stockOwnershipTransferred = false;
     }
     updateDebugOverlay();
 }
@@ -822,9 +853,8 @@ bool IOSGPURenderer::initForPlayLayer(PlayLayer* playLayer) {
 
     updateStartupDiagnostic("BISMUTH iOS GPU STARTUP\nPlayLayer hook: ENTERED\nRenderer init: ENTERED");
 
-    // Strict GPU-only ownership: stock batches are hidden before initialization.
-    // This remains true in every failure case; there is no CPU visual fallback.
-    hideStockBatches();
+    // Keep Geometry Dash's stock batches visible throughout initialization.
+    // finishFrame() transfers ownership only after a complete first GPU frame.
 
     if (!queryAndValidateCapabilities())
         return false;
@@ -912,6 +942,9 @@ bool IOSGPURenderer::initForPlayLayer(PlayLayer* playLayer) {
 }
 
 void IOSGPURenderer::prepareForLevelReset() {
+    restoreStockBatches();
+    stockOwnershipTransferred = false;
+
     // Release particles while this PlayLayer and its particle manager are valid.
     sceneData.releaseObjectParticles();
 
@@ -934,6 +967,8 @@ void IOSGPURenderer::suspendForPlayLayerExit() {
     // Called from PlayLayer::onExit before the particle manager is destroyed.
     // Never defer unclaimParticle() to SceneData's child-node destructor.
     suspended = true;
+    restoreStockBatches();
+    stockOwnershipTransferred = false;
     sceneData.releaseObjectParticles();
     for (auto node : layerNodes) {
         if (node)
@@ -949,8 +984,8 @@ void IOSGPURenderer::resumeAfterPlayLayerExit() {
     if (failed || !initialized)
         return;
 
-    // Resuming never reveals Geometry Dash's stock batches or enables the hybrid path.
-    hideStockBatches();
+    // Re-acquire visual ownership only after a successful resumed frame.
+    stockOwnershipTransferred = false;
     for (auto node : layerNodes) {
         if (node)
             node->setVisible(true);
