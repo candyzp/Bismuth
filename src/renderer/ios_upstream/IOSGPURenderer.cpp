@@ -354,14 +354,19 @@ void IOSGPURenderer::updateDebugOverlay() {
             status = "BISMUTH iOS RENDERER: READY, NO GPU LAYER NODES";
         else if (hasFinishedFrame && lastFrameLayerVisits == 0)
             status = "BISMUTH iOS RENDERER: NO GPU LAYER VISITS";
+        else if (stockOwnershipTransferred)
+            status = "BISMUTH iOS RENDERER: FIRST FRAME PASSED";
         else if (hasFinishedFrame && lastFrameDraws == 0)
             status = "BISMUTH iOS RENDERER: VISITED, NO GPU DRAWS";
+        else if (hasFinishedFrame)
+            status = "BISMUTH iOS RENDERER: DRAWING, WAITING FOR COMPLETE FRAME";
     }
 
     std::string detail = failed
         ? fmt::format("Failure: {}\n", failureReason)
         : std::string{};
     detail += fmt::format(
+        "Ownership: {} | current result: {}\n"
         "Level O:{} S:{} G:{}\n"
         "CPU ms GD:{:.1f} SC:{:.1f} BL:{:.1f} SUB:{:.1f}\n"
         "CPU sprites scanned:{} changed:{}\n"
@@ -371,6 +376,9 @@ void IOSGPURenderer::updateDebugOverlay() {
         "GPU draws:{} verts:{} triangles:{}\n"
         "VBO:{:.1f}KB | frame:{} work:{:.1f}ms cadence:{:.1f}Hz\n"
         "Nodes:{} ranges:{} missing:{} visits:{}",
+        stockOwnershipTransferred ? "Bismuth GPU" : "Geometry Dash Cocos",
+        stockOwnershipTransferred ? "FIRST FRAME PASSED" :
+            failed ? "FAILED" : hasFinishedFrame ? "INCOMPLETE" : "WAITING",
         layer && layer->m_objects ? layer->m_objects->count() : 0,
         batch.getSpriteCount(),
         sceneData.getGroupManager().getGroupCombinationCount(),
