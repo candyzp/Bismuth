@@ -4,11 +4,13 @@ on:
   push:
     branches:
       - 'rework/ios-gpu-v2'
+      - 'experiment/ios-render-method-matrix'
     paths:
       - 'src/**'
       - 'resources/shaders/**'
       - 'CMakeLists.txt'
       - 'mod.json'
+      - '.github/workflows/ios.yml'
   workflow_dispatch:
   pull_request:
     paths:
