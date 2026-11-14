@@ -647,6 +647,11 @@ void Renderer::draw() {
     }
 
     frameHasOutput = metalCompute.acquireLatestFrame(activeOutput);
+    const std::string metalError = metalCompute.takeLastError();
+    if (!metalError.empty()) {
+        dispatchStatus = "METAL COMMAND FAILED";
+        lastDispatchError = metalError;
+    }
     if (frameHasOutput && submitted && activeOutput.sequence < submittedFrameCount) {
         dispatchStatus = "SUBMITTED / PREVIOUS GPU FRAME DISPLAYED";
     } else if (!frameHasOutput) {
@@ -777,6 +782,10 @@ void Renderer::updateDebugOverlay() {
         groupManager.getStates().size() * sizeof(GroupCombinationState) +
         colorChannels.size() * sizeof(std::uint32_t) +
         groupManager.getPulseEntries().size() * sizeof(PulseEntry);
+    const auto staticMetalInputBytes =
+        objectBatch.getWorkItems().size() * sizeof(SpriteWorkItem) +
+        objectBatch.getInputSprites().size() * sizeof(InputSprite) +
+        objectBatch.getObjectInfos().size() * sizeof(ObjectInfo);
     const auto totalGpuStateBytes =
         static_cast<std::uint64_t>(activeOutput.textureWidth) *
         activeOutput.textureHeight * 16u;
@@ -800,6 +809,7 @@ void Renderer::updateDebugOverlay() {
         "FPS: {:.1f}   OUTPUT: {}\n"
         "\n"
         "GPU COMPUTE (REAL COMMAND-BUFFER TIME)\n"
+        "Device: {}\n"
         "Metal time: {}\n"
         "Sprites processed: {}   visible: {}   culled: {}\n"
         "Threads: {} groups x {} threads\n"
@@ -819,12 +829,14 @@ void Renderer::updateDebugOverlay() {
         "CPU WORK (ONCE PER LEVEL)\n"
         "Static mesh extraction/build: {:.2f} ms\n"
         "Metal static-buffer setup/upload: {:.2f} ms\n"
+        "Static Metal inputs: {:.2f} MiB (uploaded once)\n"
         "Metal submissions: {}\n"
         "{}",
         ownerText,
         dispatchStatus,
         estimatedFPS,
         frameHasOutput ? activeOutput.sequence : 0,
+        metalCompute.getDeviceName(),
         gpuTimeText,
         frameHasOutput ? activeOutput.totalSpriteCount : objectBatch.getSpriteCount(),
         frameHasOutput ? activeOutput.visibleSpriteCount : 0,
@@ -848,6 +860,7 @@ void Renderer::updateDebugOverlay() {
         static_cast<double>(compactStateBytes) / 1024.0,
         cpuLevelBuildMs,
         cpuMetalStaticUploadMs,
+        static_cast<double>(staticMetalInputBytes) / (1024.0 * 1024.0),
         submittedFrameCount,
         errorText.empty() ? "No dispatch error" : fmt::format("ERROR: {}", errorText)
     );
