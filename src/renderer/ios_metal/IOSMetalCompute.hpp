@@ -21,7 +21,6 @@ struct InputSprite {
     std::uint32_t spriteType = 0;
     std::uint32_t triangleStart = 0;
     std::uint32_t triangleCount = 0;
-    std::uint32_t colorChannelFlags = 0;
 };
 
 // Field order follows Bismuth's objectInfoBuffer.h / ObjectInfo.
@@ -98,7 +97,7 @@ struct alignas(16) FrameState {
 };
 
 static_assert(sizeof(SpriteWorkItem) == 16);
-static_assert(sizeof(InputSprite) == 20);
+static_assert(sizeof(InputSprite) == 16);
 static_assert(sizeof(ObjectInfo) == 52);
 static_assert(sizeof(GroupCombinationState) == 48);
 static_assert(sizeof(PulseEntry) == 12);
