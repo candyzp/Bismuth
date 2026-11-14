@@ -29,16 +29,21 @@ public:
     }
 
     inline void bindAsUniformBuffer(u32 binding) {
+#if !defined(GEODE_IS_IOS)
         glBindBufferBase(GL_UNIFORM_BUFFER, binding, id);
+#endif
     }
 
     inline void bindAsStorageBuffer(u32 binding) {
-        // geode::log::info("SHADER STORAGE BUFFER, {}, {}", binding, byteSizeToString(size));
+#if !defined(GEODE_IS_IOS)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, binding, id);
+#endif
     }
 
     inline void bindAsStorageBuffer(u32 binding, u32 offset, u32 size) {
+#if !defined(GEODE_IS_IOS)
         glBindBufferRange(GL_SHADER_STORAGE_BUFFER, binding, id, offset, size);
+#endif
     }
 
     void* map(i32 type);
@@ -48,7 +53,11 @@ public:
     }
 
     inline void* mapReadWrite() {
+#if defined(GEODE_IS_IOS)
+        return nullptr;
+#else
         return map(GL_READ_WRITE);
+#endif
     }
 
     void unmap();
@@ -82,7 +91,11 @@ public:
         and used by the CPU
     */
     inline static UPtr<Buffer> createDynamicCopy(const char* name, usize size) {
+#if defined(GEODE_IS_IOS)
+        return create(name, size, GL_DYNAMIC_DRAW);
+#else
         return create(name, size, GL_DYNAMIC_COPY);
+#endif
     }
 
     /*
