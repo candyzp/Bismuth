@@ -201,6 +201,25 @@ double elapsedMilliseconds(std::chrono::steady_clock::time_point start) {
     ).count();
 }
 
+bool hasGLExtension(const char* extensions, const char* wanted) {
+    if (!extensions || !wanted || !*wanted)
+        return false;
+    const std::string list(extensions);
+    const std::string token(wanted);
+    std::size_t position = 0;
+    while ((position = list.find(token, position)) != std::string::npos) {
+        const bool leftBoundary =
+            position == 0 || list[position - 1] == ' ';
+        const std::size_t end = position + token.size();
+        const bool rightBoundary =
+            end == list.size() || list[end] == ' ';
+        if (leftBoundary && rightBoundary)
+            return true;
+        position = end;
+    }
+    return false;
+}
+
 std::uint32_t packRGBA(cocos2d::ccColor3B color, std::uint8_t alpha) {
     return static_cast<std::uint32_t>(color.r) |
         (static_cast<std::uint32_t>(color.g) << 8) |
@@ -413,6 +432,41 @@ bool Renderer::loadSpriteSheets() {
 }
 
 bool Renderer::createGLESProgram() {
+    GLint vertexTextureUnits = 0;
+    GLint fragmentTextureUnits = 0;
+    glGetIntegerv(GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS, &vertexTextureUnits);
+    glGetIntegerv(GL_MAX_TEXTURE_IMAGE_UNITS, &fragmentTextureUnits);
+
+    const char* versionString = reinterpret_cast<const char*>(glGetString(GL_VERSION));
+    const char* rendererString = reinterpret_cast<const char*>(glGetString(GL_RENDERER));
+    const char* extensionString = reinterpret_cast<const char*>(glGetString(GL_EXTENSIONS));
+    const std::string version = versionString ? versionString : "unknown GL version";
+    const std::string rendererName = rendererString ? rendererString : "unknown GL renderer";
+    const bool es3 = version.find("OpenGL ES 3.") != std::string::npos;
+    const bool floatTextureSupport =
+        es3 || hasGLExtension(extensionString, "GL_OES_texture_float");
+
+    glesCapabilityInfo = fmt::format(
+        "{} | {} | vertex texture units {} | fragment texture units {} | float textures {}",
+        version, rendererName, vertexTextureUnits, fragmentTextureUnits,
+        floatTextureSupport ? "YES" : "NO"
+    );
+    log::info("Bismuth iOS GLES capabilities: {}", glesCapabilityInfo);
+
+    // This renderer reads the Metal state texture from the vertex shader.
+    // GLES 2.0 legally permits zero vertex texture units. In that case the
+    // shader may compile, but its state reads cannot work. Do not take
+    // ownership of the game's batches on an unsupported implementation.
+    if (vertexTextureUnits <= 0 || !floatTextureSupport) {
+        initializationError = fmt::format(
+            "OpenGL ES cannot sample the Metal state texture in the vertex shader "
+            "(vertex texture units: {}, float texture support: {}). Vanilla drawing retained.",
+            vertexTextureUnits, floatTextureSupport ? "yes" : "no"
+        );
+        log::error("{}", initializationError);
+        return false;
+    }
+
     auto vertex = readResourceFile("ios_metal_object_es2.vert");
     auto fragment = readResourceFile("ios_metal_object_es2.frag");
     if (!vertex.has_value() || !fragment.has_value()) {
@@ -892,6 +946,7 @@ void Renderer::updateDebugOverlay() {
         "Threads: {} groups x {} threads\n"
         "Output state texture: {} x {} ({:.2f} MiB)\n"
         "GLES state Y flip: {}\n"
+        "GLES capabilities: {}\n"
         "\n"
         "OPENGL ES DRAW\n"
         "Successful draws: {} / {}   GL failures: {}\n"
@@ -929,6 +984,7 @@ void Renderer::updateDebugOverlay() {
         activeOutput.textureHeight,
         static_cast<double>(totalGpuStateBytes) / (1024.0 * 1024.0),
         frameHasOutput && activeOutput.stateTextureNeedsYFlip ? "YES" : "NO",
+        glesCapabilityInfo,
         drawsThisFrame,
         drawLayerKeys.size(),
         drawFailuresThisFrame,
