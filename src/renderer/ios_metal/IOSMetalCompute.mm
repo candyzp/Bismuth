@@ -60,7 +60,6 @@ struct InputSprite {
     uint spriteType;
     uint triangleStart;
     uint triangleCount;
-    uint colorChannelFlags;
 };
 
 struct ObjectInfo {
@@ -394,6 +393,9 @@ kernel void bismuthObjectCompute(
             uint spriteType = sprite.spriteType;
             uint colorChannel = spriteType == SPRITE_DETAIL
                 ? object.detailColorChannelId : object.baseColorChannelId;
+            if (spriteType == SPRITE_GLOW &&
+                (objectFlags & FLAG_GLOW_LBG) != 0u)
+                colorChannel = COLOR_CHANNEL_LBG;
             colorChannel = min(colorChannel, max(frame.colorChannelCount, 1u) - 1u);
 
             if (colorChannel == COLOR_CHANNEL_LIGHTER) {
