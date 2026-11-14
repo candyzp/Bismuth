@@ -155,6 +155,8 @@ public:
 
     void reset();
     bool isReady() const;
+    std::string getDeviceName() const;
+    std::string takeLastError();
 
 private:
     void* m_owner = nullptr;
