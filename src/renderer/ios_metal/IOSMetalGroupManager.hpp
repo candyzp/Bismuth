@@ -62,7 +62,7 @@ public:
         std::optional<glm::vec2> centerPoint = std::nullopt
     );
     void toggleGroup(GroupID groupId, bool enabled);
-    std::set<GameObject*> getVanillaRotateGroup(GroupID groupId) const;
+    const std::set<GameObject*>& getVanillaRotateGroup(GroupID groupId) const;
     void resetGroupStates();
 
     void storeCheckpoint(CheckpointObject* checkpoint);
