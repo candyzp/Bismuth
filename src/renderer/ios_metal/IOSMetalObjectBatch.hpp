@@ -8,6 +8,7 @@
 #include <Geode/cocos/textures/CCTexture2D.h>
 #include <functional>
 #include <glm/fwd.hpp>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -62,6 +63,7 @@ public:
     const std::vector<InputSprite>& getInputSprites() const { return inputSprites; }
     const std::vector<ObjectInfo>& getObjectInfos() const { return objectInfos; }
     const std::vector<LayerRange>& getLayerRanges() const { return layerRanges; }
+    const std::string& getLastBuildError() const { return lastBuildError; }
 
 private:
     struct SpriteTransforms {
@@ -124,6 +126,7 @@ private:
     BlendStates appliedBlendStates {};
     bool hasBlendStates = false;
     bool built = false;
+    std::string lastBuildError;
 };
 
 } // namespace BismuthIOSMetal
