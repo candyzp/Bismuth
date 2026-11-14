@@ -19,9 +19,10 @@
 #include <string>
 
 namespace BismuthIOSMetal {
-namespace {
 
 constexpr NSUInteger SLOT_COUNT = 3;
+
+namespace {
 constexpr std::uint32_t COLOR_CHANNEL_BG = 1000u;
 constexpr std::uint32_t COLOR_CHANNEL_LBG = 1007u;
 constexpr std::uint32_t COLOR_CHANNEL_LIGHTER = 1012u;
@@ -530,6 +531,8 @@ bool hasExtension(const char* extensions, const char* wanted) {
     return false;
 }
 
+} // namespace
+
 struct OutputSlot {
     CVPixelBufferRef pixelBuffer = nullptr;
     CVMetalTextureRef metalTextureRef = nullptr;
@@ -552,7 +555,7 @@ struct OutputSlot {
     std::atomic<bool> inFlight {false};
     std::atomic<bool> ready {false};
     std::atomic<bool> leased {false};
-    GLsyncAPPLE readFence = nullptr;
+    GLsync readFence = nullptr;
     std::uint64_t sequence = 0;
 
     void destroy(bool canDeleteGLSync) {
@@ -588,6 +591,9 @@ struct OutputSlot {
     }
 };
 
+
+} // namespace BismuthIOSMetal
+
 @interface BismuthIOSMetalOwner : NSObject {
 @public
     id<MTLDevice> device;
@@ -601,7 +607,7 @@ struct OutputSlot {
     id<MTLBuffer> inputSpriteBuffer;
     id<MTLBuffer> objectInfoBuffer;
 
-    OutputSlot slots[SLOT_COUNT];
+    BismuthIOSMetal::OutputSlot slots[BismuthIOSMetal::SLOT_COUNT];
     NSUInteger textureWidth;
     NSUInteger textureHeight;
     NSUInteger spriteCount;
@@ -651,6 +657,9 @@ struct OutputSlot {
     device = nil;
 }
 @end
+namespace BismuthIOSMetal {
+namespace {
+
 
 bool ensureSharedBuffer(
     id<MTLDevice> device,
