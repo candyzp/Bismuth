@@ -324,8 +324,12 @@ bool Renderer::initWithLevel(PlayLayer* playLayer, cocos2d::CCArray* objects) {
     const auto objectBuildStart = std::chrono::steady_clock::now();
     if (!objectBatch.build(
             layer, levelObjects, groupResolver, initialBlendStates, textureResolver)) {
-        initializationError =
-            "Static level mesh extraction failed (see preceding object-batch log)";
+        initializationError = objectBatch.getLastBuildError().empty()
+            ? "Static level mesh extraction failed without a detailed reason"
+            : fmt::format(
+                "Static level mesh extraction failed: {}",
+                objectBatch.getLastBuildError()
+            );
         log::error("Bismuth iOS Metal renderer could not extract static level meshes");
         reset();
         return false;
