@@ -2,11 +2,12 @@
 #include "Renderer.hpp"
 #if defined(GEODE_IS_IOS)
 #include "ios_metal/IOSMetalRenderer.hpp"
+#else
+#include "OverdrawView.hpp"
 #endif
 #include <decomp/PlayLayer.hpp>
 #include <decomp/GJBaseGameLayer.hpp>
 #include "../cl.hpp"
-#include "OverdrawView.hpp"
 
 using namespace geode::prelude;
 
@@ -22,6 +23,7 @@ class $modify(MyPlayLayer, PlayLayer) {
 
     bool init(GJGameLevel *level, bool useReplay, bool dontCreateObjects) {
         bool ret = PlayLayer::init(level, useReplay, dontCreateObjects);
+#if !defined(GEODE_IS_IOS)
         if (ret) {
             auto view = OverdrawView::create();
             if (view) {
@@ -30,6 +32,7 @@ class $modify(MyPlayLayer, PlayLayer) {
                 addChild(view->getText(), 10000);
             }
         }
+#endif
         return ret;
     }
 
@@ -510,6 +513,7 @@ class $modify(MyLoadingLayer, LoadingLayer) {
 class $modify(MyLevelEditorLayer, LevelEditorLayer) {
     bool init(GJGameLevel* level, bool noUI) {
         bool ret = LevelEditorLayer::init(level, noUI);
+#if !defined(GEODE_IS_IOS)
         if (ret) {
             auto view = OverdrawView::create();
             if (view) {
@@ -520,6 +524,7 @@ class $modify(MyLevelEditorLayer, LevelEditorLayer) {
                 view->getText()->setPosition({44, 116});
             }
         }
+#endif
         return ret;
     }
 };
