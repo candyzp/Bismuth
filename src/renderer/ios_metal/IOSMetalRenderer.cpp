@@ -258,7 +258,11 @@ Renderer* Renderer::getCurrent() {
 }
 
 Renderer::~Renderer() {
-    reset();
+    // The renderer is a child of the level's object layer. During level
+    // destruction the sibling batch nodes and PlayLayer overlay may already
+    // be in their parent's teardown sequence, so reset must not detach the
+    // overlay or touch unretained sibling pointers.
+    reset(true);
     if (current == this)
         current = nullptr;
 }
@@ -476,8 +480,8 @@ bool Renderer::createGLESProgram() {
 }
 
 bool Renderer::createLayerDrawNodes() {
+    restoreVanillaBatches();
     drawLayerKeys.clear();
-    vanillaBatchNodes.clear();
 
     for (const auto& range : objectBatch.getLayerRanges()) {
         cocos2d::CCNode* vanillaNode = layer->parentForZLayer(
@@ -503,6 +507,10 @@ bool Renderer::createLayerDrawNodes() {
         drawLayerKeys.push_back(range.key);
         if (std::find(vanillaBatchNodes.begin(), vanillaBatchNodes.end(), vanillaBatch) ==
             vanillaBatchNodes.end()) {
+            // Keep sibling Cocos batches alive until this renderer releases
+            // them. The parent can begin destroying its children before this
+            // renderer's destructor runs.
+            vanillaBatch->retain();
             vanillaBatchNodes.push_back(vanillaBatch);
         }
     }
@@ -954,16 +962,22 @@ void Renderer::finishDrawFrame() {
 
 void Renderer::restoreVanillaBatches() {
     for (auto batch : vanillaBatchNodes) {
-        if (batch)
+        if (batch) {
             batch->setVisible(true);
+            batch->release();
+        }
     }
     vanillaBatchNodes.clear();
 }
 
-void Renderer::reset() {
+void Renderer::reset(bool parentTearingDown) {
     restoreVanillaBatches();
     if (debugOverlay) {
-        debugOverlay->removeFromParentAndCleanup(true);
+        // The overlay is owned by PlayLayer, not by this renderer. When the
+        // parent scene is already destructing, leave it for PlayLayer's own
+        // child cleanup rather than detaching it through a dying parent.
+        if (!parentTearingDown)
+            debugOverlay->removeFromParentAndCleanup(true);
         debugOverlay = nullptr;
     }
     if (glesProgram) {
