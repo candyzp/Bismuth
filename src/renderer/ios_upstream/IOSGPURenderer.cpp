@@ -811,7 +811,7 @@ bool IOSGPURenderer::uploadOrderedVertices() {
     if (!sceneData.isReady())
         return false;
 
-    const auto& batch = sceneData.getObjectBatch();
+    auto& batch = sceneData.getObjectBatch();
     const auto& vertices = batch.getOrderedVertices();
     if (vertices.empty()) {
         uploadedOrderRevision = batch.getOrderRevision();
