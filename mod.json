@@ -7,7 +7,7 @@
 	"name": "Bismuth (experimental)",
 	"version": "v0.1.10-alpha",
 	"developer": "IliasHDZ",
-	"description": "iOS Metal-only visibility culling with Geometry Dash OpenGL ES shared-texture rendering; no GLES culling fallback.",
+	"description": "Geometry Dash iOS rendering-method experiments with selectable OpenGL ES, CPU and Metal-assisted paths.",
 	"dependencies": {
 		"geode.node-ids": ">=v1.20.0"
 	},
@@ -34,16 +34,16 @@
 			"default": true
 		},
 		"ios_gpu_debug": {
-			"name": "iOS GPU assist debug",
+			"name": "iOS renderer debug overlay",
 			"type": "bool",
-			"default": false,
-			"description": "Shows resolved-state classification, dirty-state activity, GPU state uploads, and the current stock/GPU-assist status. Detailed probing adds diagnostic CPU overhead and should be disabled for normal play."
+			"default": true,
+			"description": "Shows the selected rendering method, vertex transport, culling path, frame count, draw count, GPU vertices and failure reason."
 		},
 		"crash_diagnostics": {
 			"name": "Detailed crash diagnostics",
 			"type": "bool",
 			"default": false,
-			"description": "Writes renderer-stage and large-level progress breadcrumbs to Geode's native log and the mod save folder (crash-breadcrumbs.log). Per-object log spam is disabled; no second crash handler is installed."
+			"description": "Writes renderer-stage and large-level progress breadcrumbs to Geode's native log and the mod save folder (crash-breadcrumbs.log)."
 		},
 		"ios_render_method": {
 			"name": "iOS renderer method",
