@@ -598,30 +598,68 @@ bool runIOSRenderMethodProbe(std::uint32_t method, std::string& report) {
 
         if (method == 19) {
             if (!context)
-                return fail("No current EAGLContext for double-buffered texture probe");
+                return fail("No current EAGLContext for GLES-to-Metal shared-texture probe");
 
-            for (int index = 0; index < 2; ++index) {
-                CFScoped<CVPixelBufferRef> pixelBuffer;
-                if (!createPixelBuffer(16, 16, true, true, pixelBuffer, report))
-                    return false;
+            CFScoped<CVPixelBufferRef> pixelBuffer;
+            if (!createPixelBuffer(16, 16, true, true, pixelBuffer, report))
+                return false;
 
-                CFScoped<CVMetalTextureCacheRef> metalCache;
-                CFScoped<CVMetalTextureRef> metalTextureRef;
-                id<MTLTexture> metalTexture = nil;
-                if (!createMetalView(pixelBuffer.get(), device, metalCache,
-                                     metalTextureRef, metalTexture, report))
-                    return false;
+            CFScoped<CVMetalTextureCacheRef> metalCache;
+            CFScoped<CVMetalTextureRef> metalTextureRef;
+            id<MTLTexture> metalTexture = nil;
+            if (!createMetalView(pixelBuffer.get(), device, metalCache,
+                                 metalTextureRef, metalTexture, report))
+                return false;
 
-                CFScoped<CVOpenGLESTextureCacheRef> glCache;
-                CFScoped<CVOpenGLESTextureRef> glTextureRef;
-                GLuint glTextureName = 0;
-                if (!createGLESView(pixelBuffer.get(), context, glCache,
-                                    glTextureRef, glTextureName, report))
-                    return false;
-                if (!validateGLESName(glTextureName, report))
-                    return false;
+            CFScoped<CVOpenGLESTextureCacheRef> glCache;
+            CFScoped<CVOpenGLESTextureRef> glTextureRef;
+            GLuint glTextureName = 0;
+            if (!createGLESView(pixelBuffer.get(), context, glCache,
+                                glTextureRef, glTextureName, report))
+                return false;
+
+            GLint previousFramebuffer = 0;
+            GLint previousViewport[4] = {};
+            GLfloat previousClearColor[4] = {};
+            glGetIntegerv(GL_FRAMEBUFFER_BINDING, &previousFramebuffer);
+            glGetIntegerv(GL_VIEWPORT, previousViewport);
+            glGetFloatv(GL_COLOR_CLEAR_VALUE, previousClearColor);
+            while (glGetError() != GL_NO_ERROR) {}
+
+            GLuint framebuffer = 0;
+            glGenFramebuffers(1, &framebuffer);
+            if (!framebuffer)
+                return fail("glGenFramebuffers returned zero for shared-texture write probe");
+
+            glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                   GL_TEXTURE_2D, glTextureName, 0);
+            const GLenum framebufferStatus = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+            if (framebufferStatus == GL_FRAMEBUFFER_COMPLETE) {
+                glViewport(0, 0, 16, 16);
+                glClearColor(1.f, 1.f, 1.f, 1.f);
+                glClear(GL_COLOR_BUFFER_BIT);
+                glFinish();
             }
-            return pass("PASS: two independent CVPixelBuffers each produced Metal and GLES texture views");
+
+            const GLenum drawError = glGetError();
+            glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(previousFramebuffer));
+            glViewport(previousViewport[0], previousViewport[1],
+                       previousViewport[2], previousViewport[3]);
+            glClearColor(previousClearColor[0], previousClearColor[1],
+                         previousClearColor[2], previousClearColor[3]);
+            glDeleteFramebuffers(1, &framebuffer);
+            const GLenum restoreError = glGetError();
+
+            if (framebufferStatus != GL_FRAMEBUFFER_COMPLETE)
+                return fail("shared GLES texture is not framebuffer-renderable (status " +
+                    std::to_string(framebufferStatus) + ")");
+            if (drawError != GL_NO_ERROR || restoreError != GL_NO_ERROR)
+                return fail("GLES clear or GL-state restoration failed for shared texture");
+            if (!verifyWhitePixel(pixelBuffer.get(), report))
+                return false;
+
+            return pass("PASS: OpenGL ES rendered into the shared CVPixelBuffer also exposed to Metal");
         }
 
         if (method == 20) {
