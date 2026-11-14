@@ -249,9 +249,23 @@ IOSGPURenderer::~IOSGPURenderer() {
     // renderer is destroyed and are released with their owning PlayLayer.
     layerNodes.clear();
 
-    if (vertexBuffer) {
+    if (vertexRingBuffers[0] || vertexRingBuffers[1] || vertexRingBuffers[2]) {
+        const GLuint buffers[3] = {
+            static_cast<GLuint>(vertexRingBuffers[0]),
+            static_cast<GLuint>(vertexRingBuffers[1]),
+            static_cast<GLuint>(vertexRingBuffers[2])
+        };
+        glDeleteBuffers(3, buffers);
+        vertexRingBuffers = {};
+        vertexBuffer = 0;
+    } else if (vertexBuffer) {
         glDeleteBuffers(1, &vertexBuffer);
         vertexBuffer = 0;
+    }
+    if (cpuVisibilityTexture) {
+        const GLuint texture = static_cast<GLuint>(cpuVisibilityTexture);
+        glDeleteTextures(1, &texture);
+        cpuVisibilityTexture = 0;
     }
     if (shader) {
         Shader::destroy(shader);
@@ -380,10 +394,25 @@ void IOSGPURenderer::updateDebugOverlay() {
         lastFrameLayerVisits
     );
 
+    static constexpr const char* uploadNames[] = {
+        "persistent VBO", "orphan + upload", "subdata VBO",
+        "client arrays", "triple VBO ring"
+    };
+    static constexpr const char* cullingNames[] = {
+        "vertex shader", "CPU visibility texture", "Metal shared mask", "disabled"
+    };
+    detail = fmt::format(
+        "METHOD {:02}/20: {}\\nUPLOAD: {} | CULL: {}\\n",
+        renderMethod,
+        renderMethodName(renderMethod),
+        uploadNames[std::min<u32>(uploadMethodFor(renderMethod), 4)],
+        cullingNames[std::min<u32>(cullingMethodFor(renderMethod), 3)]
+    ) + detail;
     detail += fmt::format(
-        "Metal cull:{} shared GL tex:{}\n",
-        metalInterop.selfTestPassed() ? "ACTIVE" : "OFF",
-        metalInterop.openGLESTextureName()
+        "Metal mask:{} GL tex:{} | CPU mask:{}\\n",
+        metalInterop.selfTestPassed() ? "READY" : "OFF",
+        metalInterop.openGLESTextureName(),
+        cpuVisibilityTexture ? "READY" : "OFF"
     );
 
     updateStartupDiagnostic(status + "\n" + detail);
@@ -392,9 +421,11 @@ void IOSGPURenderer::updateDebugOverlay() {
 std::string IOSGPURenderer::getCrashDiagnosticSnapshot() const {
     const auto& batch = sceneData.getObjectBatch();
     return fmt::format(
-        "PlayLayer={:p} renderer={:p} status={} sceneReady={} sprites={} sourceVertices={} orderedVertices={} gpuNodes={} activeRanges={} missingNodes={} frameVisits={} drawAttempts={} draws={} animatedObjects={} animatedUpdated={} particleObjects={} particlesClaimed={} shader={} vbo={} failure='{}'",
+        "PlayLayer={:p} renderer={:p} method={:02}/20 ({}) status={} sceneReady={} sprites={} sourceVertices={} orderedVertices={} gpuNodes={} activeRanges={} missingNodes={} frameVisits={} drawAttempts={} draws={} animatedObjects={} animatedUpdated={} particleObjects={} particlesClaimed={} shader={} vbo={} failure='{}'",
         static_cast<void*>(layer),
         static_cast<const void*>(this),
+        renderMethod,
+        renderMethodName(renderMethod),
         failed ? "FAILED" : initialized ? "READY" : "STARTING",
         sceneData.isReady(),
         batch.getSpriteCount(),
