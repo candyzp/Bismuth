@@ -6,16 +6,18 @@ from the full Bismuth scene renderer.
 ## How to use it
 
 1. Leave **iOS interop probe mode** enabled.
-2. Choose one value in **iOS interop method (1–20)**.
-3. Enter a level. The selected probe runs after Geometry Dash finishes its normal
-   level reset.
-4. Read the on-screen startup diagnostic or the Geode log for the PASS/FAIL
-   message and the underlying API error.
+2. Choose **00 - Run all 20 probes** to execute the complete matrix in one level
+   entry, or choose an individual numbered method to isolate it.
+3. Enter a level. Probes run after Geometry Dash finishes its normal level reset.
+   The batch option runs methods 01–20 sequentially and logs each PASS/FAIL.
+4. Read the Geode log for the individual results and the underlying API errors.
 
 Probe mode does not create `IOSGPURenderer`, hide stock Cocos batches, replace
 Geometry Dash's `updateVisibility`, or remove stock decorations. The game keeps
 its normal rendering path while the selected API test runs. Change the selector
-and enter another level to try a different probe; no rebuild is required.
+and enter another level to try a different probe; no rebuild is required. The
+selector defaults to the low-risk host-context check (method 01); the full matrix
+is opt-in through method 00.
 
 Turn probe mode off only when you are ready to test the full Bismuth renderer.
 The full renderer now waits until all active GPU layers have submitted
@@ -23,6 +25,8 @@ successfully before hiding the original batches. If initialization or a later
 GPU operation fails, it restores the previous batch-visibility state.
 
 ## Probe list
+
+Choose method 00 to run the following twenty probes sequentially.
 
 | # | Probe | What it establishes |
 |---:|---|---|
