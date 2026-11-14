@@ -1,5 +1,8 @@
 #include "Geode/cocos/CCDirector.h"
 #include "Renderer.hpp"
+#if defined(GEODE_IS_IOS)
+#include "ios_metal/IOSMetalRenderer.hpp"
+#endif
 #include <decomp/PlayLayer.hpp>
 #include <decomp/GJBaseGameLayer.hpp>
 #include "../cl.hpp"
@@ -39,11 +42,25 @@ class $modify(MyPlayLayer, PlayLayer) {
                 return;
             }
 
+#if defined(GEODE_IS_IOS)
+            auto metalRenderer = BismuthIOSMetal::Renderer::create(this, m_objects);
+            if (metalRenderer)
+                batchLayer->addChild(metalRenderer, -100000);
+            else
+                log::error("Bismuth iOS Metal compute renderer initialization failed");
+#else
             auto renderer = Renderer::create(this, m_objects);
             if (renderer)
                 batchLayer->addChild(renderer, -100000);
+#endif
         }
 
+#if defined(GEODE_IS_IOS)
+        if (auto metalRenderer = BismuthIOSMetal::Renderer::getCurrent();
+            metalRenderer && metalRenderer->isReady()) {
+            metalRenderer->getGroupManager().resetGroupStates();
+        }
+#endif
         auto renderer = Renderer::get();
         if (renderer)
             renderer->reset();
@@ -52,6 +69,15 @@ class $modify(MyPlayLayer, PlayLayer) {
     }
 
     void updateVisibility(float dt) {
+#if defined(GEODE_IS_IOS)
+        if (auto metalRenderer = BismuthIOSMetal::Renderer::getCurrent();
+            metalRenderer && metalRenderer->isReady()) {
+            // No CPU loop over the sprite list: Metal owns sprite transforms
+            // and visibility while this path maintains essential game state.
+            ((decomp_PlayLayer*)this)->optimized_updateVisibility(dt);
+            return;
+        }
+#endif
         auto renderer = Renderer::get();
         if (renderer && renderer->useOptimizations()) {
             ((decomp_PlayLayer*)this)->optimized_updateVisibility(dt);
@@ -64,22 +90,40 @@ class $modify(MyPlayLayer, PlayLayer) {
     CheckpointObject* createCheckpoint() {
         CheckpointObject* ret = PlayLayer::createCheckpoint();
 
+#if defined(GEODE_IS_IOS)
+        if (auto metalRenderer = BismuthIOSMetal::Renderer::getCurrent();
+            metalRenderer && metalRenderer->isReady()) {
+            metalRenderer->getGroupManager().storeCheckpoint(ret);
+        }
+#endif
         auto renderer = Renderer::get();
         if (renderer)
             renderer->getGroupManager().storeCheckpoint(ret);
-        
+
         return ret;
     }
 
     void loadFromCheckpoint(CheckpointObject* object) {
         PlayLayer::loadFromCheckpoint(object);
 
+#if defined(GEODE_IS_IOS)
+        if (auto metalRenderer = BismuthIOSMetal::Renderer::getCurrent();
+            metalRenderer && metalRenderer->isReady()) {
+            metalRenderer->getGroupManager().restoreCheckpoint(object);
+        }
+#endif
         auto renderer = Renderer::get();
         if (renderer)
             renderer->getGroupManager().restoreCheckpoint(object);
     }
 
     void checkForEnd() {
+#if defined(GEODE_IS_IOS)
+        if (auto metalRenderer = BismuthIOSMetal::Renderer::getCurrent();
+            metalRenderer && metalRenderer->isReady() && m_endPortal) {
+            m_endPortal->updateEndPos(false);
+        }
+#endif
         auto renderer = Renderer::get();
         if (renderer && renderer->useOptimizations() && m_endPortal)
             m_endPortal->updateEndPos(false);
@@ -93,6 +137,12 @@ class $modify(MyCheckpointObject, CheckpointObject) {
     struct Fields {
         CheckpointObject* checkpoint;
         ~Fields() {
+#if defined(GEODE_IS_IOS)
+            if (auto metalRenderer = BismuthIOSMetal::Renderer::getCurrent();
+                metalRenderer && metalRenderer->isReady()) {
+                metalRenderer->getGroupManager().removeCheckpoint(checkpoint);
+            }
+#endif
             auto renderer = Renderer::get();
             if (renderer)
                 renderer->getGroupManager().removeCheckpoint(checkpoint);
@@ -124,9 +174,52 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
         auto renderer = Renderer::get();
         if (renderer)
             renderer->update(dt);
+#if defined(GEODE_IS_IOS)
+        if (auto metalRenderer = BismuthIOSMetal::Renderer::getCurrent();
+            metalRenderer && metalRenderer->isReady()) {
+            metalRenderer->update(dt);
+        }
+#endif
     }
 
     void processMoveActions() {
+#if defined(GEODE_IS_IOS)
+        if (auto metalRenderer = BismuthIOSMetal::Renderer::getCurrent();
+            metalRenderer && metalRenderer->isReady()) {
+            m_effectManager->processMoveCalculations();
+            auto& groupManager = metalRenderer->getGroupManager();
+            for (auto node : m_effectManager->m_unkVector6c0) {
+                if (node->m_unk0d0)
+                    continue;
+
+                const auto groupId = static_cast<BismuthIOSMetal::GroupID>(node->getTag());
+                groupManager.moveGroup(groupId, node->m_unk038, node->m_unk040);
+
+                const auto physicsObjects = groupManager.getVanillaRotateGroup(groupId);
+                for (auto object : physicsObjects) {
+                    if (!object)
+                        continue;
+
+                    if (!object->m_isDecoration2 &&
+                        object->m_unk4C4 != m_gameState.m_commandIndex) {
+                        object->m_unk4C4 = m_gameState.m_commandIndex;
+                        object->m_lastPosition.x = object->m_positionX;
+                        object->m_lastPosition.y = object->m_positionY;
+                        object->dirtifyObjectRect();
+                    }
+
+                    if (node->m_unk038 != 0.0 && !object->m_tempOffsetXRelated)
+                        object->m_positionX += node->m_unk038;
+                    if (node->m_unk040 != 0.0)
+                        object->m_positionY += node->m_unk040;
+
+                    object->dirtifyObjectPos();
+                    updateObjectSection(object);
+                }
+            }
+            return;
+        }
+#endif
         auto renderer = Renderer::get();
         if (renderer == nullptr) {
             GJBaseGameLayer::processMoveActions();
@@ -229,6 +322,13 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
     }
 
     void processRotationActions() {
+#if defined(GEODE_IS_IOS)
+        if (auto metalRenderer = BismuthIOSMetal::Renderer::getCurrent();
+            metalRenderer && metalRenderer->isReady()) {
+            ((decomp_GJBaseGameLayer*)this)->optimized_processRotationActions();
+            return;
+        }
+#endif
         auto renderer = Renderer::get();
         if (renderer == nullptr) {
             GJBaseGameLayer::processRotationActions();
@@ -265,6 +365,13 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
     }
 
     void processFollowActions() {
+#if defined(GEODE_IS_IOS)
+        if (auto metalRenderer = BismuthIOSMetal::Renderer::getCurrent();
+            metalRenderer && metalRenderer->isReady()) {
+            ((decomp_GJBaseGameLayer*)this)->optimized_processFollowActions();
+            return;
+        }
+#endif
         auto renderer = Renderer::get();
         if (!renderer) {
             GJBaseGameLayer::processFollowActions();
@@ -279,6 +386,14 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
 
     void toggleGroup(int id, bool activate) {
         GJBaseGameLayer::toggleGroup(id, activate);
+#if defined(GEODE_IS_IOS)
+        if (auto metalRenderer = BismuthIOSMetal::Renderer::getCurrent();
+            metalRenderer && metalRenderer->isReady()) {
+            metalRenderer->getGroupManager().toggleGroup(
+                static_cast<BismuthIOSMetal::GroupID>(id), activate
+            );
+        }
+#endif
         auto renderer = Renderer::get();
         if (renderer)
             renderer->getGroupManager().toggleGroup(id, activate);
@@ -323,6 +438,10 @@ static bool hasAlreadyDoneMenuLoad = false;
 class OnMenuLoad : public CCNode {
 public:
     void showLoadAlerts() {
+#if defined(GEODE_IS_IOS)
+        // iOS uses Metal compute plus OpenGL ES, not desktop OpenGL 4.3.
+        return;
+#else
         if (!isOpenGLAtLeastVersion(4, 3)) {
             std::string version = (const char*)glGetString(GL_VERSION);
             std::transform(version.begin(), version.end(), version.begin(), [](char ch) { return std::tolower(ch); });
@@ -355,6 +474,7 @@ public:
                 "Ok"
             )->show();
         }
+#endif
     }
 
     void onLoad() {
