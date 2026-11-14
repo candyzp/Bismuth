@@ -892,6 +892,16 @@ bool IOSGPURenderer::uploadDirtyVertexRanges() {
     auto& batch = sceneData.getObjectBatch();
     const auto& vertices = batch.getOrderedVertices();
     const auto& ranges = batch.getDirtyVertexRanges();
+    const u32 uploadMethod = uploadMethodFor(renderMethod);
+
+    if (uploadMethod == 3) {
+        uploadedGeometryRevision = batch.getGeometryRevision();
+        batch.clearDirtyVertexRanges();
+        return true;
+    }
+
+    if (uploadMethod == 1 || uploadMethod == 4)
+        return uploadOrderedVertices();
 
     if (ranges.empty()) {
         uploadedGeometryRevision = batch.getGeometryRevision();
@@ -915,10 +925,14 @@ bool IOSGPURenderer::uploadDirtyVertexRanges() {
         }
     }
 
+    const usize fullByteCount = vertices.size() * sizeof(ObjectVertex);
+    if (vertexBufferCapacity < fullByteCount)
+        return uploadOrderedVertices();
+
     GLint previousBuffer = 0;
     glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &previousBuffer);
     while (glGetError() != GL_NO_ERROR) {}
-    glBindBuffer(GL_ARRAY_BUFFER, vertexBuffer);
+    glBindBuffer(GL_ARRAY_BUFFER, static_cast<GLuint>(vertexBuffer));
 
     usize uploadedBytes = 0;
     for (const auto& range : ranges) {
