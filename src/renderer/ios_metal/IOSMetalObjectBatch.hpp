@@ -7,6 +7,7 @@
 #include <Geode/binding/GJBaseGameLayer.hpp>
 #include <Geode/cocos/textures/CCTexture2D.h>
 #include <functional>
+#include <glm/fwd.hpp>
 #include <unordered_map>
 #include <vector>
 
