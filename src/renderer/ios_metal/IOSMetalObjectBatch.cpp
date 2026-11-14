@@ -94,8 +94,10 @@ bool ObjectBatch::buildObjectInfos(const std::vector<GameObject*>& objects) {
     objectInfos.reserve(objects.size());
 
     for (GameObject* object : objects) {
-        if (!object || object->isTrigger() || object->m_isHide ||
-            object->m_objectID == 2016 || objectIndices.contains(object))
+        if (!object || object == layer->m_anticheatSpike ||
+            object == layer->m_endPortal || object->isTrigger() ||
+            object->m_isHide || object->m_objectID == 2016 ||
+            object->m_objectID == 3032 || objectIndices.contains(object))
             continue;
 
         ObjectInfo info;
@@ -490,8 +492,10 @@ bool ObjectBatch::build(
     }
 
     for (GameObject* object : objects) {
-        if (!object || object->isTrigger() || object->m_isHide ||
-            object->m_objectID == 2016)
+        if (!object || object == layer->m_anticheatSpike ||
+            object == layer->m_endPortal || object->isTrigger() ||
+            object->m_isHide || object->m_objectID == 2016 ||
+            object->m_objectID == 3032)
             continue;
         if (!writeGameObject(object, groupIndexForObject)) {
             clear();
