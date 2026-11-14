@@ -5,7 +5,9 @@
 #include "IOSMetalCompute.hpp"
 #include <Geode/binding/CheckpointObject.hpp>
 #include <Geode/binding/PlayLayer.hpp>
+#include <glm/glm.hpp>
 #include <array>
+#include <span>
 #include <map>
 #include <optional>
 #include <set>
