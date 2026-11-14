@@ -846,7 +846,7 @@ void Renderer::updateDebugOverlay() {
     const auto cpuFrameTotal =
         cpuBlendOrderMs + cpuColorFetchMs + cpuGroupStateMs +
         cpuFrameStateMs + cpuSubmitMs;
-    const std::uint64_t culledSprites = frameHasOutput &&
+    const std::uint64_t nonDrawableSprites = frameHasOutput &&
         activeOutput.totalSpriteCount >= activeOutput.visibleSpriteCount
         ? activeOutput.totalSpriteCount - activeOutput.visibleSpriteCount
         : 0u;
@@ -886,8 +886,9 @@ void Renderer::updateDebugOverlay() {
         "GPU COMPUTE (REAL COMMAND-BUFFER TIME)\n"
         "Device: {}\n"
         "Metal time: {}\n"
-        "Sprites processed: {}   final visible: {}   final culled: {}\n"
-        "GPU visibility stages: groups {}   in-view {}   alpha-visible {}\n"
+        "Sprites processed: {}   drawable: {}   alpha-hidden: {}\n"
+        "GPU stages: group-valid {}   in-view {}   alpha-visible {}\n"
+        "Screen rejection: DEFERRED TO GLES GPU CLIP\n"
         "Threads: {} groups x {} threads\n"
         "Output state texture: {} x {} ({:.2f} MiB)\n"
         "GLES state Y flip: {}\n"
@@ -918,7 +919,7 @@ void Renderer::updateDebugOverlay() {
         gpuTimeText,
         frameHasOutput ? activeOutput.totalSpriteCount : objectBatch.getSpriteCount(),
         frameHasOutput ? activeOutput.visibleSpriteCount : 0,
-        frameHasOutput ? culledSprites : 0,
+        frameHasOutput ? nonDrawableSprites : 0,
         frameHasOutput ? activeOutput.groupValidSpriteCount : 0,
         frameHasOutput ? activeOutput.screenVisibleSpriteCount : 0,
         frameHasOutput ? activeOutput.visibleSpriteCount : 0,
