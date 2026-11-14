@@ -30,11 +30,11 @@ Renderer* Renderer::current = nullptr;
 
 namespace {
 
-constexpr std::uint32_t COLOR_CHANNEL_BLACK = 1010u;
-constexpr std::uint32_t COLOR_CHANNEL_P1 = 1005u;
-constexpr std::uint32_t COLOR_CHANNEL_P2 = 1006u;
-constexpr std::uint32_t COLOR_CHANNEL_LBG = 1007u;
-constexpr std::uint32_t COLOR_CHANNEL_BG = 1000u;
+constexpr std::uint32_t IOS_COLOR_CHANNEL_BLACK = 1010u;
+constexpr std::uint32_t IOS_COLOR_CHANNEL_P1 = 1005u;
+constexpr std::uint32_t IOS_COLOR_CHANNEL_P2 = 1006u;
+constexpr std::uint32_t IOS_COLOR_CHANNEL_LBG = 1007u;
+constexpr std::uint32_t IOS_COLOR_CHANNEL_BG = 1000u;
 
 class GLESStateSnapshot {
 public:
@@ -305,7 +305,7 @@ bool Renderer::initWithLevel(PlayLayer* playLayer, cocos2d::CCArray* objects) {
     }
 
     colorChannels.fill(0xffffffffu);
-    colorChannels[COLOR_CHANNEL_BLACK] = 0xff000000u;
+    colorChannels[IOS_COLOR_CHANNEL_BLACK] = 0xff000000u;
     setID("iliashdz.bismuth/ios-metal-compute-renderer");
     ready = true;
     createDebugOverlay();
@@ -469,9 +469,9 @@ void Renderer::fetchBlendStates(BlendStates& output) const {
             output[i] = blending[i]->m_blending;
     }
 
-    output[COLOR_CHANNEL_P1] = true;
-    output[COLOR_CHANNEL_P2] = true;
-    output[COLOR_CHANNEL_LBG] = true;
+    output[IOS_COLOR_CHANNEL_P1] = true;
+    output[IOS_COLOR_CHANNEL_P2] = true;
+    output[IOS_COLOR_CHANNEL_LBG] = true;
 }
 
 void Renderer::fetchColorChannels() {
@@ -491,7 +491,7 @@ void Renderer::fetchColorChannels() {
             static_cast<std::uint8_t>(std::clamp<float>(sprite->m_opacity, 0.f, 255.f))
         );
     }
-    colorChannels[COLOR_CHANNEL_BLACK] = 0xff000000u;
+    colorChannels[IOS_COLOR_CHANNEL_BLACK] = 0xff000000u;
 }
 
 FrameState Renderer::captureFrameState(glm::mat4& mvp) const {
@@ -557,7 +557,7 @@ FrameState Renderer::captureFrameState(glm::mat4& mvp) const {
 
     if (layer->m_effectManager) {
         const auto background = GameToolbox::transformColor(
-            layer->m_effectManager->activeColorForIndex(COLOR_CHANNEL_BG),
+            layer->m_effectManager->activeColorForIndex(IOS_COLOR_CHANNEL_BG),
             0.0, -0.2, 0.2
         );
         frame.specialLightBGColor[0] = background.r / 255.f;
