@@ -1,5 +1,18 @@
 # iOS: Metal compute with OpenGL ES drawing
 
+## Architecture guardrails
+
+This branch follows upstream Bismuth's GPU-compute model. Do not bring the
+older iOS VBO-matrix experiment or its CPU-built per-frame vertex stream into
+this branch.
+
+The rule is strict: no CPU loop over every sprite to compute current position,
+visibility, color, opacity, or final vertices each frame. Those per-sprite
+calculations belong in the Metal compute kernel. CPU work is limited to
+one-time level extraction, compact group/channel/pulse state, and the small
+subset of non-decoration objects whose live positions are still required by
+vanilla collision and gameplay code.
+
 ## Architecture target
 
 This branch is based directly on the official upstream Bismuth revision, not
@@ -67,9 +80,19 @@ completed result remains in use. The game thread never waits for Metal.
 
 ## Current implementation boundary
 
-The data contract and GLES shader are added first. The next integration step
-must wire immutable level extraction, compact frame-state updates, Metal
-dispatch, and the existing OpenGL ES layer draws into the Geode PlayLayer
-lifecycle. Until that integration is built and tested on an iPhone, this
-branch is an architecture implementation in progress, not an installable
-replacement for the current mod.
+The source-level integration is now connected:
+
+- CMake enables Objective-C++ on iOS, compiles the Metal `.mm` backend, links
+  Foundation, Metal, CoreVideo, and OpenGL ES, and excludes the Windows-only
+  OpenCL/WGL loader.
+- `mod.json` declares Geometry Dash 2.2081 for iOS.
+- The iOS PlayLayer hook creates this renderer and keeps vanilla batches
+  visible until a completed Metal result has been drawn for every layer.
+- Move, rotate, follow, toggle, restart, and checkpoint state is routed to the
+  iOS group-combination manager.
+- Decoration sprite transforms and visibility stay in Metal. Only the
+  non-decoration physics subset is updated through the vanilla object path.
+
+This is source integration only. It has **not** yet been compiled with the
+Geode iOS toolchain or tested on an iPhone. Do not treat the branch as an
+installable or performance-verified replacement until those checks pass.
