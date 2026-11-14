@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -194,6 +195,12 @@ public:
     }
 };
 
+double elapsedMilliseconds(std::chrono::steady_clock::time_point start) {
+    return std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - start
+    ).count();
+}
+
 std::uint32_t packRGBA(cocos2d::ccColor3B color, std::uint8_t alpha) {
     return static_cast<std::uint32_t>(color.r) |
         (static_cast<std::uint32_t>(color.g) << 8) |
@@ -267,17 +274,20 @@ bool Renderer::initWithLevel(PlayLayer* playLayer, cocos2d::CCArray* objects) {
         return spriteSheets[static_cast<std::size_t>(index)];
     };
 
+    const auto objectBuildStart = std::chrono::steady_clock::now();
     if (!objectBatch.build(
             layer, levelObjects, groupResolver, initialBlendStates, textureResolver)) {
         log::error("Bismuth iOS Metal renderer could not extract static level meshes");
         reset();
         return false;
     }
+    cpuLevelBuildMs = elapsedMilliseconds(objectBuildStart);
 
     std::string error;
     const auto& workItems = objectBatch.getWorkItems();
     const auto& sprites = objectBatch.getInputSprites();
     const auto& objectsInfo = objectBatch.getObjectInfos();
+    const auto metalInitializeStart = std::chrono::steady_clock::now();
     if (!metalCompute.initializeLevel(
             workItems.data(), static_cast<std::uint32_t>(workItems.size()),
             sprites.data(), static_cast<std::uint32_t>(sprites.size()),
@@ -287,6 +297,7 @@ bool Renderer::initWithLevel(PlayLayer* playLayer, cocos2d::CCArray* objects) {
         reset();
         return false;
     }
+    cpuMetalStaticUploadMs = elapsedMilliseconds(metalInitializeStart);
 
     if (!createGLESProgram() || !createLayerDrawNodes()) {
         reset();
@@ -297,6 +308,8 @@ bool Renderer::initWithLevel(PlayLayer* playLayer, cocos2d::CCArray* objects) {
     colorChannels[COLOR_CHANNEL_BLACK] = 0xff000000u;
     setID("iliashdz.bismuth/ios-metal-compute-renderer");
     ready = true;
+    createDebugOverlay();
+    updateDebugOverlay();
     return true;
 }
 
@@ -567,37 +580,81 @@ FrameState Renderer::captureFrameState(glm::mat4& mvp) const {
 void Renderer::update(float dt) {
     if (!ready)
         return;
+
     gameTimer += dt;
+    if (dt > 0.00001f) {
+        const float instantFPS = 1.0f / dt;
+        estimatedFPS = estimatedFPS == 0.f
+            ? instantFPS
+            : estimatedFPS * 0.85f + instantFPS * 0.15f;
+    }
+
+    overlayRefreshTimer += dt;
+    if (overlayRefreshTimer >= 0.12f) {
+        overlayRefreshTimer = 0.f;
+        updateDebugOverlay();
+    }
 }
 
 void Renderer::draw() {
     if (!ready || !metalCompute.isReady())
         return;
 
+    const auto blendStart = std::chrono::steady_clock::now();
     BlendStates blendStates {};
     fetchBlendStates(blendStates);
     if (!objectBatch.refreshBlendOrder(blendStates)) {
         log::error("Bismuth iOS Metal renderer failed to refresh layer order after a blend change");
         frameHasOutput = false;
+        dispatchStatus = "BLEND ORDER ERROR";
+        lastDispatchError = "Could not rebuild the static layer order";
         return;
     }
+    cpuBlendOrderMs = elapsedMilliseconds(blendStart);
 
+    auto stageStart = std::chrono::steady_clock::now();
     fetchColorChannels();
-    groupManager.update();
+    cpuColorFetchMs = elapsedMilliseconds(stageStart);
 
+    stageStart = std::chrono::steady_clock::now();
+    groupManager.update();
+    cpuGroupStateMs = elapsedMilliseconds(stageStart);
+
+    stageStart = std::chrono::steady_clock::now();
     FrameState frame = captureFrameState(activeMVP);
+    cpuFrameStateMs = elapsedMilliseconds(stageStart);
     const auto groupStates = groupManager.getStates();
     const auto pulses = groupManager.getPulseEntries();
     std::string error;
-    metalCompute.dispatchFrame(
+    stageStart = std::chrono::steady_clock::now();
+    const bool submitted = metalCompute.dispatchFrame(
         groupStates.data(), static_cast<std::uint32_t>(groupStates.size()),
         colorChannels.data(), static_cast<std::uint32_t>(colorChannels.size()),
         pulses.data(), static_cast<std::uint32_t>(pulses.size()),
         frame, error
     );
+    cpuSubmitMs = elapsedMilliseconds(stageStart);
+
+    if (submitted) {
+        ++submittedFrameCount;
+        dispatchStatus = "SUBMITTED";
+        lastDispatchError.clear();
+    } else {
+        dispatchStatus = error.find("No free Metal output slot") != std::string::npos
+            ? "GPU SLOTS BUSY (SKIPPED)"
+            : "DISPATCH FAILED";
+        lastDispatchError = error;
+    }
 
     frameHasOutput = metalCompute.acquireLatestFrame(activeOutput);
+    if (frameHasOutput && submitted && activeOutput.sequence < submittedFrameCount) {
+        dispatchStatus = "SUBMITTED / PREVIOUS GPU FRAME DISPLAYED";
+    } else if (!frameHasOutput) {
+        dispatchStatus = submitted ? "WAITING FOR FIRST GPU FRAME" : dispatchStatus;
+    }
+
     drawsThisFrame = 0;
+    drawFailuresThisFrame = 0;
 }
 
 void Renderer::drawLayer(const LayerKey& key) {
@@ -663,8 +720,139 @@ void Renderer::drawLayer(const LayerKey& key) {
     const GLenum error = glGetError();
     if (error == GL_NO_ERROR)
         ++drawsThisFrame;
-    else
+    else {
+        ++drawFailuresThisFrame;
         log::warn("Bismuth iOS Metal GLES layer draw failed with GL error 0x{:X}", error);
+    }
+}
+
+
+void Renderer::createDebugOverlay() {
+    if (!layer || debugOverlay ||
+        !Mod::get()->getSettingValue<bool>("ios_metal_debug_overlay"))
+        return;
+
+    debugOverlay = cocos2d::CCLabelBMFont::create("", "chatFont.fnt");
+    if (!debugOverlay) {
+        log::warn("Bismuth iOS Metal debug overlay label could not be created");
+        return;
+    }
+
+    const auto winSize = cocos2d::CCDirector::get()->getWinSize();
+    debugOverlay->setAnchorPoint({0.f, 1.f});
+    debugOverlay->setPosition({8.f, winSize.height - 8.f});
+    debugOverlay->setScale(0.48f);
+    debugOverlay->setColor({255, 255, 255});
+    debugOverlay->setZOrder(1000000);
+    layer->addChild(debugOverlay, 1000000);
+}
+
+void Renderer::updateDebugOverlay() {
+    const bool enabled =
+        Mod::get()->getSettingValue<bool>("ios_metal_debug_overlay");
+
+    if (!enabled) {
+        if (debugOverlay)
+            debugOverlay->setVisible(false);
+        return;
+    }
+
+    if (!debugOverlay)
+        createDebugOverlay();
+    if (!debugOverlay)
+        return;
+    debugOverlay->setVisible(true);
+
+    const auto cpuFrameTotal =
+        cpuBlendOrderMs + cpuColorFetchMs + cpuGroupStateMs +
+        cpuFrameStateMs + cpuSubmitMs;
+    const std::uint64_t culledSprites = frameHasOutput &&
+        activeOutput.totalSpriteCount >= activeOutput.visibleSpriteCount
+        ? activeOutput.totalSpriteCount - activeOutput.visibleSpriteCount
+        : 0u;
+    const auto vertexCount = objectBatch.getVertexCount();
+    const auto meshBytes =
+        static_cast<std::uint64_t>(vertexCount) * sizeof(Vertex);
+    const auto compactStateBytes =
+        groupManager.getStates().size() * sizeof(GroupCombinationState) +
+        colorChannels.size() * sizeof(std::uint32_t) +
+        groupManager.getPulseEntries().size() * sizeof(PulseEntry);
+    const auto totalGpuStateBytes =
+        static_cast<std::uint64_t>(activeOutput.textureWidth) *
+        activeOutput.textureHeight * 16u;
+
+    const char* ownerText = takenOwnership
+        ? "METAL COMPUTE + OPENGL ES DRAW"
+        : "VANILLA DRAW ACTIVE (SAFE HANDOVER)";
+
+    const std::string gpuTimeText = frameHasOutput && activeOutput.hasGpuTiming
+        ? fmt::format("{:.3f} ms", activeOutput.gpuTimeMilliseconds)
+        : "not available yet";
+
+    std::string errorText = lastDispatchError;
+    if (errorText.size() > 76)
+        errorText.resize(76);
+
+    const std::string display = fmt::format(
+        "BISMUTH iOS METAL DEBUG\n"
+        "RENDER OWNER: {}\n"
+        "STATUS: {}\n"
+        "FPS: {:.1f}   OUTPUT: {}\n"
+        "\n"
+        "GPU COMPUTE (REAL COMMAND-BUFFER TIME)\n"
+        "Metal time: {}\n"
+        "Sprites processed: {}   visible: {}   culled: {}\n"
+        "Threads: {} groups x {} threads\n"
+        "Output state texture: {} x {} ({:.2f} MiB)\n"
+        "\n"
+        "OPENGL ES DRAW\n"
+        "Successful draws: {} / {}   GL failures: {}\n"
+        "Static mesh: {} vertices ({:.2f} MiB)\n"
+        "\n"
+        "CPU WORK (PER FRAME)\n"
+        "Blend/order: {:.3f} ms   colors: {:.3f} ms\n"
+        "Group state: {:.3f} ms   frame state: {:.3f} ms\n"
+        "Submit + compact copies: {:.3f} ms\n"
+        "Measured CPU preparation/submit: {:.3f} ms\n"
+        "Compact state sent: {:.2f} KiB/frame\n"
+        "\n"
+        "CPU WORK (ONCE PER LEVEL)\n"
+        "Static mesh extraction/build: {:.2f} ms\n"
+        "Metal static-buffer setup/upload: {:.2f} ms\n"
+        "Metal submissions: {}\n"
+        "{}",
+        ownerText,
+        dispatchStatus,
+        estimatedFPS,
+        frameHasOutput ? activeOutput.sequence : 0,
+        gpuTimeText,
+        frameHasOutput ? activeOutput.totalSpriteCount : objectBatch.getSpriteCount(),
+        frameHasOutput ? activeOutput.visibleSpriteCount : 0,
+        frameHasOutput ? culledSprites : 0,
+        frameHasOutput ? activeOutput.threadgroupCount : 0,
+        frameHasOutput ? activeOutput.threadsPerThreadgroup : 0,
+        activeOutput.textureWidth,
+        activeOutput.textureHeight,
+        static_cast<double>(totalGpuStateBytes) / (1024.0 * 1024.0),
+        drawsThisFrame,
+        drawLayerKeys.size(),
+        drawFailuresThisFrame,
+        vertexCount,
+        static_cast<double>(meshBytes) / (1024.0 * 1024.0),
+        cpuBlendOrderMs,
+        cpuColorFetchMs,
+        cpuGroupStateMs,
+        cpuFrameStateMs,
+        cpuSubmitMs,
+        cpuFrameTotal,
+        static_cast<double>(compactStateBytes) / 1024.0,
+        cpuLevelBuildMs,
+        cpuMetalStaticUploadMs,
+        submittedFrameCount,
+        errorText.empty() ? "No dispatch error" : fmt::format("ERROR: {}", errorText)
+    );
+
+    debugOverlay->setString(display.c_str());
 }
 
 void Renderer::finishDrawFrame() {
@@ -698,6 +886,10 @@ void Renderer::restoreVanillaBatches() {
 
 void Renderer::reset() {
     restoreVanillaBatches();
+    if (debugOverlay) {
+        debugOverlay->removeFromParentAndCleanup(true);
+        debugOverlay = nullptr;
+    }
     if (glesProgram) {
         glDeleteProgram(glesProgram);
         glesProgram = 0;
