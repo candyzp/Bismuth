@@ -467,11 +467,16 @@ bool Renderer::createGLESProgram() {
     stateTextureUniform = glGetUniformLocation(program, "u_metalSpriteStateTexture");
     stateTextureSizeUniform = glGetUniformLocation(program, "u_metalSpriteStateTextureSize");
     stateTextureNeedsYFlipUniform = glGetUniformLocation(program, "u_metalSpriteStateNeedsYFlip");
-    mvpUniform = glGetUniformLocation(program, "u_mvp");
+    cameraPositionUniform = glGetUniformLocation(program, "u_cameraPosition");
+    cameraRightUniform = glGetUniformLocation(program, "u_cameraRight");
+    cameraUpUniform = glGetUniformLocation(program, "u_cameraUp");
+    cameraSizeUniform = glGetUniformLocation(program, "u_cameraSize");
     spriteSheetUniform = glGetUniformLocation(program, "u_spriteSheetTexture");
 
     if (stateTextureUniform < 0 || stateTextureSizeUniform < 0 ||
-        stateTextureNeedsYFlipUniform < 0 || mvpUniform < 0 || spriteSheetUniform < 0) {
+        stateTextureNeedsYFlipUniform < 0 || cameraPositionUniform < 0 ||
+        cameraRightUniform < 0 || cameraUpUniform < 0 || cameraSizeUniform < 0 ||
+        spriteSheetUniform < 0) {
         log::error("Bismuth iOS Metal ES2 shader is missing a required uniform");
         glDeleteProgram(glesProgram);
         glesProgram = 0;
@@ -565,7 +570,7 @@ void Renderer::fetchColorChannels() {
     colorChannels[IOS_COLOR_CHANNEL_BLACK] = 0xff000000u;
 }
 
-FrameState Renderer::captureFrameState(glm::mat4& mvp) const {
+FrameState Renderer::captureFrameState() const {
     FrameState frame;
     if (!layer || !layer->m_objectLayer)
         return frame;
@@ -637,14 +642,6 @@ FrameState Renderer::captureFrameState(glm::mat4& mvp) const {
         frame.specialLightBGColor[3] = 1.f;
     }
 
-    kmMat4 projection;
-    kmMat4 modelView;
-    kmMat4 combined;
-    kmGLGetMatrix(KM_GL_PROJECTION, &projection);
-    kmGLGetMatrix(KM_GL_MODELVIEW, &modelView);
-    kmMat4Multiply(&combined, &projection, &modelView);
-    reinterpret_cast<kmMat4&>(mvp) = combined;
-
     return frame;
 }
 
@@ -692,7 +689,7 @@ void Renderer::draw() {
     cpuGroupStateMs = elapsedMilliseconds(stageStart);
 
     stageStart = std::chrono::steady_clock::now();
-    FrameState frame = captureFrameState(activeMVP);
+    activeFrameState = captureFrameState();
     cpuFrameStateMs = elapsedMilliseconds(stageStart);
     const auto groupStates = groupManager.getStates();
     const auto pulses = groupManager.getPulseEntries();
@@ -769,7 +766,10 @@ void Renderer::drawLayer(const LayerKey& key) {
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, texture->getName());
     glUniform1i(spriteSheetUniform, 1);
-    glUniformMatrix4fv(mvpUniform, 1, GL_FALSE, glm::value_ptr(activeMVP));
+    glUniform2f(cameraPositionUniform, activeFrameState.cameraPositionX, activeFrameState.cameraPositionY);
+    glUniform2f(cameraRightUniform, activeFrameState.cameraRightX, activeFrameState.cameraRightY);
+    glUniform2f(cameraUpUniform, activeFrameState.cameraUpX, activeFrameState.cameraUpY);
+    glUniform2f(cameraSizeUniform, activeFrameState.cameraWidth, activeFrameState.cameraHeight);
 
     glBindBuffer(GL_ARRAY_BUFFER, objectBatch.getVertexBuffer());
     const GLsizei stride = static_cast<GLsizei>(sizeof(Vertex));
