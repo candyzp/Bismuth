@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdlib>
 #include <limits>
 
 using namespace geode::prelude;
@@ -23,6 +24,57 @@ IOSGPURenderer* IOSGPURenderer::currentRenderer = nullptr;
 namespace {
 
 cocos2d::CCLabelTTF* startupDiagnosticLabel = nullptr;
+
+u32 selectedRenderMethodFromSettings() {
+    const auto selected = Mod::get()->getSettingValue<std::string>("ios_render_method");
+    char* end = nullptr;
+    const unsigned long parsed = std::strtoul(selected.c_str(), &end, 10);
+    if (end == selected.c_str() || parsed < 1 || parsed > 20)
+        return 1;
+    return static_cast<u32>(parsed);
+}
+
+u32 uploadMethodFor(u32 method) {
+    return method == 0 ? 0 : (method - 1) / 4;
+}
+
+u32 cullingMethodFor(u32 method) {
+    return method == 0 ? 0 : (method - 1) % 4;
+}
+
+const char* renderMethodName(u32 method) {
+    static constexpr const char* names[] = {
+        "Persistent VBO + shader culling",
+        "Persistent VBO + CPU visibility mask",
+        "Persistent VBO + Metal visibility mask",
+        "Persistent VBO + no camera culling",
+        "Orphaned VBO + shader culling",
+        "Orphaned VBO + CPU visibility mask",
+        "Orphaned VBO + Metal visibility mask",
+        "Orphaned VBO + no camera culling",
+        "SubData VBO + shader culling",
+        "SubData VBO + CPU visibility mask",
+        "SubData VBO + Metal visibility mask",
+        "SubData VBO + no camera culling",
+        "Client arrays + shader culling",
+        "Client arrays + CPU visibility mask",
+        "Client arrays + Metal visibility mask",
+        "Client arrays + no camera culling",
+        "Triple VBO ring + shader culling",
+        "Triple VBO ring + CPU visibility mask",
+        "Triple VBO ring + Metal visibility mask",
+        "Triple VBO ring + no camera culling"
+    };
+    return method >= 1 && method <= 20 ? names[method - 1] : "Unknown renderer method";
+}
+
+bool isClientArrayMethod(u32 method) {
+    return uploadMethodFor(method) == 3;
+}
+
+bool isTripleBufferMethod(u32 method) {
+    return uploadMethodFor(method) == 4;
+}
 
 constexpr GLint OBJECT_DATA_TEXTURE_UNIT = 0;
 constexpr GLint GROUP_DATA_TEXTURE_UNIT = 1;
