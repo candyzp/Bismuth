@@ -253,8 +253,10 @@ bool ObjectBatch::addSprite(
     const cocos2d::CCAffineTransform& transform,
     const GroupIndexResolver& groupIndexForObject
 ) {
-    if (!object || !sprite)
+    if (!object || !sprite) {
+        lastBuildError = "Sprite extraction received a null object or sprite";
         return false;
+    }
     if (object->m_hasNoGlow && type == SpriteType::GLOW)
         return true;
 
@@ -266,8 +268,13 @@ bool ObjectBatch::addSprite(
         return true;
 
     const auto objectIt = objectIndices.find(object);
-    if (objectIt == objectIndices.end())
+    if (objectIt == objectIndices.end()) {
+        lastBuildError = fmt::format(
+            "Object {} was unpacked but has no static metadata record",
+            object->m_objectID
+        );
         return false;
+    }
 
     constexpr std::uint32_t MAX_EXACT_FLOAT_INDEX = 1u << 24;
     const std::uint32_t spriteIndex = static_cast<std::uint32_t>(inputSprites.size());
@@ -275,8 +282,10 @@ bool ObjectBatch::addSprite(
     const std::uint32_t groupIndex = groupIndexForObject(object);
     if (spriteIndex >= MAX_EXACT_FLOAT_INDEX ||
         objectIndex >= MAX_EXACT_FLOAT_INDEX ||
-        groupIndex >= MAX_EXACT_FLOAT_INDEX)
+        groupIndex >= MAX_EXACT_FLOAT_INDEX) {
+        lastBuildError = "A sprite, object, or group index exceeds the exact float-index range";
         return false;
+    }
 
     cocos2d::CCTexture2D* texture = textureForSheet
         ? textureForSheet(sheet) : nullptr;
@@ -284,8 +293,13 @@ bool ObjectBatch::addSprite(
     // unavailable. SPECIAL/_UNK have already been left on the vanilla path.
     if (!texture)
         texture = sprite->getTexture();
-    if (!texture)
+    if (!texture) {
+        lastBuildError = fmt::format(
+            "No texture for object {} on sprite sheet {}",
+            object->m_objectID, static_cast<int>(sheet)
+        );
         return false;
+    }
 
     const SpriteTransforms transforms = getSpriteVertexTransform(
         sprite, transform, texture
@@ -341,8 +355,13 @@ bool ObjectBatch::addSprite(
 
     const std::uint32_t triangleCount =
         static_cast<std::uint32_t>(sourceVertices.size() / 3) - firstTriangle;
-    if (triangleCount == 0)
+    if (triangleCount == 0) {
+        lastBuildError = fmt::format(
+            "Sprite mesh produced no triangles for object {} (type {}, sheet {})",
+            object->m_objectID, static_cast<int>(type), static_cast<int>(sheet)
+        );
         return false;
+    }
 
     InputSprite input;
     input.objectIndex = objectIndex;
@@ -499,13 +518,17 @@ bool ObjectBatch::build(
     const TextureResolver& textureCallback
 ) {
     clear();
-    if (!gameLayer || !groupIndexForObject || !textureCallback)
+    lastBuildError.clear();
+    if (!gameLayer || !groupIndexForObject || !textureCallback) {
+        lastBuildError = "Missing game layer, group-index resolver, or texture resolver";
         return false;
+    }
 
     layer = gameLayer;
     textureForSheet = textureCallback;
 
     if (!buildObjectInfos(objects)) {
+        lastBuildError = "No eligible static object metadata could be extracted";
         clear();
         return false;
     }
@@ -517,6 +540,11 @@ bool ObjectBatch::build(
             object->m_objectID == 3032)
             continue;
         if (!writeGameObject(object, groupIndexForObject)) {
+            if (lastBuildError.empty())
+                lastBuildError = fmt::format(
+                    "Sprite extraction failed while processing object {}",
+                    object->m_objectID
+                );
             clear();
             return false;
         }
@@ -524,11 +552,21 @@ bool ObjectBatch::build(
 
     if (workItems.size() != inputSprites.size() ||
         inputSprites.empty() || sourceVertices.empty()) {
+        lastBuildError = fmt::format(
+            "Extracted sprite records are empty or inconsistent (work={}, sprites={}, vertices={})",
+            workItems.size(), inputSprites.size(), sourceVertices.size()
+        );
         clear();
         return false;
     }
 
-    if (!buildOrderedVertices(blendStates) || !uploadOrderedVertices()) {
+    if (!buildOrderedVertices(blendStates)) {
+        lastBuildError = "Static vertex ordering failed";
+        clear();
+        return false;
+    }
+    if (!uploadOrderedVertices()) {
+        lastBuildError = "Static OpenGL ES vertex-buffer upload failed";
         clear();
         return false;
     }
