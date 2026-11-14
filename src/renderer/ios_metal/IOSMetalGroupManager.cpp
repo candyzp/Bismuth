@@ -435,6 +435,23 @@ void GroupManager::fetchVanillaRotateGroups() {
     }
 }
 
+
+void GroupManager::resetGroupStates() {
+    for (auto& state : states) {
+        state.positionalTransform[0] = 1.f;
+        state.positionalTransform[1] = 0.f;
+        state.positionalTransform[2] = 0.f;
+        state.positionalTransform[3] = 1.f;
+        state.localTransform[0] = 1.f;
+        state.localTransform[1] = 0.f;
+        state.localTransform[2] = 0.f;
+        state.localTransform[3] = 1.f;
+        state.offset[0] = 0.f;
+        state.offset[1] = 0.f;
+    }
+    std::fill(toggled.begin(), toggled.end(), true);
+}
+
 std::set<GameObject*> GroupManager::getVanillaRotateGroup(GroupID groupId) const {
     if (groupId < 0 ||
         static_cast<std::size_t>(groupId) >= vanillaRotateGroups.size())
