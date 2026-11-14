@@ -448,6 +448,10 @@ std::string IOSGPURenderer::getCrashDiagnosticSnapshot() const {
 }
 
 void IOSGPURenderer::beginFrame() {
+    if (isTripleBufferMethod(renderMethod) && vertexRingBuffers[0]) {
+        currentRingIndex = static_cast<u32>(frameNumber % vertexRingBuffers.size());
+        vertexBuffer = vertexRingBuffers[currentRingIndex];
+    }
     const auto frameStart = std::chrono::steady_clock::now();
     if (previousFrameStartTime.time_since_epoch().count() != 0) {
         lastFrameIntervalMilliseconds = std::chrono::duration<float, std::milli>(
@@ -678,9 +682,14 @@ bool IOSGPURenderer::queryAndValidateCapabilities() {
         fail("requires at least three vertex texture image units");
         return false;
     }
-    if (capabilities.maxCombinedTextureUnits < 4 ||
+    const u32 cullingMethod = cullingMethodFor(renderMethod);
+    const GLint requiredCombinedUnits = cullingMethod == 0 || cullingMethod == 3 ? 4 : 5;
+    if (capabilities.maxCombinedTextureUnits < requiredCombinedUnits ||
         capabilities.maxFragmentTextureUnits < 1) {
-        fail("requires four combined texture units and one fragment texture unit");
+        fail(fmt::format(
+            "selected renderer method requires {} combined texture units and one fragment texture unit",
+            requiredCombinedUnits
+        ));
         return false;
     }
     if (capabilities.maxVertexAttribs < 5) {
@@ -712,25 +721,57 @@ bool IOSGPURenderer::createShaderProgram() {
 }
 
 bool IOSGPURenderer::createVertexBuffer() {
-    if (vertexBuffer) {
-        glDeleteBuffers(1, &vertexBuffer);
-        vertexBuffer = 0;
+    if (vertexRingBuffers[0] || vertexRingBuffers[1] || vertexRingBuffers[2]) {
+        const GLuint oldBuffers[3] = {
+            static_cast<GLuint>(vertexRingBuffers[0]),
+            static_cast<GLuint>(vertexRingBuffers[1]),
+            static_cast<GLuint>(vertexRingBuffers[2])
+        };
+        glDeleteBuffers(3, oldBuffers);
+        vertexRingBuffers = {};
+    } else if (vertexBuffer) {
+        glDeleteBuffers(1, reinterpret_cast<const GLuint*>(&vertexBuffer));
     }
+    vertexBuffer = 0;
+    vertexBufferCapacity = 0;
 
-    // A valid level may contain no renderable sprites (for example, a blank
-    // level or one containing only gameplay triggers). The GPU renderer still
-    // owns that scene; it simply has no vertex buffer or layer submissions.
-    if (sceneData.getObjectBatch().getOrderedVertices().empty()) {
+    const auto& vertices = sceneData.getObjectBatch().getOrderedVertices();
+    if (vertices.empty()) {
         uploadedOrderRevision = sceneData.getObjectBatch().getOrderRevision();
         uploadedGeometryRevision = sceneData.getObjectBatch().getGeometryRevision();
         sceneData.getObjectBatch().clearDirtyVertexRanges();
         return true;
     }
 
-    glGenBuffers(1, &vertexBuffer);
-    if (!vertexBuffer) {
-        fail("glGenBuffers returned zero for ordered object vertex stream");
-        return false;
+    const u32 uploadMethod = uploadMethodFor(renderMethod);
+    if (uploadMethod == 3) {
+        // Client arrays point directly into ObjectBatch's stable CPU vertex stream.
+        uploadedOrderRevision = sceneData.getObjectBatch().getOrderRevision();
+        uploadedGeometryRevision = sceneData.getObjectBatch().getGeometryRevision();
+        sceneData.getObjectBatch().clearDirtyVertexRanges();
+        return true;
+    }
+
+    if (uploadMethod == 4) {
+        GLuint buffers[3] = {};
+        glGenBuffers(3, buffers);
+        if (!buffers[0] || !buffers[1] || !buffers[2]) {
+            glDeleteBuffers(3, buffers);
+            fail("glGenBuffers failed while creating the triple-buffer ring");
+            return false;
+        }
+        for (usize i = 0; i < vertexRingBuffers.size(); ++i)
+            vertexRingBuffers[i] = buffers[i];
+        currentRingIndex = 0;
+        vertexBuffer = vertexRingBuffers[currentRingIndex];
+    } else {
+        GLuint buffer = 0;
+        glGenBuffers(1, &buffer);
+        if (!buffer) {
+            fail("glGenBuffers returned zero for ordered object vertex stream");
+            return false;
+        }
+        vertexBuffer = buffer;
     }
 
     return uploadOrderedVertices();
@@ -740,18 +781,26 @@ bool IOSGPURenderer::uploadOrderedVertices() {
     if (!sceneData.isReady())
         return false;
 
-    const auto& vertices = sceneData.getObjectBatch().getOrderedVertices();
+    const auto& batch = sceneData.getObjectBatch();
+    const auto& vertices = batch.getOrderedVertices();
     if (vertices.empty()) {
-        uploadedOrderRevision = sceneData.getObjectBatch().getOrderRevision();
-        uploadedGeometryRevision = sceneData.getObjectBatch().getGeometryRevision();
-        sceneData.getObjectBatch().clearDirtyVertexRanges();
+        uploadedOrderRevision = batch.getOrderRevision();
+        uploadedGeometryRevision = batch.getGeometryRevision();
+        batch.clearDirtyVertexRanges();
+        return true;
+    }
+
+    const u32 uploadMethod = uploadMethodFor(renderMethod);
+    if (uploadMethod == 3) {
+        uploadedOrderRevision = batch.getOrderRevision();
+        uploadedGeometryRevision = batch.getGeometryRevision();
+        batch.clearDirtyVertexRanges();
         return true;
     }
     if (!vertexBuffer)
         return false;
 
-    if (vertices.size() >
-        static_cast<usize>(std::numeric_limits<GLsizei>::max())) {
+    if (vertices.size() > static_cast<usize>(std::numeric_limits<GLsizei>::max())) {
         fail("ordered object vertex count exceeds GLsizei");
         return false;
     }
@@ -764,17 +813,65 @@ bool IOSGPURenderer::uploadOrderedVertices() {
 
     GLint previousBuffer = 0;
     glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &previousBuffer);
-
     while (glGetError() != GL_NO_ERROR) {}
-    glBindBuffer(GL_ARRAY_BUFFER, vertexBuffer);
-    glBufferData(
-        GL_ARRAY_BUFFER,
-        static_cast<GLsizeiptr>(byteCount),
-        vertices.data(),
-        GL_DYNAMIC_DRAW
-    );
-    const GLenum error = glGetError();
+    glBindBuffer(GL_ARRAY_BUFFER, static_cast<GLuint>(vertexBuffer));
 
+    GLenum usage = uploadMethod == 1 || uploadMethod == 4
+        ? GL_STREAM_DRAW : GL_DYNAMIC_DRAW;
+
+    switch (uploadMethod) {
+        case 0: // Persistent VBO: replace storage with the latest full vertex stream.
+            glBufferData(
+                GL_ARRAY_BUFFER,
+                static_cast<GLsizeiptr>(byteCount),
+                vertices.data(),
+                GL_DYNAMIC_DRAW
+            );
+            vertexBufferCapacity = byteCount;
+            break;
+
+        case 1: // Orphan old storage, then stream the complete current vertex array.
+        case 4: // Triple-buffer ring: orphan the selected slot before filling it.
+            glBufferData(
+                GL_ARRAY_BUFFER,
+                static_cast<GLsizeiptr>(byteCount),
+                nullptr,
+                usage
+            );
+            glBufferSubData(
+                GL_ARRAY_BUFFER,
+                0,
+                static_cast<GLsizeiptr>(byteCount),
+                vertices.data()
+            );
+            vertexBufferCapacity = byteCount;
+            break;
+
+        case 2: // Keep allocated storage and update it through glBufferSubData.
+            if (vertexBufferCapacity < byteCount) {
+                glBufferData(
+                    GL_ARRAY_BUFFER,
+                    static_cast<GLsizeiptr>(byteCount),
+                    nullptr,
+                    GL_DYNAMIC_DRAW
+                );
+                vertexBufferCapacity = byteCount;
+            }
+            glBufferSubData(
+                GL_ARRAY_BUFFER,
+                0,
+                static_cast<GLsizeiptr>(byteCount),
+                vertices.data()
+            );
+            break;
+
+        default:
+            glBindBuffer(GL_ARRAY_BUFFER, static_cast<GLuint>(previousBuffer));
+            fail("unknown vertex upload strategy");
+            return false;
+    }
+
+    const GLenum error = glGetError();
     glBindBuffer(GL_ARRAY_BUFFER, static_cast<GLuint>(previousBuffer));
     if (error != GL_NO_ERROR) {
         fail(fmt::format("ordered vertex-buffer upload failed (GL error 0x{:X})", error));
@@ -782,9 +879,9 @@ bool IOSGPURenderer::uploadOrderedVertices() {
     }
 
     vboUploadBytesThisFrame += byteCount;
-    uploadedOrderRevision = sceneData.getObjectBatch().getOrderRevision();
-    uploadedGeometryRevision = sceneData.getObjectBatch().getGeometryRevision();
-    sceneData.getObjectBatch().clearDirtyVertexRanges();
+    uploadedOrderRevision = batch.getOrderRevision();
+    uploadedGeometryRevision = batch.getGeometryRevision();
+    batch.clearDirtyVertexRanges();
     return true;
 }
 
