@@ -12,6 +12,9 @@ varying mediump vec4 v_color;
 uniform sampler2D u_objectDataTexture;
 uniform sampler2D u_groupDataTexture;
 uniform sampler2D u_byteDataTexture;
+uniform sampler2D u_visibilityTexture;
+uniform vec2 u_visibilityTextureSize;
+uniform float u_visibilityMode;
 
 uniform vec2 u_objectDataTextureSize;
 uniform vec2 u_groupDataTextureSize;
@@ -325,18 +328,31 @@ void main() {
 
     vec2 objectPosition = mat2(group0.xy, group0.zw) * a_objectStartPosition + group2.xy;
 
-    // Match the owner's conservative object-anchor camera culling. All vertices
-    // of this sprite share the same object/group metadata.
-    vec2 cameraOffset = objectPosition - u_cameraPosition;
-    vec2 screenPosition = vec2(
-        dot(u_cameraRight, cameraOffset),
-        dot(u_cameraUp, cameraOffset)
-    );
-    const float cullMargin = 100.0;
-    if (screenPosition.x < -cullMargin ||
-        screenPosition.x > u_cameraSize.x + cullMargin ||
-        screenPosition.y < -cullMargin ||
-        screenPosition.y > u_cameraSize.y + cullMargin) {
+    // Each renderer configuration selects one real visibility path:
+    // 0 = vertex-shader camera test, 1 = CPU/Metal visibility texture,
+    // 2 = no camera culling. Texture-mask indices use the original sprite ID.
+    bool spriteVisible = true;
+    if (u_visibilityMode < 0.5) {
+        vec2 cameraOffset = objectPosition - u_cameraPosition;
+        vec2 screenPosition = vec2(
+            dot(u_cameraRight, cameraOffset),
+            dot(u_cameraUp, cameraOffset)
+        );
+        const float cullMargin = 100.0;
+        spriteVisible =
+            screenPosition.x >= -cullMargin &&
+            screenPosition.x <= u_cameraSize.x + cullMargin &&
+            screenPosition.y >= -cullMargin &&
+            screenPosition.y <= u_cameraSize.y + cullMargin;
+    } else if (u_visibilityMode < 1.5) {
+        float maskX = mod(spriteIndex, u_visibilityTextureSize.x);
+        float maskY = floor(spriteIndex / u_visibilityTextureSize.x);
+        vec2 maskUV = (vec2(maskX, maskY) + vec2(0.5)) /
+            u_visibilityTextureSize;
+        spriteVisible = texture2D(u_visibilityTexture, maskUV).r >= 0.5;
+    }
+
+    if (!spriteVisible) {
         gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
         v_texCoord = a_texCoord;
         v_color = vec4(0.0);
