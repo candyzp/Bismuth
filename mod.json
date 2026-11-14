@@ -61,6 +61,12 @@
 			"type": "bool",
 			"default": false,
 			"description": "Disables the pulsing of objects that pulse to the song"
+		},
+		"ios_metal_debug_overlay": {
+			"name": "iOS Metal performance overlay",
+			"type": "bool",
+			"default": true,
+			"description": "Shows live CPU preparation/submission time, actual Metal GPU compute time, visible/culled sprites, draw calls, FPS, and the active render owner while playing on iOS."
 		}
 	}
 }
