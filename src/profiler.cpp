@@ -6,7 +6,9 @@
 #include "profiler.hpp"
 #include "HotKey.hpp"
 #include "utils/GPUTimer.hpp"
+#if !defined(GEODE_IS_IOS)
 #include "renderer/Renderer.hpp"
+#endif
 
 #include <Geode/modify/CCKeyboardDispatcher.hpp>
 #include <Geode/modify/CCDisplayLinkDirector.hpp>
@@ -44,8 +46,10 @@ class $modify(MyCCDisplayLinkDirector, cocos2d::CCDisplayLinkDirector) {
             profiler::isTakingGPUTime = false;//Renderer::get() != nullptr;
             takeSnapshotNextFrame = false;
             timeSpentInFunction.clear();
+#if !defined(GEODE_IS_IOS)
             if (!profiler::isTakingGPUTime)
                 glBeginQuery(GL_TIME_ELAPSED, 50);
+#endif
             processTime = getTime();
         }
 
@@ -57,10 +61,12 @@ class $modify(MyCCDisplayLinkDirector, cocos2d::CCDisplayLinkDirector) {
             processTime = getTime() - processTime;
 
             i64 gpuTime = 0;
+#if !defined(GEODE_IS_IOS)
             if (!profiler::isTakingGPUTime) {
                 glEndQuery(GL_TIME_ELAPSED);
                 glGetQueryObjecti64v(50, GL_QUERY_RESULT, &gpuTime);
             }
+#endif
             profiler::isTakingGPUTime = false;
 
             std::vector<std::pair<void*, i64>> functionsTime;
