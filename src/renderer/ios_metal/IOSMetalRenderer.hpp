@@ -80,6 +80,9 @@ private:
     std::uint64_t submittedFrameCount = 0;
     std::string dispatchStatus = "INITIALIZING";
     std::string lastDispatchError;
+    // Retained after reset so Renderer::create can show a failure HUD even
+    // when initialization falls back to vanilla drawing.
+    std::string initializationError;
 
     std::uint32_t drawsThisFrame = 0;
     std::uint32_t drawFailuresThisFrame = 0;
