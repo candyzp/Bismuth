@@ -63,6 +63,7 @@ public:
     );
     void toggleGroup(GroupID groupId, bool enabled);
     std::set<GameObject*> getVanillaRotateGroup(GroupID groupId) const;
+    void resetGroupStates();
 
     void storeCheckpoint(CheckpointObject* checkpoint);
     void restoreCheckpoint(CheckpointObject* checkpoint);
