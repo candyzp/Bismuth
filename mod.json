@@ -56,6 +56,7 @@
 			"type": "string",
 			"default": "01 - Host EAGL context",
 			"one-of": [
+				"00 - Run all 20 probes",
 				"01 - Host EAGL context",
 				"02 - Metal device creation",
 				"03 - Metal command queue",
