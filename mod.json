@@ -74,7 +74,7 @@
 				"16 - Metal compute + MTLSharedEvent",
 				"17 - Shared MTLBuffer + CPU readback",
 				"18 - Shared MTLBuffer + GLES texture upload",
-				"19 - Double-buffered CVPixelBuffer",
+				"19 - GLES render into shared texture",
 				"20 - Full current interop self-test"
 			],
 			"description": "Select one isolated test. It runs when a new level loads; Geometry Dash keeps its original rendering path during every probe. Results are written to the Geode log and on-screen diagnostic."
