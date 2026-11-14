@@ -1,16 +1,30 @@
-# Bismuth iOS — GPU-only beta port
+# Bismuth iOS — renderer method matrix
 
-Experimental Geometry Dash 2.2081 renderer port for iOS arm64.
+Experimental Geometry Dash 2.2081 renderer for iOS arm64, based on the
+owner-derived scene extraction and OpenGL ES 2 draw path.
 
-The active implementation is being developed on `rework/ios-gpu-v2`, following the current upstream Bismuth renderer while translating its desktop compute/SSBO pipeline to OpenGL ES 2. The new PlayLayer path is **GPU-only**: when Bismuth owns a level, its stock Cocos batches stay hidden. Initialization, shader, state-table, or draw failures are reported; the renderer does not silently fall back to stock rendering.
+This branch adds **20 selectable renderer configurations** to compare five
+vertex-delivery paths with four visibility strategies. The active method is
+selected through the Geode setting **iOS renderer method**. It includes
+persistent, orphaned, SubData, client-array and triple-ring vertex delivery,
+combined with vertex-shader, CPU-mask, Metal-mask or disabled camera culling.
+
+The **iOS renderer debug overlay** displays the selected method, draw activity,
+submitted geometry, frame cadence and failure reason. The Geode log records a
+method-specific first-frame pass only after all active layers have drawn.
+
+Geometry Dash keeps its original Cocos batches visible until the custom renderer
+has completed its first full frame. Initialization or draw failures before that
+handoff therefore do not intentionally replace the game with a black screen.
+
+See [docs/IOS_RENDER_METHOD_MATRIX.md](docs/IOS_RENDER_METHOD_MATRIX.md) for the
+method matrix and comparison procedure.
 
 ## Development status
 
-- Step 2: CPU-side iOS port implemented at source level.
-- Step 3: ES2 state tables, shaders, ordered VBO, and GPU layer submission implemented at source level.
-- Step 4: source-level parity and compatibility review recorded, including runtime blend-order updates, black-sprite channel semantics, GL-state restoration, and atlas-coordinate precision.
-- Step 5: not started. The branch has **not** yet been successfully compiled or device-tested. No claim is made that the renderer currently works.
-
-All active port work stays on `rework/ios-gpu-v2`; do not merge these changes into `master`.
+The code and settings are committed to this experimental branch. It has **not**
+yet been successfully compiled for iOS arm64 or tested on an iPhone. None of the
+20 configurations should be treated as confirmed working until the device
+overlay/log records its first complete frame.
 
 <img src="logo.png" alt="Bismuth logo" width="100"/>
