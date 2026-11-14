@@ -39,7 +39,7 @@ private:
     void restoreVanillaBatches();
     void fetchBlendStates(BlendStates& output) const;
     void fetchColorChannels();
-    FrameState captureFrameState(glm::mat4& mvp) const;
+    FrameState captureFrameState() const;
     void createDebugOverlay();
     void updateDebugOverlay();
 
@@ -61,11 +61,14 @@ private:
     GLint stateTextureUniform = -1;
     GLint stateTextureSizeUniform = -1;
     GLint stateTextureNeedsYFlipUniform = -1;
-    GLint mvpUniform = -1;
+    GLint cameraPositionUniform = -1;
+    GLint cameraRightUniform = -1;
+    GLint cameraUpUniform = -1;
+    GLint cameraSizeUniform = -1;
     GLint spriteSheetUniform = -1;
 
     OutputFrame activeOutput {};
-    glm::mat4 activeMVP {1.f};
+    FrameState activeFrameState {};
     cocos2d::CCLabelBMFont* debugOverlay = nullptr;
     float gameTimer = 0.f;
     float estimatedFPS = 0.f;
