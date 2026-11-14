@@ -7,7 +7,7 @@
 #include <Geode/cocos/CCDirector.h>
 #include <Geode/cocos/textures/CCTextureCache.h>
 #include <Geode/utils/cocos.hpp>
-#include <GameManager.hpp>
+#include <Geode/binding/GameManager.hpp>
 #include "../SpriteMeshDictionary.hpp"
 #include <common.hpp>
 #include <glm/gtc/type_ptr.hpp>
