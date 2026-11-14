@@ -54,6 +54,36 @@ class $modify(RendererPlayLayer, PlayLayer) {
                 std::strtoul(selectedMethod.c_str(), nullptr, 10)
             );
 
+            if (method == 0) {
+                std::uint32_t passedCount = 0;
+                for (std::uint32_t candidate = 1; candidate <= 20; ++candidate) {
+                    std::string report;
+                    const bool passed =
+                        IOSUpstream::runIOSRenderMethodProbe(candidate, report);
+                    const auto status = fmt::format(
+                        "BISMUTH iOS INTEROP PROBE {:02}: {}",
+                        candidate,
+                        passed ? "PASS" : "FAIL"
+                    );
+                    if (passed) {
+                        ++passedCount;
+                        log::info("{}: {}", status, report);
+                    } else {
+                        log::error("{}: {}", status, report);
+                    }
+                }
+
+                const auto summary = fmt::format(
+                    "BISMUTH iOS INTEROP MATRIX: {}/20 PASSED",
+                    passedCount
+                );
+                IOSUpstream::IOSGPURenderer::updateStartupDiagnostic(
+                    summary + "\nSee Geode log for each probe result."
+                );
+                log::info("{}", summary);
+                return;
+            }
+
             std::string report;
             const bool passed = IOSUpstream::runIOSRenderMethodProbe(method, report);
             const auto status = fmt::format(
