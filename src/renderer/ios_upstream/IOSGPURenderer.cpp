@@ -280,6 +280,12 @@ IOSGPURenderer* IOSGPURenderer::getCurrent() {
 }
 
 void IOSGPURenderer::updateStartupDiagnostic(const std::string& message) {
+    if (!Mod::get()->getSettingValue<bool>("ios_gpu_debug")) {
+        if (startupDiagnosticLabel)
+            startupDiagnosticLabel->setVisible(false);
+        return;
+    }
+
     auto director = CCDirector::get();
     if (!director)
         return;
@@ -515,8 +521,19 @@ void IOSGPURenderer::finishFrame() {
         lastFrameDraws >= activeLayerCount) {
         hideStockBatches();
         stockOwnershipTransferred = stockBatchesHidden;
-        if (stockOwnershipTransferred)
-            log::info("Bismuth iOS renderer took ownership after {} successful layer draws", lastFrameDraws);
+        if (stockOwnershipTransferred) {
+            log::info(
+                "BISMUTH RENDER RESULT: METHOD {:02}/20 ({}) PASSED FIRST FRAME | layers={} draws={} vertices={} triangles={} frame={}",
+                renderMethod,
+                renderMethodName(renderMethod),
+                activeLayerCount,
+                lastFrameDraws,
+                lastGPUVerticesSubmitted,
+                lastGPUTrianglesSubmitted,
+                frameNumber
+            );
+            updateDebugOverlay();
+        }
     }
 
     // CCLabelTTF::setString regenerates a text texture. Keep counters per-frame,
@@ -609,7 +626,12 @@ void IOSGPURenderer::fail(const std::string& reason) {
     initialized = false;
     failureReason = reason;
     sceneData.releaseObjectParticles();
-    log::error("Bismuth iOS GPU-only beta FAILED: {}", failureReason);
+    log::error(
+        "Bismuth iOS renderer method {:02}/20 ({}) FAILED: {}",
+        renderMethod,
+        renderMethodName(renderMethod),
+        failureReason
+    );
 
     for (auto node : layerNodes) {
         if (node)
