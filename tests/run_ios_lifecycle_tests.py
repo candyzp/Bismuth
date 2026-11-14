@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify the active iOS GPU-only renderer's level and frame lifecycle."""
+"""Verify the iOS renderer method matrix and safe Cocos ownership handoff."""
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -70,7 +70,16 @@ require("IOSUpstream::GroupManager& groupManager" in decomp,
         "GPU transforms must retain the optimized physics-safe rotation implementation")
 
 failure = gpu[gpu.index("void IOSGPURenderer::fail"):gpu.index("void IOSGPURenderer::hideStockBatches")]
-require("hideStockBatches();" in failure,
-        "renderer failure must remain strict GPU-only, without stock batch fallback")
+require("restoreStockBatches();" in failure and "hideStockBatches();" not in failure,
+        "renderer failure must restore Cocos batch visibility rather than leave a black screen")
 
-print("PASS: GPU-only iOS PlayLayer lifecycle, frame updates, scene state, blend ordering, group transforms, and no hybrid fallback")
+init = body(gpu, "bool IOSGPURenderer::initForPlayLayer", "void IOSGPURenderer::prepareForLevelReset")
+finish = body(gpu, "void IOSGPURenderer::finishFrame()", "void IOSGPURenderer::recordGameLayerUpdate")
+require("hideStockBatches();" not in init and
+        "lastFrameDraws >= activeLayerCount" in finish and
+        "hideStockBatches();" in finish,
+        "Cocos batches must remain visible until every active GPU layer completes its first frame")
+require("PASSED FIRST FRAME" in finish and "renderMethodName(renderMethod)" in failure,
+        "first-frame pass and method-specific failure results must be logged")
+
+print("PASS: iOS renderer lifecycle, first-frame ownership handoff, Cocos recovery, scene state, blend ordering and group transforms")
