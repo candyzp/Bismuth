@@ -7,7 +7,10 @@ attribute float a_spriteIndex;
 uniform sampler2D u_metalSpriteStateTexture;
 uniform vec2 u_metalSpriteStateTextureSize;
 uniform float u_metalSpriteStateNeedsYFlip;
-uniform mat4 u_mvp;
+uniform vec2 u_cameraPosition;
+uniform vec2 u_cameraRight;
+uniform vec2 u_cameraUp;
+uniform vec2 u_cameraSize;
 
 varying mediump vec2 v_texCoord;
 varying lowp vec4 v_color;
@@ -35,7 +38,18 @@ void main() {
 
     mat2 localTransform = mat2(state0.zw, state1.xy);
     vec2 worldPosition = state0.xy + localTransform * a_positionOffset;
-    gl_Position = u_mvp * vec4(worldPosition, 0.0, 1.0);
+
+    // Use the same object-layer camera basis that Metal receives. This avoids
+    // depending on whichever Cocos model-view matrix happened to be active
+    // when the renderer's early-z child submitted its compute frame.
+    vec2 cameraOffset = worldPosition - u_cameraPosition;
+    vec2 screenPosition = vec2(
+        dot(u_cameraRight, cameraOffset),
+        dot(u_cameraUp, cameraOffset)
+    );
+    vec2 safeCameraSize = max(u_cameraSize, vec2(0.0001));
+    vec2 clipPosition = (screenPosition / safeCameraSize) * 2.0 - 1.0;
+    gl_Position = vec4(clipPosition, 0.0, 1.0);
 
     v_texCoord = a_texCoord;
     v_color = vec4(state1.zw, state2.xy);
