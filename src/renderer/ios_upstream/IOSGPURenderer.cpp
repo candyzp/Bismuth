@@ -1514,7 +1514,10 @@ bool IOSGPURenderer::updateMetalCulling() {
 
 void IOSGPURenderer::drawLayer(const LayerKey& key) {
     ++layerVisitsThisFrame;
-    if (!isReadyForDrawing() || !sceneData.isReady() || !shader || !vertexBuffer)
+    if (!isReadyForDrawing() || !sceneData.isReady() || !shader)
+        return;
+    const bool clientArrays = isClientArrayMethod(renderMethod);
+    if (!clientArrays && !vertexBuffer)
         return;
     ++drawAttemptsThisFrame;
 
@@ -1581,13 +1584,34 @@ void IOSGPURenderer::drawLayer(const LayerKey& key) {
         spriteSheet
     );
 
-    shader->setInt("u_metalVisibilityTexture",METAL_VISIBILITY_TEXTURE_UNIT);
-    shader->setVec2("u_metalVisibilityTextureSize",glm::vec2(
-        static_cast<float>(metalInterop.textureWidth()),
-        static_cast<float>(metalInterop.textureHeight())
-    ));
-    glActiveTexture(GL_TEXTURE0+METAL_VISIBILITY_TEXTURE_UNIT);
-    glBindTexture(GL_TEXTURE_2D,metalInterop.openGLESTextureName());
+    const u32 cullingMethod = cullingMethodFor(renderMethod);
+    const float visibilityMode =
+        cullingMethod == 0 ? 0.f : cullingMethod == 3 ? 2.f : 1.f;
+    shader->setInt("u_visibilityTexture", METAL_VISIBILITY_TEXTURE_UNIT);
+    shader->setFloat("u_visibilityMode", visibilityMode);
+
+    if (cullingMethod == 1 || cullingMethod == 2) {
+        const GLuint visibilityTexture = cullingMethod == 1
+            ? static_cast<GLuint>(cpuVisibilityTexture)
+            : static_cast<GLuint>(metalInterop.openGLESTextureName());
+        const u32 textureWidth = cullingMethod == 1
+            ? visibilityTextureWidth : metalInterop.textureWidth();
+        const u32 textureHeight = cullingMethod == 1
+            ? visibilityTextureHeight : metalInterop.textureHeight();
+        if (!visibilityTexture || textureWidth == 0 || textureHeight == 0) {
+            savedGLState.restore();
+            fail("selected visibility-mask renderer has no valid mask texture");
+            return;
+        }
+        shader->setVec2("u_visibilityTextureSize", glm::vec2(
+            static_cast<float>(textureWidth),
+            static_cast<float>(textureHeight)
+        ));
+        glActiveTexture(GL_TEXTURE0 + METAL_VISIBILITY_TEXTURE_UNIT);
+        glBindTexture(GL_TEXTURE_2D, visibilityTexture);
+    } else {
+        shader->setVec2("u_visibilityTextureSize", glm::vec2(1.f, 1.f));
+    }
 
     shader->setVec2("u_objectDataTextureSize", tableLayout.objectTextureSize);
     shader->setVec2("u_groupDataTextureSize", tableLayout.groupTextureSize);
@@ -1612,29 +1636,54 @@ void IOSGPURenderer::drawLayer(const LayerKey& key) {
     shader->setVec3("u_specialLightBGColor", gameState.specialLightBGColor);
     shader->setFloat("u_gameStateFlags", static_cast<float>(gameState.gameStateFlags));
 
-    glBindBuffer(GL_ARRAY_BUFFER, vertexBuffer);
     const GLsizei stride = static_cast<GLsizei>(sizeof(ObjectVertex));
-
-    glVertexAttribPointer(
-        0, 2, GL_FLOAT, GL_FALSE, stride,
-        reinterpret_cast<const void*>(offsetof(ObjectVertex, positionOffset))
-    );
-    glVertexAttribPointer(
-        1, 2, GL_FLOAT, GL_FALSE, stride,
-        reinterpret_cast<const void*>(offsetof(ObjectVertex, texCoord))
-    );
-    glVertexAttribPointer(
-        2, 2, GL_FLOAT, GL_FALSE, stride,
-        reinterpret_cast<const void*>(offsetof(ObjectVertex, objectAndGroupIndex))
-    );
-    glVertexAttribPointer(
-        3, 2, GL_FLOAT, GL_FALSE, stride,
-        reinterpret_cast<const void*>(offsetof(ObjectVertex, spriteAndMeta))
-    );
-    glVertexAttribPointer(
-        4, 2, GL_FLOAT, GL_FALSE, stride,
-        reinterpret_cast<const void*>(offsetof(ObjectVertex, objectStartPosition))
-    );
+    const auto& orderedVertices = batch.getOrderedVertices();
+    const ObjectVertex* firstVertex = orderedVertices.data() + range.firstVertex;
+    if (clientArrays) {
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        glVertexAttribPointer(
+            0, 2, GL_FLOAT, GL_FALSE, stride,
+            reinterpret_cast<const void*>(&firstVertex->positionOffset)
+        );
+        glVertexAttribPointer(
+            1, 2, GL_FLOAT, GL_FALSE, stride,
+            reinterpret_cast<const void*>(&firstVertex->texCoord)
+        );
+        glVertexAttribPointer(
+            2, 2, GL_FLOAT, GL_FALSE, stride,
+            reinterpret_cast<const void*>(&firstVertex->objectAndGroupIndex)
+        );
+        glVertexAttribPointer(
+            3, 2, GL_FLOAT, GL_FALSE, stride,
+            reinterpret_cast<const void*>(&firstVertex->spriteAndMeta)
+        );
+        glVertexAttribPointer(
+            4, 2, GL_FLOAT, GL_FALSE, stride,
+            reinterpret_cast<const void*>(&firstVertex->objectStartPosition)
+        );
+    } else {
+        glBindBuffer(GL_ARRAY_BUFFER, static_cast<GLuint>(vertexBuffer));
+        glVertexAttribPointer(
+            0, 2, GL_FLOAT, GL_FALSE, stride,
+            reinterpret_cast<const void*>(offsetof(ObjectVertex, positionOffset))
+        );
+        glVertexAttribPointer(
+            1, 2, GL_FLOAT, GL_FALSE, stride,
+            reinterpret_cast<const void*>(offsetof(ObjectVertex, texCoord))
+        );
+        glVertexAttribPointer(
+            2, 2, GL_FLOAT, GL_FALSE, stride,
+            reinterpret_cast<const void*>(offsetof(ObjectVertex, objectAndGroupIndex))
+        );
+        glVertexAttribPointer(
+            3, 2, GL_FLOAT, GL_FALSE, stride,
+            reinterpret_cast<const void*>(offsetof(ObjectVertex, spriteAndMeta))
+        );
+        glVertexAttribPointer(
+            4, 2, GL_FLOAT, GL_FALSE, stride,
+            reinterpret_cast<const void*>(offsetof(ObjectVertex, objectStartPosition))
+        );
+    }
 
     for (GLuint index = 0; index < 5; ++index)
         glEnableVertexAttribArray(index);
@@ -1648,7 +1697,7 @@ void IOSGPURenderer::drawLayer(const LayerKey& key) {
 
     glDrawArrays(
         GL_TRIANGLES,
-        static_cast<GLint>(range.firstVertex),
+        clientArrays ? 0 : static_cast<GLint>(range.firstVertex),
         static_cast<GLsizei>(range.vertexCount)
     );
 
