@@ -213,7 +213,40 @@ std::uint32_t packRGBA(cocos2d::ccColor3B color, std::uint8_t alpha) {
 Renderer* Renderer::create(PlayLayer* playLayer, cocos2d::CCArray* objects) {
     auto renderer = new Renderer();
     if (!renderer->initWithLevel(playLayer, objects)) {
+        std::string failure = renderer->initializationError.empty()
+            ? "Initialization stopped before a reason was recorded"
+            : renderer->initializationError;
         delete renderer;
+
+        // Keep the fallback visible. A failed Metal setup must never look
+        // indistinguishable from a successful renderer activation.
+        if (playLayer &&
+            Mod::get()->getSettingValue<bool>("ios_metal_debug_overlay")) {
+            if (failure.size() > 112)
+                failure.resize(112);
+            const std::string hudText = fmt::format(
+                "BISMUTH iOS METAL DEBUG\n"
+                "RENDER OWNER: VANILLA DRAW\n"
+                "STATUS: INIT FAILED (METAL INACTIVE)\n"
+                "CAUSE: {}\n"
+                "The game is using its original renderer.",
+                failure
+            );
+            auto label = cocos2d::CCLabelBMFont::create(
+                hudText.c_str(), "chatFont.fnt"
+            );
+            if (label) {
+                const auto winSize = cocos2d::CCDirector::get()->getWinSize();
+                label->setID("iliashdz.bismuth/ios-metal-init-failure-overlay");
+                label->setAnchorPoint({0.f, 1.f});
+                label->setPosition({8.f, winSize.height - 8.f});
+                label->setScale(0.42f);
+                label->setColor({255, 110, 110});
+                playLayer->addChild(label, 1000000);
+            } else {
+                log::error("Bismuth could not create the iOS Metal initialization failure HUD");
+            }
+        }
         return nullptr;
     }
     renderer->autorelease();
@@ -231,9 +264,21 @@ Renderer::~Renderer() {
 }
 
 bool Renderer::initWithLevel(PlayLayer* playLayer, cocos2d::CCArray* objects) {
-    if (current || !CCNode::init() || !playLayer || !objects ||
+    initializationError.clear();
+    if (current) {
+        initializationError = "Another iOS Metal renderer is already active";
+        log::error("Bismuth iOS Metal renderer could not initialize: {}", initializationError);
+        return false;
+    }
+    if (!CCNode::init()) {
+        initializationError = "Cocos node initialization failed";
+        log::error("Bismuth iOS Metal renderer could not initialize: {}", initializationError);
+        return false;
+    }
+    if (!playLayer || !objects ||
         !playLayer->m_objectLayer || !playLayer->m_effectManager) {
-        log::error("Bismuth iOS Metal renderer could not initialize: invalid PlayLayer");
+        initializationError = "PlayLayer, object layer, effect manager, or object list is missing";
+        log::error("Bismuth iOS Metal renderer could not initialize: {}", initializationError);
         return false;
     }
 
@@ -241,6 +286,7 @@ bool Renderer::initWithLevel(PlayLayer* playLayer, cocos2d::CCArray* objects) {
     current = this;
 
     if (!loadSpriteSheets()) {
+        initializationError = "Original Geometry Dash sprite sheets could not be loaded";
         log::error("Bismuth iOS Metal renderer could not load the original sprite sheets");
         reset();
         return false;
@@ -249,6 +295,7 @@ bool Renderer::initWithLevel(PlayLayer* playLayer, cocos2d::CCArray* objects) {
     SpriteMeshDictionary::loadFromFile("spriteMeshes.json");
 
     if (!groupManager.initialize(layer, objects)) {
+        initializationError = "Group-combination state extraction failed";
         log::error("Bismuth iOS Metal renderer could not build group-combination state");
         reset();
         return false;
@@ -277,6 +324,8 @@ bool Renderer::initWithLevel(PlayLayer* playLayer, cocos2d::CCArray* objects) {
     const auto objectBuildStart = std::chrono::steady_clock::now();
     if (!objectBatch.build(
             layer, levelObjects, groupResolver, initialBlendStates, textureResolver)) {
+        initializationError =
+            "Static level mesh extraction failed (see preceding object-batch log)";
         log::error("Bismuth iOS Metal renderer could not extract static level meshes");
         reset();
         return false;
@@ -293,13 +342,22 @@ bool Renderer::initWithLevel(PlayLayer* playLayer, cocos2d::CCArray* objects) {
             sprites.data(), static_cast<std::uint32_t>(sprites.size()),
             objectsInfo.data(), static_cast<std::uint32_t>(objectsInfo.size()),
             error)) {
-        log::error("Bismuth iOS Metal compute initialization failed: {}", error);
+        initializationError = error.empty()
+            ? "Metal compute initialization returned false without an error"
+            : error;
+        log::error("Bismuth iOS Metal compute initialization failed: {}", initializationError);
         reset();
         return false;
     }
     cpuMetalStaticUploadMs = elapsedMilliseconds(metalInitializeStart);
 
-    if (!createGLESProgram() || !createLayerDrawNodes()) {
+    if (!createGLESProgram()) {
+        initializationError = "OpenGL ES 2 state-sampling shader setup failed";
+        reset();
+        return false;
+    }
+    if (!createLayerDrawNodes()) {
+        initializationError = "Custom OpenGL ES layer draw-node setup failed";
         reset();
         return false;
     }
@@ -746,7 +804,7 @@ void Renderer::createDebugOverlay() {
     const auto winSize = cocos2d::CCDirector::get()->getWinSize();
     debugOverlay->setAnchorPoint({0.f, 1.f});
     debugOverlay->setPosition({8.f, winSize.height - 8.f});
-    debugOverlay->setScale(0.48f);
+    debugOverlay->setScale(0.34f);
     debugOverlay->setColor({255, 255, 255});
     debugOverlay->setZOrder(1000000);
     layer->addChild(debugOverlay, 1000000);
