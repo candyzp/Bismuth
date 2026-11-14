@@ -7,6 +7,7 @@
 #include "ios_upstream/IOSGPURenderer.hpp"
 #include "ios_metal/IOSRenderMethodProbe.hpp"
 #include <cstdlib>
+#include <cstdint>
 #include <string>
 #include "ios_upstream/IOSGroupManager.hpp"
 #include <chrono>
@@ -60,7 +61,7 @@ class $modify(RendererPlayLayer, PlayLayer) {
                 method,
                 passed ? "PASS" : "FAIL"
             );
-            IOSUpstream::IOSGPURenderer::updateStartupDiagnostic(status + "\\n" + report);
+            IOSUpstream::IOSGPURenderer::updateStartupDiagnostic(status + "\n" + report);
             if (passed)
                 log::info("{}: {}", status, report);
             else
