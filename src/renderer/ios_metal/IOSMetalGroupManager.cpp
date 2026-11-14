@@ -186,6 +186,7 @@ void GroupManager::reset() {
     combinations.clear();
     combinationIndices.clear();
     combinationsPerGroup.clear();
+    vanillaRotateGroups.clear();
     transformGroupIds.clear();
     alphaGroupIds.clear();
     maxGroupId = 0;
@@ -274,6 +275,7 @@ bool GroupManager::initialize(PlayLayer* playLayer, cocos2d::CCArray* objects) {
     alphaPerCombination.resize(alphaCombinationCount, 1.f);
     toggled.resize(static_cast<std::size_t>(maxGroupId) + 1u, true);
 
+    fetchVanillaRotateGroups();
     update();
     return true;
 }
@@ -387,6 +389,57 @@ void GroupManager::updatePulseEntries() {
         pulseEntries.push_back(PulseEntry{});
         states[combinationIndex].pulseIndex = pulseIndex;
     }
+}
+
+
+void GroupManager::fetchVanillaRotateGroups() {
+    vanillaRotateGroups.resize(
+        std::max(layer->m_staticGroups.size(), layer->m_optimizedGroups.size())
+    );
+
+    // Only non-decoration objects stay in the CPU-side physics path. Their
+    // positions/collision bounds must match the trigger state; decoration
+    // sprite transforms remain exclusively in the Metal compute kernel.
+    for (std::size_t groupIndex = 1;
+         groupIndex < layer->m_staticGroups.size();
+         ++groupIndex) {
+        auto group = layer->m_staticGroups[groupIndex];
+        if (!group)
+            continue;
+
+        auto& destination = vanillaRotateGroups[groupIndex];
+        for (auto object : CCArrayExt<GameObject*, false>(group)) {
+            if (object && object->m_objectType != GameObjectType::Decoration)
+                destination.insert(object);
+        }
+    }
+
+    // Main group objects can belong to additional groups beyond their
+    // primary static-group array.
+    for (std::size_t groupIndex = 1;
+         groupIndex < vanillaRotateGroups.size();
+         ++groupIndex) {
+        auto mainObject = layer->tryGetMainObject(static_cast<GroupID>(groupIndex));
+        if (!mainObject)
+            continue;
+
+        for (std::size_t memberIndex = 0;
+             memberIndex < mainObject->m_groupCount;
+             ++memberIndex) {
+            const auto groupId = static_cast<std::size_t>(
+                mainObject->m_groups->at(memberIndex)
+            );
+            if (groupId < vanillaRotateGroups.size())
+                vanillaRotateGroups[groupId].insert(mainObject);
+        }
+    }
+}
+
+std::set<GameObject*> GroupManager::getVanillaRotateGroup(GroupID groupId) const {
+    if (groupId < 0 ||
+        static_cast<std::size_t>(groupId) >= vanillaRotateGroups.size())
+        return {};
+    return vanillaRotateGroups[static_cast<std::size_t>(groupId)];
 }
 
 void GroupManager::moveGroup(GroupID groupId, float deltaX, float deltaY) {
