@@ -111,9 +111,16 @@ class $modify(RendererPlayLayer, PlayLayer) {
 #ifdef GEODE_IS_IOS
         auto renderer = IOSUpstream::IOSGPURenderer::getCurrent();
         if (renderer && renderer->getPlayLayer() == this) {
-            // Keep GD's effect/particle simulation, but skip stock per-object
-            // visibility and sprite traversal: the GPU renderer owns visuals.
-            ((decomp_PlayLayer*)this)->optimized_updateVisibility(dt);
+            if (renderer->hasTakenOwnership()) {
+                // Cocos remains the visual owner until the GPU renderer has
+                // submitted every active layer successfully at least once.
+                pruneGPUOwnedDecorations(this);
+                ((decomp_PlayLayer*)this)->optimized_updateVisibility(dt);
+            } else {
+                // Keep the complete stock path alive during the first GPU frame.
+                PlayLayer::updateVisibility(dt);
+            }
+
             if (renderer->isReadyForDrawing())
                 renderer->refreshBlendOrder();
             return;
@@ -148,7 +155,7 @@ static void removeDecoObjects(CCArray* array) {
 #ifdef GEODE_IS_IOS
 static void pruneGPUOwnedDecorations(GJBaseGameLayer* baseLayer) {
     auto renderer = IOSUpstream::IOSGPURenderer::getCurrent();
-    if (!baseLayer || !renderer || !renderer->isReadyForDrawing() ||
+    if (!baseLayer || !renderer || !renderer->hasTakenOwnership() ||
         static_cast<GJBaseGameLayer*>(renderer->getPlayLayer()) != baseLayer)
         return;
 
