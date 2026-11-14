@@ -881,7 +881,8 @@ void Renderer::updateDebugOverlay() {
         "GPU COMPUTE (REAL COMMAND-BUFFER TIME)\n"
         "Device: {}\n"
         "Metal time: {}\n"
-        "Sprites processed: {}   visible: {}   culled: {}\n"
+        "Sprites processed: {}   final visible: {}   final culled: {}\n"
+        "GPU visibility stages: groups {}   in-view {}   alpha-visible {}\n"
         "Threads: {} groups x {} threads\n"
         "Output state texture: {} x {} ({:.2f} MiB)\n"
         "\n"
@@ -912,6 +913,9 @@ void Renderer::updateDebugOverlay() {
         frameHasOutput ? activeOutput.totalSpriteCount : objectBatch.getSpriteCount(),
         frameHasOutput ? activeOutput.visibleSpriteCount : 0,
         frameHasOutput ? culledSprites : 0,
+        frameHasOutput ? activeOutput.groupValidSpriteCount : 0,
+        frameHasOutput ? activeOutput.screenVisibleSpriteCount : 0,
+        frameHasOutput ? activeOutput.visibleSpriteCount : 0,
         frameHasOutput ? activeOutput.threadgroupCount : 0,
         frameHasOutput ? activeOutput.threadsPerThreadgroup : 0,
         activeOutput.textureWidth,
