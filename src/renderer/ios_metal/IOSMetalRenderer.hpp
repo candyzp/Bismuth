@@ -29,7 +29,7 @@ public:
     void draw() override;
     void drawLayer(const LayerKey& key);
     void finishDrawFrame();
-    void reset();
+    void reset(bool parentTearingDown = false);
 
 private:
     bool initWithLevel(PlayLayer* layer, cocos2d::CCArray* objects);
