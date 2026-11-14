@@ -70,10 +70,13 @@ private:
     float estimatedFPS = 0.f;
     float overlayRefreshTimer = 0.f;
 
+    double cpuBlendOrderMs = 0.0;
     double cpuColorFetchMs = 0.0;
     double cpuGroupStateMs = 0.0;
     double cpuFrameStateMs = 0.0;
     double cpuSubmitMs = 0.0;
+    double cpuLevelBuildMs = 0.0;
+    double cpuMetalStaticUploadMs = 0.0;
     std::uint64_t submittedFrameCount = 0;
     std::string dispatchStatus = "INITIALIZING";
     std::string lastDispatchError;
