@@ -14,6 +14,7 @@
 #include "IOSMetalInterop.hpp"
 
 #include <cstdint>
+#include <cstring>
 #include <string>
 
 namespace IOSUpstream {
