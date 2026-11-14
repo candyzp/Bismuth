@@ -820,6 +820,7 @@ void Renderer::updateDebugOverlay() {
         "Static mesh: {} vertices ({:.2f} MiB)\n"
         "\n"
         "CPU WORK (PER FRAME)\n"
+        "Per-sprite transform/culling prep: NONE (Metal kernel)\n"
         "Blend/order: {:.3f} ms   colors: {:.3f} ms\n"
         "Group state: {:.3f} ms   frame state: {:.3f} ms\n"
         "Submit + compact copies: {:.3f} ms\n"
