@@ -792,6 +792,24 @@ bool ComputeRenderer::isReady() const {
     return m_owner != nullptr;
 }
 
+std::string ComputeRenderer::getDeviceName() const {
+    if (!m_owner)
+        return "not initialized";
+    BismuthIOSMetalOwner* owner = (__bridge BismuthIOSMetalOwner*)m_owner;
+    const char* name = owner->device.name.UTF8String;
+    return name ? std::string(name) : "unknown Metal device";
+}
+
+std::string ComputeRenderer::takeLastError() {
+    if (!m_owner)
+        return {};
+    BismuthIOSMetalOwner* owner = (__bridge BismuthIOSMetalOwner*)m_owner;
+    std::lock_guard<std::mutex> lock(owner->errorMutex);
+    std::string error = std::move(owner->asynchronousError);
+    owner->asynchronousError.clear();
+    return error;
+}
+
 bool ComputeRenderer::initializeLevel(
     const SpriteWorkItem* workItems, std::uint32_t workItemCount,
     const InputSprite* sprites, std::uint32_t spriteCount,
