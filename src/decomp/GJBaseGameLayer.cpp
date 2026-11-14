@@ -212,7 +212,7 @@ void decomp_GJBaseGameLayer::optimized_processRotationActions() {
         GameObject* mainObject = tryGetMainObject(gco->m_centerGroupID);
 
 
-        auto objectsToRotate = groupManager.getVanillaRotateGroup(gco->m_targetGroupID);
+        const auto& objectsToRotate = groupManager.getVanillaRotateGroup(gco->m_targetGroupID);
         // auto objectsToRotateArray = getOptimizedGroup(gco->m_targetGroupID);
 
         CCArray* staticGroup = getStaticGroup(gco->m_targetGroupID);
@@ -469,7 +469,7 @@ void decomp_GJBaseGameLayer::optimized_processFollowActions() {
 
             groupManager.moveGroup(node->getTag(), node->m_unk038, node->m_unk040);
 
-            auto reducedTargetObjects = groupManager.getVanillaRotateGroup(node->getTag());
+            const auto& reducedTargetObjects = groupManager.getVanillaRotateGroup(node->getTag());
 
             for (auto object : reducedTargetObjects) {
                 if (!object) break;
