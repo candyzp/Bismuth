@@ -18,16 +18,16 @@ using namespace geode::prelude;
 namespace BismuthIOSMetal {
 namespace {
 
-constexpr std::uint32_t OBJECT_FLAG_AUDIO_SCALE = 1u << 0;
-constexpr std::uint32_t OBJECT_FLAG_CUSTOM_AUDIO_SCALE = 1u << 1;
-constexpr std::uint32_t OBJECT_FLAG_ORB = 1u << 2;
-constexpr std::uint32_t OBJECT_FLAG_INVISIBLE_BLOCK = 1u << 3;
-constexpr std::uint32_t OBJECT_FLAG_SPECIAL_GLOW = 1u << 4;
-constexpr std::uint32_t OBJECT_FLAG_GLOW_LBG = 1u << 5;
-constexpr std::uint32_t OBJECT_FLAG_BASE_HSV = 1u << 6;
-constexpr std::uint32_t OBJECT_FLAG_DETAIL_HSV = 1u << 7;
-constexpr std::uint32_t OBJECT_FLAG_STATIC_OBJECT = 1u << 8;
-constexpr std::uint32_t OBJECT_FLAG_STATIC_GLOW = 1u << 9;
+constexpr std::uint32_t IOS_OBJECT_FLAG_AUDIO_SCALE = 1u << 0;
+constexpr std::uint32_t IOS_OBJECT_FLAG_CUSTOM_AUDIO_SCALE = 1u << 1;
+constexpr std::uint32_t IOS_OBJECT_FLAG_ORB = 1u << 2;
+constexpr std::uint32_t IOS_OBJECT_FLAG_INVISIBLE_BLOCK = 1u << 3;
+constexpr std::uint32_t IOS_OBJECT_FLAG_SPECIAL_GLOW = 1u << 4;
+constexpr std::uint32_t IOS_OBJECT_FLAG_GLOW_LBG = 1u << 5;
+constexpr std::uint32_t IOS_OBJECT_FLAG_BASE_HSV = 1u << 6;
+constexpr std::uint32_t IOS_OBJECT_FLAG_DETAIL_HSV = 1u << 7;
+constexpr std::uint32_t IOS_OBJECT_FLAG_STATIC_OBJECT = 1u << 8;
+constexpr std::uint32_t IOS_OBJECT_FLAG_STATIC_GLOW = 1u << 9;
 
 struct PackedHSV {
     std::uint32_t hueAndFlags = 0;
@@ -107,14 +107,14 @@ bool ObjectBatch::buildObjectInfos(const std::vector<GameObject*>& objects) {
 
         std::uint32_t flags = 0;
         if (object->m_usesAudioScale && !object->m_hasNoAudioScale) {
-            flags |= OBJECT_FLAG_AUDIO_SCALE;
+            flags |= IOS_OBJECT_FLAG_AUDIO_SCALE;
             if (object->m_customAudioScale) {
-                flags |= OBJECT_FLAG_CUSTOM_AUDIO_SCALE;
+                flags |= IOS_OBJECT_FLAG_CUSTOM_AUDIO_SCALE;
                 info.audioScaleMin = object->m_minAudioScale;
                 info.audioScaleMax = object->m_maxAudioScale;
             }
             if (typeinfo_cast<RingObject*>(object))
-                flags |= OBJECT_FLAG_ORB;
+                flags |= IOS_OBJECT_FLAG_ORB;
         }
 
         info.baseColorChannelId = safeColorChannel(static_cast<std::uint32_t>(
@@ -125,13 +125,13 @@ bool ObjectBatch::buildObjectInfos(const std::vector<GameObject*>& objects) {
         ));
 
         if (object->m_baseColor && object->m_baseColor->m_usesHSV) {
-            flags |= OBJECT_FLAG_BASE_HSV;
+            flags |= IOS_OBJECT_FLAG_BASE_HSV;
             const auto hsv = packHSV(object->m_baseColor->m_hsv);
             info.baseHSVHueAndFlags = hsv.hueAndFlags;
             info.baseHSVSaturationAndValue = hsv.saturationAndValue;
         }
         if (object->m_detailColor && object->m_detailColor->m_usesHSV) {
-            flags |= OBJECT_FLAG_DETAIL_HSV;
+            flags |= IOS_OBJECT_FLAG_DETAIL_HSV;
             const auto hsv = packHSV(object->m_detailColor->m_hsv);
             info.detailHSVHueAndFlags = hsv.hueAndFlags;
             info.detailHSVSaturationAndValue = hsv.saturationAndValue;
@@ -150,17 +150,17 @@ bool ObjectBatch::buildObjectInfos(const std::vector<GameObject*>& objects) {
         );
 
         if (object->m_cantColorGlow && object->m_glowSprite) {
-            flags |= OBJECT_FLAG_STATIC_GLOW;
+            flags |= IOS_OBJECT_FLAG_STATIC_GLOW;
             info.staticGlowColor = packRGBA(object->m_glowSprite->getColor());
         }
         if (object->m_isInvisibleBlock)
-            flags |= OBJECT_FLAG_INVISIBLE_BLOCK;
+            flags |= IOS_OBJECT_FLAG_INVISIBLE_BLOCK;
         if (object->m_customGlowColor)
-            flags |= OBJECT_FLAG_SPECIAL_GLOW;
+            flags |= IOS_OBJECT_FLAG_SPECIAL_GLOW;
         if (object->m_glowColorIsLBG)
-            flags |= OBJECT_FLAG_GLOW_LBG;
+            flags |= IOS_OBJECT_FLAG_GLOW_LBG;
         if (object->m_objectType == GameObjectType::Solid)
-            flags |= OBJECT_FLAG_STATIC_OBJECT;
+            flags |= IOS_OBJECT_FLAG_STATIC_OBJECT;
 
         info.flags = static_cast<std::int32_t>(flags);
         info.fadeMargin = object->m_fadeMargin;
