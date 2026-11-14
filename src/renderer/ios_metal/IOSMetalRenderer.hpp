@@ -84,6 +84,7 @@ private:
     std::uint64_t submittedFrameCount = 0;
     std::string dispatchStatus = "INITIALIZING";
     std::string lastDispatchError;
+    std::string glesCapabilityInfo = "NOT QUERIED";
     // Retained after reset so Renderer::create can show a failure HUD even
     // when initialization falls back to vanilla drawing.
     std::string initializationError;
