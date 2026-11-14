@@ -371,13 +371,19 @@ kernel void bismuthObjectCompute(
         dot(float2(frame.cameraUpX, frame.cameraUpY), cameraOffset)
     );
 
+    // Keep this camera test as telemetry, but do not reject sprites here.
+    // The iOS camera-space values are not yet matching the desktop culler on
+    // device (thousands of sprites are being discarded). Retain Metal-side
+    // transforms and alpha evaluation, then let the OpenGL ES GPU viewport
+    // clip reject off-screen vertices. This avoids CPU per-sprite work and
+    // prevents a bad camera test from making level geometry disappear.
     constexpr float cullMargin = 100.0;
-    visible = visible &&
+    const bool inView =
         screenPosition.x >= -cullMargin &&
         screenPosition.x <= frame.cameraWidth + cullMargin &&
         screenPosition.y >= -cullMargin &&
         screenPosition.y <= frame.cameraHeight + cullMargin;
-    if (visible)
+    if (visible && inView)
         atomic_fetch_add_explicit(&stageCounters[1], 1u, memory_order_relaxed);
 
     if (visible) {
