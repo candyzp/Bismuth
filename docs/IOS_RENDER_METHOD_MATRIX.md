@@ -1,63 +1,54 @@
-# iOS Metal / OpenGL ES method matrix
+# iOS renderer method matrix
 
-This branch adds an isolated probe selector for iOS. It is intentionally separate
-from the full Bismuth scene renderer.
+This branch contains **20 selectable rendering configurations**. Each configuration
+uses the actual Bismuth scene extraction, ES2 shaders, layer nodes, state tables,
+and draw submission path. The selector changes how vertex data reaches OpenGL ES
+and how each sprite's camera visibility is determined.
 
-## How to use it
+These are five vertex-delivery strategies crossed with four culling strategies:
 
-1. Leave **iOS interop probe mode** enabled.
-2. Choose **00 - Run all 20 probes** to execute the complete matrix in one level
-   entry, or choose an individual numbered method to isolate it.
-3. Enter a level. Probes run after Geometry Dash finishes its normal level reset.
-   The batch option runs methods 01–20 sequentially and logs each PASS/FAIL.
-4. Read the Geode log for the individual results and the underlying API errors.
+| Vertex delivery strategy | Shader culling | CPU visibility mask | Metal visibility mask | No camera culling |
+|---|---:|---:|---:|---:|
+| Persistent VBO | 01 | 02 | 03 | 04 |
+| Orphaned VBO | 05 | 06 | 07 | 08 |
+| SubData VBO | 09 | 10 | 11 | 12 |
+| Client-side vertex arrays | 13 | 14 | 15 | 16 |
+| Triple VBO ring | 17 | 18 | 19 | 20 |
 
-Probe mode does not create `IOSGPURenderer`, hide stock Cocos batches, replace
-Geometry Dash's `updateVisibility`, or remove stock decorations. The game keeps
-its normal rendering path while the selected API test runs. Change the selector
-and enter another level to try a different probe; no rebuild is required. The
-selector defaults to the low-risk host-context check (method 01); the full matrix
-is opt-in through method 00.
+## What each axis changes
 
-Turn probe mode off only when you are ready to test the full Bismuth renderer.
-The full renderer now waits until all active GPU layers have submitted
-successfully before hiding the original batches. If initialization or a later
-GPU operation fails, it restores the previous batch-visibility state.
+**Vertex delivery**
 
-## Probe list
+- **Persistent VBO:** keep one GL buffer allocation and update dirty vertex ranges.
+- **Orphaned VBO:** orphan the buffer storage and upload the complete current stream when the ordered geometry changes.
+- **SubData VBO:** allocate capacity and update existing storage with `glBufferSubData`.
+- **Client arrays:** pass the ordered CPU vertex memory directly to the ES2 vertex attributes; no VBO is used for the object stream.
+- **Triple VBO ring:** rotate across three VBOs, orphaning and filling the selected slot.
 
-Choose method 00 to run the following twenty probes sequentially.
+**Visibility**
 
-| # | Probe | What it establishes |
-|---:|---|---|
-| 01 | Host EAGL context | Geometry Dash's current OpenGL ES context is available on the level-start thread. |
-| 02 | Metal device creation | `MTLCreateSystemDefaultDevice` returns a device. |
-| 03 | Metal command queue | A Metal command queue can be created. |
-| 04 | Metal shader compilation | The probe's minimal Metal shader source compiles. |
-| 05 | Metal compute pipeline | A compute pipeline can be created from the compiled function. |
-| 06 | Metal-only CVPixelBuffer | Core Video can allocate a BGRA pixel buffer with Metal compatibility. |
-| 07 | GLES-only CVPixelBuffer | Core Video can allocate a BGRA pixel buffer with OpenGL ES compatibility. |
-| 08 | Shared BGRA CVPixelBuffer | One pixel buffer can be created with both compatibility flags. |
-| 09 | CVMetalTextureCache | Core Video can create a Metal texture cache. |
-| 10 | CVOpenGLESTextureCache | Core Video can create an OpenGL ES texture cache for the host context. |
-| 11 | CVPixelBuffer to Metal texture | The shared pixel buffer can be exposed as a Metal texture. |
-| 12 | CVPixelBuffer to GLES texture | The shared pixel buffer can be exposed as a bindable OpenGL ES texture. |
-| 13 | Shared Metal + GLES texture binding | Both texture views can be created from the same pixel buffer and the GLES view can be bound. |
-| 14 | Metal compute + blocking completion | Metal can write the shared texture, wait for completion, and expose the result to CPU readback. |
-| 15 | Metal compute + completion handler | The same write succeeds when completion is observed through a command-buffer completion handler. |
-| 16 | Metal compute + MTLSharedEvent | The compute write can be synchronized to CPU readback through a shared event. |
-| 17 | Shared MTLBuffer + CPU readback | Metal can write a shared-storage buffer that the CPU can read. |
-| 18 | Shared MTLBuffer + GLES texture upload | CPU-visible Metal output can be copied into a temporary GLES texture. |
-| 19 | GLES render into shared texture | OpenGL ES can render into the shared pixel-buffer texture through an FBO, with the result visible in the shared backing. |
-| 20 | Full current interop self-test | The existing Metal/GLES shared-texture culling path can initialize and pass its integrated test. |
+- **Shader culling:** the vertex shader tests the sprite's transformed object anchor against the camera bounds.
+- **CPU visibility mask:** the CPU calculates visibility and uploads a packed RGBA mask; the vertex shader samples it.
+- **Metal visibility mask:** Metal computes the mask, exposes it to the existing GLES renderer through the shared Core Video texture, and the vertex shader samples it.
+- **No camera culling:** every sprite reaches the remaining shader and rasterization stages; other visibility rules such as sprite appearance and opacity still apply.
 
-## Interpreting results
+## How to compare methods
 
-A PASS confirms only the operation listed for that probe. For example, passing
-method 13 does not prove that the full level renderer is correct; it proves that
-Core Video produced two valid views of the same shared pixel buffer and that
-OpenGL ES could bind its view. Method 20 is the integrated check of the current
-shared-texture culling implementation.
+1. Set **iOS renderer method** to the configuration to test.
+2. Exit the current level and enter a new level so Bismuth creates a renderer using the new selection.
+3. Leave **iOS renderer debug overlay** enabled.
+4. Record the result shown by the overlay and Geode log.
 
-A FAIL should include the failing API stage or a specific validation message.
-A probe failure must not disable Geometry Dash's normal renderer.
+A method is reported as a successful first-frame result only after all active Bismuth layer ranges have completed a GL draw in the same frame. Merely creating a shader, VBO, CPU mask, or Metal device is not counted as a successful render.
+
+The overlay shows the method number and name, vertex-delivery strategy, culling strategy, level sprite/object/group counts, frame cadence, draw count, submitted vertices/triangles, upload bytes, missing layer nodes, and any failure reason. The Geode log records a **PASSED FIRST FRAME** line or a method-specific **FAILED** line.
+
+If initialization or a later draw operation fails before ownership has transferred, Geometry Dash's original Cocos batches remain visible. If a method fails after Bismuth has taken ownership, Bismuth restores the saved stock-batch visibility state.
+
+## Important limits
+
+The 20 entries are 20 real end-to-end configurations built from five vertex-delivery implementations and four culling implementations. They are not 20 unrelated graphics APIs or 20 independently rewritten renderers.
+
+The triple-buffer option rotates three VBOs; it does not use explicit GPU fences. The Metal options still depend on the existing Metal/OpenGL ES shared-texture implementation. A crash in a method can still terminate the app before a final log entry is written.
+
+**Build and device status:** repository changes are source-level only until the iOS arm64 Geode build is compiled and tested on-device. No configuration is marked as working until a device run records its first complete frame.
