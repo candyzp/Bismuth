@@ -1,5 +1,8 @@
 #include "GJBaseGameLayer.hpp"
 #include "../renderer/Renderer.hpp"
+#if defined(GEODE_IS_IOS)
+#include "../renderer/ios_metal/IOSMetalRenderer.hpp"
+#endif
 #include "../profiler.hpp"
 
 using namespace geode::prelude;
@@ -184,6 +187,7 @@ void decomp_GJBaseGameLayer::processRotationActions() {
 }
 
 void decomp_GJBaseGameLayer::optimized_processRotationActions() {
+    auto runWithManager = [&](auto& groupManager) {
     PROFILER_SCOPE("optimized_processRotationActions");
 
     float objLayerScaleX = m_objectLayer->getScaleX();
@@ -207,7 +211,6 @@ void decomp_GJBaseGameLayer::optimized_processRotationActions() {
 
         GameObject* mainObject = tryGetMainObject(gco->m_centerGroupID);
 
-        GroupManager& groupManager = Renderer::get()->getGroupManager();
 
         auto objectsToRotate = groupManager.getVanillaRotateGroup(gco->m_targetGroupID);
         // auto objectsToRotateArray = getOptimizedGroup(gco->m_targetGroupID);
@@ -342,9 +345,22 @@ void decomp_GJBaseGameLayer::optimized_processRotationActions() {
     m_objectLayer->setScaleX(objLayerScaleX);
     m_objectLayer->setScaleY(objLayerScaleY);
     m_objectLayer->setPosition(objLayerPos);
+    };
+
+#if defined(GEODE_IS_IOS)
+    if (auto metalRenderer = BismuthIOSMetal::Renderer::getCurrent();
+        metalRenderer && metalRenderer->isReady()) {
+        runWithManager(metalRenderer->getGroupManager());
+        return;
+    }
+#endif
+
+    auto renderer = Renderer::get();
+    if (renderer)
+        runWithManager(renderer->getGroupManager());
 }
 
-void decomp_GJBaseGameLayer::processFollowActions() {
+oid decomp_GJBaseGameLayer::processFollowActions() {
     for (auto node : m_effectManager->m_unkVector6d8) {
         auto targetObjects = getGroup(node->getTag());
         auto followObject = tryGetMainObject(node->m_unk074);
@@ -410,6 +426,7 @@ void decomp_GJBaseGameLayer::processFollowActions() {
 }
 
 void decomp_GJBaseGameLayer::optimized_processFollowActions() {
+    auto runWithManager = [&](auto& groupManager) {
     for (auto node : m_effectManager->m_unkVector6d8) {
         auto targetObjects = getGroup(node->getTag());
         auto followObject = tryGetMainObject(node->m_unk074);
@@ -450,11 +467,9 @@ void decomp_GJBaseGameLayer::optimized_processFollowActions() {
 
             m_followedCount += targetObjects->count();
 
-            auto renderer = Renderer::get();
+            groupManager.moveGroup(node->getTag(), node->m_unk038, node->m_unk040);
 
-            renderer->getGroupManager().moveGroup(node->getTag(), node->m_unk038, node->m_unk040);
-
-            auto reducedTargetObjects = renderer->getGroupManager().getVanillaRotateGroup(node->getTag());
+            auto reducedTargetObjects = groupManager.getVanillaRotateGroup(node->getTag());
 
             for (auto object : reducedTargetObjects) {
                 if (!object) break;
@@ -478,9 +493,22 @@ void decomp_GJBaseGameLayer::optimized_processFollowActions() {
             updateDisabledObjectsLastPos(targetObjects);
         }
     }
+    };
+
+#if defined(GEODE_IS_IOS)
+    if (auto metalRenderer = BismuthIOSMetal::Renderer::getCurrent();
+        metalRenderer && metalRenderer->isReady()) {
+        runWithManager(metalRenderer->getGroupManager());
+        return;
+    }
+#endif
+
+    auto renderer = Renderer::get();
+    if (renderer)
+        runWithManager(renderer->getGroupManager());
 }
 
-void decomp_GJBaseGameLayer::processPlayerFollowActions(float dt) {
+oid decomp_GJBaseGameLayer::processPlayerFollowActions(float dt) {
     
 }
 
