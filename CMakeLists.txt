@@ -29,9 +29,13 @@ if (DEFINED ENV{CMAKE_CXX_COMPILER})
 endif()
 
 file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS src/*.cpp)
-list(APPEND SOURCES src/renderer/ios_metal/IOSMetalInterop.mm)
+list(APPEND SOURCES
+    src/renderer/ios_metal/IOSMetalInterop.mm
+    src/renderer/ios_metal/IOSRenderMethodProbe.mm
+)
 set_source_files_properties(
     src/renderer/ios_metal/IOSMetalInterop.mm
+    src/renderer/ios_metal/IOSRenderMethodProbe.mm
     PROPERTIES
         COMPILE_OPTIONS "-fobjc-arc"
         COMPILE_DEFINITIONS "GEODE_IS_IOS"
