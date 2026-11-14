@@ -5,7 +5,17 @@ for maximum performance.
 
 Currently experimental
 
-You can try the latest builds from the discord server: https://discord.gg/MDbQt3w8HC
+## iOS Metal compute track
+
+The `ios-metal-compute` branch targets Metal compute for per-sprite transforms
+and visibility, with OpenGL ES retained for drawing. It explicitly rejects
+per-frame CPU per-sprite preparation. See
+[docs/IOS_METAL_COMPUTE_ARCHITECTURE.md](docs/IOS_METAL_COMPUTE_ARCHITECTURE.md)
+for the architecture guardrails and current integration status.
+
+The iOS work is not yet built or device-tested.
+
+You can try the latest upstream builds from the discord server: https://discord.gg/MDbQt3w8HC
 
 <img src="logo.png" alt="Bismuth logo" width="100"/>
 
