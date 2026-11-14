@@ -78,7 +78,7 @@ private:
     Shader* shader = nullptr;
     u32 vertexBuffer = 0;
     std::array<u32, 3> vertexRingBuffers {};
-    u32 vertexBufferCapacity = 0;
+    usize vertexBufferCapacity = 0;
     u32 currentRingIndex = 0;
     u32 renderMethod = 1;
     u32 visibilityTextureWidth = 0;
