@@ -32,7 +32,7 @@ endif()
 file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS src/*.cpp)
 if (BISMUTH_IOS_BUILD)
     # OpenCL's WGL loader is Windows-only. The iOS backend uses Metal instead.
-    list(FILTER SOURCES EXCLUDE REGEX ".*/(cl|gl)\\.cpp$")
+    list(FILTER SOURCES EXCLUDE REGEX ".*/(cl|gl|profiler)\\.cpp$")
     list(FILTER SOURCES EXCLUDE REGEX ".*/renderer/(Buffer|DebugText|DifferenceMode|GroupManager|ObjectBatch|ObjectBatchNode|ObjectSorter|OverdrawView|Renderer|Shader|WorkGroupScheduler)\\.cpp$")
     file(GLOB_RECURSE OBJCXX_SOURCES CONFIGURE_DEPENDS src/*.mm)
     list(APPEND SOURCES ${OBJCXX_SOURCES})
