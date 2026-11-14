@@ -8,7 +8,7 @@
 #include <Geode/cocos/textures/CCTextureCache.h>
 #include <Geode/utils/cocos.hpp>
 #include <GameManager.hpp>
-#include <SpriteMeshDictionary.hpp>
+#include "../SpriteMeshDictionary.hpp"
 #include <common.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <Geode/cocos/kazmath/include/kazmath/mat4.h>
