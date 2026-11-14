@@ -19,6 +19,11 @@ def require(condition, message):
     if not condition:
         raise AssertionError(message)
 
+def body(source, signature, next_signature):
+    start = source.index(signature)
+    end = source.index(next_signature, start + len(signature))
+    return source[start:end]
+
 require("IOSUpstream::IOSGPURenderer::create(this)" in hooks,
         "PlayLayer must create the iOS GPU renderer")
 require("enable_language(OBJCXX)" in cmake and
@@ -72,9 +77,9 @@ require("u_visibilityMode < 0.5" in vertex_shader and
         "u_visibilityTexture" in vertex_shader and
         "u_cameraPosition" in vertex_shader,
         "the active ES2 shader must support shader, CPU-mask, Metal-mask and no-cull modes")
-require("metalInterop.runSelfTest(metalInteropError)" in gpu and
+require("metalInterop.runSelfTest(error)" in gpu and
         "metalInterop.selfTestPassed()" in gpu,
-        "the active iOS renderer must initialize and report the interop self-test")
+        "the selected Metal method must execute and retain its shared-texture self-test")
 require("existing->prepareForLevelReset()" in hooks and
         "renderer->enforceGPUOwnership()" in hooks,
         "PlayLayer reset must retire stale layer nodes and reassert GPU ownership")
