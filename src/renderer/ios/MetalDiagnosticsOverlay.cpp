@@ -14,6 +14,9 @@ using namespace geode::prelude;
 namespace {
 constexpr float DEG_TO_RAD = 0.01745329251994329577f;
 constexpr std::uint32_t MAX_GROUP_ID = 9999;
+// Kyanite's common.hpp constants: these IDs are excluded from render batches.
+constexpr int IOS_GUIDE_OBJECT_ID = 2016;
+constexpr int IOS_KEYFRAME_OBJECT_ID = 3032;
 
 bool shouldIncludeObject(PlayLayer* layer, GameObject* object) {
     if (!layer || !object)
@@ -22,8 +25,8 @@ bool shouldIncludeObject(PlayLayer* layer, GameObject* object) {
         return false;
     if (object->isTrigger() || object->m_isHide)
         return false;
-    if (object->m_objectID == GUIDE_OBJECT_ID ||
-        object->m_objectID == KEYFRAME_OBJECT_ID)
+    if (object->m_objectID == IOS_GUIDE_OBJECT_ID ||
+        object->m_objectID == IOS_KEYFRAME_OBJECT_ID)
         return false;
     return true;
 }
@@ -119,14 +122,12 @@ bool MetalDiagnosticsOverlay::uploadLevelObjects() {
         if (state.error.find("deferred because a culling frame is still in flight") == std::string::npos)
             m_levelUploadAttempted = true;
     }
-    if (m_levelUploaded) {
-        const auto uploadedState = MetalBackend::get().snapshot();
-        log::info(
-            "Kyanite iOS: uploaded {} static object records across {} group combinations",
-            inputs.size(),
-            uploadedState.groupCombinationCount
-        );
-    }
+    const auto uploadedState = MetalBackend::get().snapshot();
+    log::info(
+        "Kyanite iOS: uploaded {} static object records across {} group combinations",
+        inputs.size(),
+        uploadedState.groupCombinationCount
+    );
     return m_levelUploaded;
 }
 
