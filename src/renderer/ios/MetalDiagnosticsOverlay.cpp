@@ -78,7 +78,6 @@ bool MetalDiagnosticsOverlay::uploadLevelObjects() {
     std::vector<MetalObjectInput> inputs;
     inputs.reserve(m_layer->m_objects->count());
 
-    std::uint32_t groupStateCount = 1;
     for (auto object : CCArrayExt<GameObject*, false>(m_layer->m_objects)) {
         if (!shouldIncludeObject(m_layer, object))
             continue;
@@ -102,33 +101,32 @@ bool MetalDiagnosticsOverlay::uploadLevelObjects() {
         );
         for (std::uint32_t i = 0; i < groupCount; ++i) {
             if (!object->m_groups)
-            break;
-        const int groupId = (*object->m_groups)[i];
+                break;
+            const int groupId = (*object->m_groups)[i];
             if (groupId < 0 || static_cast<std::uint32_t>(groupId) > MAX_GROUP_ID)
                 continue;
 
             input.groupIds[input.groupCount++] = static_cast<std::uint32_t>(groupId);
-            groupStateCount = std::max(
-                groupStateCount,
-                static_cast<std::uint32_t>(groupId) + 1u
-            );
         }
 
         inputs.push_back(input);
     }
 
-    m_levelUploaded = MetalBackend::get().uploadLevelObjects(inputs, groupStateCount);
+    m_levelUploaded = MetalBackend::get().uploadLevelObjects(inputs);
     m_levelUploadAttempted = m_levelUploaded;
     if (!m_levelUploaded) {
         const auto state = MetalBackend::get().snapshot();
         if (state.error.find("deferred because a culling frame is still in flight") == std::string::npos)
             m_levelUploadAttempted = true;
     }
-    log::info(
-        "Kyanite iOS: uploaded {} static object records to Metal; group states: {}",
-        inputs.size(),
-        groupStateCount
-    );
+    if (m_levelUploaded) {
+        const auto uploadedState = MetalBackend::get().snapshot();
+        log::info(
+            "Kyanite iOS: uploaded {} static object records across {} group combinations",
+            inputs.size(),
+            uploadedState.groupCombinationCount
+        );
+    }
     return m_levelUploaded;
 }
 
@@ -231,6 +229,8 @@ void MetalDiagnosticsOverlay::refreshText() {
                 state.completedProbeThreads,
                 state.expectedProbeThreads
             );
+            if (state.completedProbeThreads != state.expectedProbeThreads)
+                text += "Probe result: MISMATCH\n";
         } else if (state.probeSubmitted) {
             text += "Probe: SUBMITTED / WAITING\n";
         } else if (state.probeFailed) {
@@ -245,8 +245,9 @@ void MetalDiagnosticsOverlay::refreshText() {
             text += "Level object data: UPLOAD FAILED\n";
         } else {
             text += fmt::format(
-                "Static object records: {} (uploaded once)\n",
-                state.levelObjectCount
+                "Static objects: {} | group combinations: {}\n",
+                state.levelObjectCount,
+                state.groupCombinationCount
             );
             if (state.cullingCompleted) {
                 text += fmt::format(

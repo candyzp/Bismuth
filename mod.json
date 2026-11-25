@@ -11,7 +11,7 @@
         "ELTXZU",
         "candyzp"
     ],
-    "description": "Experimental iOS Metal port of Kyanite. Current stage verifies Metal compute and reports backend status; level rendering remains on Geometry Dash's renderer.",
+    "description": "Experimental iOS Metal port of Kyanite. Uploads static object metadata and runs GPU group-combination visibility culling; level sprites still use Geometry Dash's renderer.",
     "dependencies": {
         "geode.node-ids": ">=v1.20.0"
     },

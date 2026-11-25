@@ -42,6 +42,7 @@ struct MetalBackendSnapshot {
     std::uint32_t submittedDispatches = 0;
 
     std::uint32_t levelObjectCount = 0;
+    std::uint32_t groupCombinationCount = 0;
     std::uint32_t visibleObjectCount = 0;
     std::uint32_t culledObjectCount = 0;
     std::uint32_t submittedCullingFrames = 0;
@@ -62,11 +63,10 @@ struct MetalBackendSnapshot {
 /*
  * Native iOS Metal backend.
  *
- * The current port uploads immutable per-object metadata once, keeps compact
- * per-group transform/toggle state, and performs a GPU visibility pass.
- * It deliberately does not claim to draw Geometry Dash sprites: the stock
- * renderer remains authoritative until a Metal sprite/atlas render pass can
- * be composited safely with Cocos2d's iOS OpenGL ES frame.
+ * Immutable object metadata is uploaded once per level. Each object points
+ * to one shared group-combination state, matching Kyanite's core data model.
+ * A Metal compute pass creates a GPU-visible object-index list; it does not
+ * draw sprites yet, so Geometry Dash remains the authoritative renderer.
  */
 class MetalBackend {
 public:
@@ -75,10 +75,7 @@ public:
     bool initialize();
     void submitComputeProbeOnce();
 
-    bool uploadLevelObjects(
-        const std::vector<MetalObjectInput>& objects,
-        std::uint32_t groupStateCount
-    );
+    bool uploadLevelObjects(const std::vector<MetalObjectInput>& objects);
     void updateCameraBounds(float minX, float minY, float maxX, float maxY);
     void submitCullingFrame();
 
@@ -91,7 +88,7 @@ public:
     );
     void toggleGroup(std::int32_t groupId, bool visible);
     void setGroupAlpha(std::int32_t groupId, float alpha);
-    std::vector<std::uint32_t> getUsedGroupIds() const;
+    const std::vector<std::uint32_t>& getUsedGroupIds() const;
     void resetGroupStates();
 
     MetalBackendSnapshot snapshot() const;

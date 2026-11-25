@@ -9,11 +9,15 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <map>
 #include <mutex>
+#include <set>
+#include <vector>
 
 namespace {
 constexpr std::uint32_t PROBE_THREAD_COUNT = 256;
 constexpr std::uint32_t THREADS_PER_GROUP = 64;
+constexpr std::uint32_t MAX_GROUP_ID = 9999;
 constexpr float PI_F = 3.14159265358979323846f;
 
 std::string toStdString(NSString* value) {
@@ -22,6 +26,16 @@ std::string toStdString(NSString* value) {
     const char* utf8 = [value UTF8String];
     return utf8 ? std::string(utf8) : std::string();
 }
+
+struct MetalGpuObject {
+    float x = 0.0f;
+    float y = 0.0f;
+    float halfWidth = 1.0f;
+    float halfHeight = 1.0f;
+    float rotation = 0.0f;
+    std::uint32_t groupCombinationIndex = 0;
+    std::uint32_t flags = 0;
+};
 
 struct MetalGroupState {
     float positionM00 = 1.0f;
@@ -47,9 +61,30 @@ struct MetalCameraBounds {
     float maxY = 100000.0f;
 };
 
-static_assert(sizeof(MetalObjectInput) == 68, "MetalObjectInput layout must match the MSL struct");
-static_assert(sizeof(MetalGroupState) == 48, "MetalGroupState layout must match the MSL struct");
-static_assert(sizeof(MetalCameraBounds) == 16, "MetalCameraBounds layout must match the MSL struct");
+static_assert(sizeof(MetalObjectInput) == 68,
+              "MetalObjectInput layout must match the CPU metadata layout");
+static_assert(sizeof(MetalGpuObject) == 28,
+              "MetalGpuObject layout must match the MSL object layout");
+static_assert(sizeof(MetalGroupState) == 48,
+              "MetalGroupState layout must match the MSL group-state layout");
+static_assert(sizeof(MetalCameraBounds) == 16,
+              "MetalCameraBounds layout must match the MSL camera layout");
+
+void multiplyByRotation(
+    float& m00, float& m01, float& m10, float& m11,
+    float cosine, float sine
+) {
+    const float old00 = m00;
+    const float old01 = m01;
+    const float old10 = m10;
+    const float old11 = m11;
+
+    // Matches Kyanite's GLM column-major transform composition.
+    m00 = old00 * cosine - old01 * sine;
+    m01 = old00 * sine + old01 * cosine;
+    m10 = old10 * cosine - old11 * sine;
+    m11 = old10 * sine + old11 * cosine;
+}
 } // namespace
 
 struct MetalBackend::Impl {
@@ -70,12 +105,18 @@ struct MetalBackend::Impl {
     std::string error;
 
     std::vector<MetalGroupState> groupStates;
+    std::vector<std::vector<std::uint32_t>> groupIdsPerCombination;
+    std::vector<std::vector<std::uint32_t>> combinationsPerGroupId;
     std::vector<std::uint32_t> usedGroupIds;
+    std::vector<std::uint8_t> groupToggleEnabled;
+    std::vector<float> groupAlpha;
     MetalCameraBounds cameraBounds;
+
     std::atomic<std::uint32_t> objectCount{0};
     std::atomic<std::uint64_t> generation{0};
     std::atomic<bool> levelDataReady{false};
     std::atomic<bool> frameInFlight{false};
+    std::atomic<bool> groupStateDirty{false};
 
     std::atomic<bool> probeSubmitted{false};
     std::atomic<bool> probeCompleted{false};
@@ -98,6 +139,27 @@ struct MetalBackend::Impl {
     std::atomic<double> gpuTimeMilliseconds{0.0};
     std::atomic<bool> cullingGpuTimeAvailable{false};
     std::atomic<double> cullingGpuTimeMilliseconds{0.0};
+
+    void recomputeCombination(std::uint32_t combinationIndex) {
+        if (combinationIndex >= groupStates.size() ||
+            combinationIndex >= groupIdsPerCombination.size())
+            return;
+
+        bool visible = true;
+        float alpha = 1.0f;
+
+        for (const auto groupId : groupIdsPerCombination[combinationIndex]) {
+            if (groupId < groupToggleEnabled.size() &&
+                groupToggleEnabled[groupId] == 0)
+                visible = false;
+
+            if (groupId < groupAlpha.size())
+                alpha *= groupAlpha[groupId];
+        }
+
+        groupStates[combinationIndex].visible = visible ? 1u : 0u;
+        groupStates[combinationIndex].alpha = std::clamp(alpha, 0.0f, 1.0f);
+    }
 };
 
 MetalBackend::MetalBackend()
@@ -147,8 +209,7 @@ bool MetalBackend::initialize() {
                 float halfWidth;
                 float halfHeight;
                 float rotation;
-                uint groupCount;
-                uint groupIds[10];
+                uint groupCombinationIndex;
                 uint flags;
             };
 
@@ -183,7 +244,7 @@ bool MetalBackend::initialize() {
 
             kernel void kyanite_cull_objects(
                 device const KyaniteObject* objects [[buffer(0)]],
-                device const KyaniteGroupState* groups [[buffer(1)]],
+                device const KyaniteGroupState* combinations [[buffer(1)]],
                 constant KyaniteCameraBounds& camera [[buffer(2)]],
                 device uint* visibleIndices [[buffer(3)]],
                 device atomic_uint* visibleCount [[buffer(4)]],
@@ -194,43 +255,32 @@ bool MetalBackend::initialize() {
                     return;
 
                 const KyaniteObject object = objects[tid];
-                float2 center = float2(object.x, object.y);
+                const KyaniteGroupState state =
+                    combinations[object.groupCombinationIndex];
+
+                if (state.visible == 0u || state.alpha <= 0.001f)
+                    return;
+
+                float2 center = float2(
+                    state.positionM00 * object.x +
+                        state.positionM01 * object.y + state.offsetX,
+                    state.positionM10 * object.x +
+                        state.positionM11 * object.y + state.offsetY
+                );
+
                 float c = cos(object.rotation);
                 float s = sin(object.rotation);
-                float2 axisX = float2(c, s);
-                float2 axisY = float2(-s, c);
-                float alpha = 1.0;
-                bool enabled = true;
+                float2 axisX = float2(c, -s);
+                float2 axisY = float2(s, c);
 
-                uint groupLimit = min(object.groupCount, 10u);
-                for (uint i = 0; i < groupLimit; ++i) {
-                    uint groupId = object.groupIds[i];
-                    KyaniteGroupState state = groups[groupId];
-
-                    if (state.visible == 0u) {
-                        enabled = false;
-                        break;
-                    }
-
-                    center = float2(
-                        state.positionM00 * center.x + state.positionM01 * center.y + state.offsetX,
-                        state.positionM10 * center.x + state.positionM11 * center.y + state.offsetY
-                    );
-
-                    axisX = float2(
-                        state.localM00 * axisX.x + state.localM01 * axisX.y,
-                        state.localM10 * axisX.x + state.localM11 * axisX.y
-                    );
-                    axisY = float2(
-                        state.localM00 * axisY.x + state.localM01 * axisY.y,
-                        state.localM10 * axisY.x + state.localM11 * axisY.y
-                    );
-
-                    alpha *= state.alpha;
-                }
-
-                if (!enabled || alpha <= 0.001)
-                    return;
+                axisX = float2(
+                    state.localM00 * axisX.x + state.localM01 * axisX.y,
+                    state.localM10 * axisX.x + state.localM11 * axisX.y
+                );
+                axisY = float2(
+                    state.localM00 * axisY.x + state.localM01 * axisY.y,
+                    state.localM10 * axisY.x + state.localM11 * axisY.y
+                );
 
                 float extentX =
                     abs(axisX.x) * object.halfWidth +
@@ -397,8 +447,7 @@ void MetalBackend::submitComputeProbeOnce() {
 }
 
 bool MetalBackend::uploadLevelObjects(
-    const std::vector<MetalObjectInput>& objects,
-    std::uint32_t groupStateCount
+    const std::vector<MetalObjectInput>& objects
 ) {
     @autoreleasepool {
         if (!initialize())
@@ -406,36 +455,107 @@ bool MetalBackend::uploadLevelObjects(
 
         if (m_impl->frameInFlight.load(std::memory_order_acquire)) {
             std::lock_guard<std::mutex> lock(m_impl->textMutex);
-            m_impl->error = "Level data upload deferred because a culling frame is still in flight";
+            m_impl->error =
+                "Level data upload deferred because a culling frame is still in flight";
             return false;
         }
 
-        const std::uint32_t count = static_cast<std::uint32_t>(
-            std::min<std::size_t>(objects.size(),
-                                  std::numeric_limits<std::uint32_t>::max())
+        std::vector<MetalGpuObject> gpuObjects;
+        gpuObjects.reserve(objects.size());
+
+        std::map<std::vector<std::uint32_t>, std::uint32_t> combinationIndices;
+        std::vector<std::vector<std::uint32_t>> groupIdsPerCombination;
+        std::vector<MetalGroupState> groupStates;
+        std::set<std::uint32_t> usedGroups;
+        std::uint32_t maxGroupId = 0;
+
+        const std::vector<std::uint32_t> emptyCombination;
+        combinationIndices.emplace(emptyCombination, 0);
+        groupIdsPerCombination.push_back(emptyCombination);
+        groupStates.emplace_back();
+
+        for (const auto& object : objects) {
+            std::vector<std::uint32_t> ids;
+            const std::uint32_t groupCount = std::min(object.groupCount, 10u);
+            ids.reserve(groupCount);
+
+            for (std::uint32_t i = 0; i < groupCount; ++i) {
+                const auto groupId = object.groupIds[i];
+                if (groupId > MAX_GROUP_ID)
+                    continue;
+                ids.push_back(groupId);
+                usedGroups.insert(groupId);
+                maxGroupId = std::max(maxGroupId, groupId);
+            }
+
+            std::sort(ids.begin(), ids.end());
+            ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+
+            auto found = combinationIndices.find(ids);
+            std::uint32_t combinationIndex = 0;
+            if (found == combinationIndices.end()) {
+                combinationIndex =
+                    static_cast<std::uint32_t>(groupIdsPerCombination.size());
+                combinationIndices.emplace(ids, combinationIndex);
+                groupIdsPerCombination.push_back(ids);
+                groupStates.emplace_back();
+            } else {
+                combinationIndex = found->second;
+            }
+
+            gpuObjects.push_back({
+                object.x,
+                object.y,
+                object.halfWidth,
+                object.halfHeight,
+                object.rotationRadians,
+                combinationIndex,
+                object.flags
+            });
+        }
+
+        std::vector<std::vector<std::uint32_t>> combinationsPerGroupId(
+            static_cast<std::size_t>(maxGroupId) + 1u
         );
-        const std::uint32_t safeGroupCount = std::max(1u, groupStateCount);
+        for (std::uint32_t combinationIndex = 0;
+             combinationIndex < groupIdsPerCombination.size();
+             ++combinationIndex) {
+            for (const auto groupId : groupIdsPerCombination[combinationIndex]) {
+                if (groupId < combinationsPerGroupId.size())
+                    combinationsPerGroupId[groupId].push_back(combinationIndex);
+            }
+        }
+
+        std::vector<std::uint32_t> usedGroupIds(usedGroups.begin(), usedGroups.end());
+        std::vector<std::uint8_t> groupToggleEnabled(
+            static_cast<std::size_t>(maxGroupId) + 1u, 1u
+        );
+        std::vector<float> groupAlpha(
+            static_cast<std::size_t>(maxGroupId) + 1u, 1.0f
+        );
 
         id<MTLBuffer> newObjectBuffer = nil;
-        if (count > 0) {
+        if (!gpuObjects.empty()) {
             newObjectBuffer =
-                [m_impl->device newBufferWithBytes:objects.data()
-                                             length:sizeof(MetalObjectInput) * count
+                [m_impl->device newBufferWithBytes:gpuObjects.data()
+                                             length:sizeof(MetalGpuObject) * gpuObjects.size()
                                             options:MTLResourceStorageModeShared];
         } else {
             newObjectBuffer =
-                [m_impl->device newBufferWithLength:sizeof(MetalObjectInput)
+                [m_impl->device newBufferWithLength:sizeof(MetalGpuObject)
                                             options:MTLResourceStorageModeShared];
         }
 
+        const std::size_t combinationCount = groupStates.size();
         id<MTLBuffer> newGroupBuffer =
-            [m_impl->device newBufferWithLength:sizeof(MetalGroupState) * safeGroupCount
+            [m_impl->device newBufferWithLength:sizeof(MetalGroupState) * combinationCount
                                         options:MTLResourceStorageModeShared];
         id<MTLBuffer> newCameraBuffer =
             [m_impl->device newBufferWithLength:sizeof(MetalCameraBounds)
                                         options:MTLResourceStorageModeShared];
         id<MTLBuffer> newVisibleBuffer =
-            [m_impl->device newBufferWithLength:sizeof(std::uint32_t) * std::max(1u, count)
+            [m_impl->device newBufferWithLength:
+                sizeof(std::uint32_t) * std::max<std::size_t>(1, gpuObjects.size())
                                         options:MTLResourceStorageModeShared];
         id<MTLBuffer> newVisibleCountBuffer =
             [m_impl->device newBufferWithLength:sizeof(std::uint32_t)
@@ -449,19 +569,8 @@ bool MetalBackend::uploadLevelObjects(
             return false;
         }
 
-        m_impl->groupStates.assign(safeGroupCount, MetalGroupState{});
-        m_impl->usedGroupIds.clear();
-        for (const auto& object : objects) {
-            for (std::uint32_t i = 0; i < std::min(object.groupCount, 10u); ++i)
-                m_impl->usedGroupIds.push_back(object.groupIds[i]);
-        }
-        std::sort(m_impl->usedGroupIds.begin(), m_impl->usedGroupIds.end());
-        m_impl->usedGroupIds.erase(
-            std::unique(m_impl->usedGroupIds.begin(), m_impl->usedGroupIds.end()),
-            m_impl->usedGroupIds.end()
-        );
-        std::memcpy(newGroupBuffer.contents, m_impl->groupStates.data(),
-                    sizeof(MetalGroupState) * safeGroupCount);
+        std::memcpy(newGroupBuffer.contents, groupStates.data(),
+                    sizeof(MetalGroupState) * combinationCount);
         std::memcpy(newCameraBuffer.contents, &m_impl->cameraBounds,
                     sizeof(MetalCameraBounds));
         *static_cast<std::uint32_t*>(newVisibleCountBuffer.contents) = 0;
@@ -472,7 +581,17 @@ bool MetalBackend::uploadLevelObjects(
         m_impl->visibleIndexBuffer = newVisibleBuffer;
         m_impl->visibleCountBuffer = newVisibleCountBuffer;
 
-        m_impl->objectCount.store(count, std::memory_order_release);
+        m_impl->groupStates = std::move(groupStates);
+        m_impl->groupIdsPerCombination = std::move(groupIdsPerCombination);
+        m_impl->combinationsPerGroupId = std::move(combinationsPerGroupId);
+        m_impl->usedGroupIds = std::move(usedGroupIds);
+        m_impl->groupToggleEnabled = std::move(groupToggleEnabled);
+        m_impl->groupAlpha = std::move(groupAlpha);
+
+        m_impl->objectCount.store(
+            static_cast<std::uint32_t>(gpuObjects.size()),
+            std::memory_order_release
+        );
         m_impl->generation.fetch_add(1, std::memory_order_acq_rel);
         m_impl->visibleObjectCount.store(0, std::memory_order_release);
         m_impl->culledObjectCount.store(0, std::memory_order_release);
@@ -482,6 +601,7 @@ bool MetalBackend::uploadLevelObjects(
         m_impl->cullingCompleted.store(false, std::memory_order_release);
         m_impl->cullingFailed.store(false, std::memory_order_release);
         m_impl->levelDataReady.store(true, std::memory_order_release);
+        m_impl->groupStateDirty.store(false, std::memory_order_release);
 
         {
             std::lock_guard<std::mutex> lock(m_impl->textMutex);
@@ -518,7 +638,9 @@ void MetalBackend::submitCullingFrame() {
         if (count == 0) {
             m_impl->visibleObjectCount.store(0, std::memory_order_release);
             m_impl->culledObjectCount.store(0, std::memory_order_release);
+            m_impl->cullingSubmitted.store(true, std::memory_order_release);
             m_impl->cullingCompleted.store(true, std::memory_order_release);
+            m_impl->completedCullingFrames.fetch_add(1, std::memory_order_relaxed);
             m_impl->frameInFlight.store(false, std::memory_order_release);
             return;
         }
@@ -532,9 +654,11 @@ void MetalBackend::submitCullingFrame() {
             return;
         }
 
-        std::memcpy(m_impl->groupStateBuffer.contents,
-                    m_impl->groupStates.data(),
-                    sizeof(MetalGroupState) * m_impl->groupStates.size());
+        if (m_impl->groupStateDirty.exchange(false, std::memory_order_acq_rel)) {
+            std::memcpy(m_impl->groupStateBuffer.contents,
+                        m_impl->groupStates.data(),
+                        sizeof(MetalGroupState) * m_impl->groupStates.size());
+        }
         std::memcpy(m_impl->cameraBuffer.contents,
                     &m_impl->cameraBounds,
                     sizeof(MetalCameraBounds));
@@ -628,13 +752,22 @@ void MetalBackend::submitCullingFrame() {
 void MetalBackend::moveGroup(
     std::int32_t groupId, float deltaX, float deltaY
 ) {
-    if (groupId < 0 || static_cast<std::size_t>(groupId) >= m_impl->groupStates.size())
+    if (groupId < 0 ||
+        static_cast<std::size_t>(groupId) >= m_impl->combinationsPerGroupId.size())
         return;
 
-    auto& state = m_impl->groupStates[static_cast<std::size_t>(groupId)];
-    state.offsetX += deltaX;
-    state.offsetY += deltaY;
-    m_impl->groupStateUpdates.fetch_add(1, std::memory_order_relaxed);
+    const auto& combinations =
+        m_impl->combinationsPerGroupId[static_cast<std::size_t>(groupId)];
+    for (const auto combinationIndex : combinations) {
+        if (combinationIndex >= m_impl->groupStates.size())
+            continue;
+        auto& state = m_impl->groupStates[combinationIndex];
+        state.offsetX += deltaX;
+        state.offsetY += deltaY;
+        m_impl->groupStateUpdates.fetch_add(1, std::memory_order_relaxed);
+    }
+    if (!combinations.empty())
+        m_impl->groupStateDirty.store(true, std::memory_order_release);
 }
 
 void MetalBackend::rotateGroup(
@@ -643,71 +776,109 @@ void MetalBackend::rotateGroup(
     bool lockObjectRotation,
     std::optional<MetalPoint> centerPoint
 ) {
-    if (groupId < 0 || static_cast<std::size_t>(groupId) >= m_impl->groupStates.size())
+    if (groupId < 0 ||
+        static_cast<std::size_t>(groupId) >= m_impl->combinationsPerGroupId.size())
         return;
 
-    auto& state = m_impl->groupStates[static_cast<std::size_t>(groupId)];
     const float radians = angleDegrees * PI_F / 180.0f;
-    const float c = std::cos(radians);
-    const float s = std::sin(radians);
+    const float cosine = std::cos(radians);
+    const float sine = std::sin(radians);
+    const auto& combinations =
+        m_impl->combinationsPerGroupId[static_cast<std::size_t>(groupId)];
 
-    auto multiplyByRotation = [c, s](
-        float& m00, float& m01, float& m10, float& m11
-    ) {
-        const float old00 = m00;
-        const float old01 = m01;
-        const float old10 = m10;
-        const float old11 = m11;
-        m00 = old00 * c - old01 * s;
-        m01 = old00 * s + old01 * c;
-        m10 = old10 * c - old11 * s;
-        m11 = old10 * s + old11 * c;
-    };
+    for (const auto combinationIndex : combinations) {
+        if (combinationIndex >= m_impl->groupStates.size())
+            continue;
 
-    if (!lockObjectRotation)
-        multiplyByRotation(state.localM00, state.localM01,
-                           state.localM10, state.localM11);
+        auto& state = m_impl->groupStates[combinationIndex];
 
-    if (centerPoint) {
-        multiplyByRotation(state.positionM00, state.positionM01,
-                           state.positionM10, state.positionM11);
-        const float x = state.offsetX - centerPoint->x;
-        const float y = state.offsetY - centerPoint->y;
-        state.offsetX = c * x + s * y + centerPoint->x;
-        state.offsetY = -s * x + c * y + centerPoint->y;
+        if (!lockObjectRotation) {
+            multiplyByRotation(
+                state.localM00, state.localM01,
+                state.localM10, state.localM11,
+                cosine, sine
+            );
+        }
+
+        if (centerPoint) {
+            multiplyByRotation(
+                state.positionM00, state.positionM01,
+                state.positionM10, state.positionM11,
+                cosine, sine
+            );
+
+            const float x = state.offsetX - centerPoint->x;
+            const float y = state.offsetY - centerPoint->y;
+            state.offsetX = cosine * x + sine * y + centerPoint->x;
+            state.offsetY = -sine * x + cosine * y + centerPoint->y;
+        }
+
+        m_impl->groupStateUpdates.fetch_add(1, std::memory_order_relaxed);
     }
-
-    m_impl->groupStateUpdates.fetch_add(1, std::memory_order_relaxed);
+    if (!combinations.empty())
+        m_impl->groupStateDirty.store(true, std::memory_order_release);
 }
 
 void MetalBackend::toggleGroup(std::int32_t groupId, bool visible) {
-    if (groupId < 0 || static_cast<std::size_t>(groupId) >= m_impl->groupStates.size())
+    if (groupId < 0 ||
+        static_cast<std::size_t>(groupId) >= m_impl->groupToggleEnabled.size())
         return;
 
-    m_impl->groupStates[static_cast<std::size_t>(groupId)].visible = visible ? 1u : 0u;
-    m_impl->groupStateUpdates.fetch_add(1, std::memory_order_relaxed);
+    const auto index = static_cast<std::size_t>(groupId);
+    const std::uint8_t value = visible ? 1u : 0u;
+    if (m_impl->groupToggleEnabled[index] == value)
+        return;
+
+    m_impl->groupToggleEnabled[index] = value;
+    if (index >= m_impl->combinationsPerGroupId.size())
+        return;
+
+    for (const auto combinationIndex : m_impl->combinationsPerGroupId[index]) {
+        m_impl->recomputeCombination(combinationIndex);
+        m_impl->groupStateUpdates.fetch_add(1, std::memory_order_relaxed);
+    }
+    if (!m_impl->combinationsPerGroupId[index].empty())
+        m_impl->groupStateDirty.store(true, std::memory_order_release);
 }
 
 void MetalBackend::setGroupAlpha(std::int32_t groupId, float alpha) {
-    if (groupId < 0 || static_cast<std::size_t>(groupId) >= m_impl->groupStates.size())
+    if (groupId < 0 ||
+        static_cast<std::size_t>(groupId) >= m_impl->groupAlpha.size())
         return;
 
-    auto& current = m_impl->groupStates[static_cast<std::size_t>(groupId)].alpha;
+    const auto index = static_cast<std::size_t>(groupId);
     const float value = std::clamp(alpha, 0.0f, 1.0f);
-    if (std::abs(current - value) > 0.0001f) {
-        current = value;
+    if (std::abs(m_impl->groupAlpha[index] - value) <= 0.0001f)
+        return;
+
+    m_impl->groupAlpha[index] = value;
+    if (index >= m_impl->combinationsPerGroupId.size())
+        return;
+
+    for (const auto combinationIndex : m_impl->combinationsPerGroupId[index]) {
+        m_impl->recomputeCombination(combinationIndex);
         m_impl->groupStateUpdates.fetch_add(1, std::memory_order_relaxed);
     }
+    if (!m_impl->combinationsPerGroupId[index].empty())
+        m_impl->groupStateDirty.store(true, std::memory_order_release);
 }
 
-std::vector<std::uint32_t> MetalBackend::getUsedGroupIds() const {
+const std::vector<std::uint32_t>& MetalBackend::getUsedGroupIds() const {
     return m_impl->usedGroupIds;
 }
 
 void MetalBackend::resetGroupStates() {
-    for (auto& state : m_impl->groupStates)
-        state = MetalGroupState{};
-    m_impl->groupStateUpdates.fetch_add(1, std::memory_order_relaxed);
+    std::fill(m_impl->groupToggleEnabled.begin(),
+              m_impl->groupToggleEnabled.end(), 1u);
+    std::fill(m_impl->groupAlpha.begin(),
+              m_impl->groupAlpha.end(), 1.0f);
+
+    for (std::uint32_t index = 0;
+         index < m_impl->groupStates.size(); ++index) {
+        m_impl->groupStates[index] = MetalGroupState{};
+        m_impl->recomputeCombination(index);
+    }
+    m_impl->groupStateDirty.store(true, std::memory_order_release);
 }
 
 MetalBackendSnapshot MetalBackend::snapshot() const {
@@ -730,6 +901,8 @@ MetalBackendSnapshot MetalBackend::snapshot() const {
     result.cullingCompleted = m_impl->cullingCompleted.load(std::memory_order_acquire);
     result.cullingFailed = m_impl->cullingFailed.load(std::memory_order_acquire);
     result.levelObjectCount = m_impl->objectCount.load(std::memory_order_acquire);
+    result.groupCombinationCount =
+        static_cast<std::uint32_t>(m_impl->groupIdsPerCombination.size());
     result.visibleObjectCount =
         m_impl->visibleObjectCount.load(std::memory_order_acquire);
     result.culledObjectCount =
