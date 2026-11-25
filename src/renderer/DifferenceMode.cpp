@@ -1,0 +1,146 @@
+#include "Geode/cocos/CCDirector.h"
+#include "Geode/cocos/platform/win32/CCGL.h"
+#include "Renderer.hpp"
+#include <Geode/binding/Standalones.hpp>
+#include <cstddef>
+
+using namespace geode::prelude;
+
+DifferenceMode::~DifferenceMode() {
+    destroyFramebuffers();
+}
+
+void DifferenceMode::drawSceneHook() {
+    auto rendererRef = Renderer::get();
+    if (!rendererRef)
+        return;
+
+    auto scene = CCDirector::get()->getRunningScene();
+    if (!scene)
+        return;
+
+    auto currentSize = CCDirector::get()->getOpenGLView()->getWindowedSize();
+
+    if (lastSize != currentSize) {
+        prepare(currentSize.width, currentSize.height);
+        lastSize = currentSize;
+    }
+
+    if (!shader) {
+        // Without the comparison shader this mode can't draw anything.
+        // Draw the scene normally instead of leaving a black screen.
+        kmGLPushMatrix();
+        scene->visit();
+        kmGLPopMatrix();
+        return;
+    }
+
+    bool prevEnabled = renderer.isEnabled();
+
+    renderer.setEnabled(false);
+    glBindFramebuffer(GL_FRAMEBUFFER, vanillaFramebuffer);
+    glClear(GL_COLOR_BUFFER_BIT);
+    kmGLPushMatrix();
+    scene->visit();
+    kmGLPopMatrix();
+
+    renderer.setEnabled(true);
+    glBindFramebuffer(GL_FRAMEBUFFER, kyaniteFramebuffer);
+    glClear(GL_COLOR_BUFFER_BIT);
+    kmGLPushMatrix();
+    scene->visit();
+    kmGLPopMatrix();
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    renderer.setEnabled(prevEnabled);
+
+    storeVAO();
+
+    shader->use();
+    shader->setTexture(shader->location("u_vanillaFrame"), 0, vanillaTexture);
+    shader->setTexture(shader->location("u_kyaniteFrame"), 1, kyaniteTexture);
+    shader->setFloat("u_intensity", intensity);
+    shader->setFloat("u_backdropIntensity", backdropIntensity);
+
+    ccGLBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    drawFullscreenQuad();
+
+    restoreVAO();
+
+    CCDirector::get()->getOpenGLView()->swapBuffers();
+}
+
+static u32 createFramebufferTexture(u32 width, u32 height) {
+    u32 texture;
+    glGenTextures(1, &texture);
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_MIRRORED_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_MIRRORED_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    return texture;
+}
+
+static u32 createColorFramebuffer(u32 colorTextureAttachment) {
+    u32 fb;
+    glGenFramebuffers(1, &fb);
+    glBindFramebuffer(GL_FRAMEBUFFER, fb);
+    glBindTexture(GL_TEXTURE_2D, colorTextureAttachment);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, colorTextureAttachment, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    return fb;
+}
+
+void DifferenceMode::prepare(u32 width, u32 height) {
+    if (width == 0 || height == 0)
+        return;
+
+    destroyFramebuffers();
+
+    vanillaTexture     = createFramebufferTexture(width, height);
+    vanillaFramebuffer = createColorFramebuffer(vanillaTexture);
+    kyaniteTexture     = createFramebufferTexture(width, height);
+    kyaniteFramebuffer = createColorFramebuffer(kyaniteTexture);
+
+    if (!shader)
+        shader = Shader::create("fullscreen.vert", "differenceMode.frag");
+}
+
+void DifferenceMode::destroyFramebuffers() {
+    if (vanillaFramebuffer) glDeleteFramebuffers(1, &vanillaFramebuffer);
+    if (kyaniteFramebuffer) glDeleteFramebuffers(1, &kyaniteFramebuffer);
+    if (vanillaTexture) glDeleteTextures(1, &vanillaTexture);
+    if (kyaniteTexture) glDeleteTextures(1, &kyaniteTexture);
+    vanillaFramebuffer = 0;
+    kyaniteFramebuffer = 0;
+    vanillaTexture = 0;
+    kyaniteTexture = 0;
+}
+
+#include <Geode/modify/CCDirector.hpp>
+class $modify(DifferenceModeCCDirector, CCDirector) {
+    void drawScene() {
+        DifferenceMode* diffMode = nullptr;
+        auto renderer = Renderer::get();
+        if (renderer)
+            diffMode = renderer->getDifferenceMode();
+
+        if (!diffMode) {
+            CCDirector::drawScene();
+            return;
+        }
+
+        calculateDeltaTime();
+        if (!m_bPaused)
+            m_pScheduler->update(m_fDeltaTime);
+        if (m_pNextScene)
+            setNextScene();
+        m_uTotalFrames++;
+
+        auto oldDT = m_fDeltaTime;
+        m_fDeltaTime = 0.0f;
+        diffMode->drawSceneHook();
+        m_fDeltaTime = oldDT;
+    }
+};

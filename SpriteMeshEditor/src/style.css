@@ -1,0 +1,58 @@
+:root {
+    font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
+    line-height: 1.5;
+    font-weight: 400;
+
+    color-scheme: light dark;
+    color: rgba(255, 255, 255, 0.87);
+    background-color: #242424;
+
+    font-synthesis: none;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+#canvas {
+    border: 1px solid white;
+}
+
+.setting {
+  display: flex;
+  justify-content: space-between;
+  /* width: 60%; */
+  width: 400px;
+  margin: 0.5rem;
+}
+
+.hbox {
+    display: flex;
+    flex-direction: row;
+    gap: 20px;
+}
+
+.scroll {
+    border: 1px solid white;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    min-width: 300px;
+}
+
+.elem {
+    padding: 2px 15px;
+    cursor: pointer;
+}
+
+.elem.selected {
+    background-color: rgb(92, 92, 255) !important;
+}
+
+.elem:hover {
+    background-color: rgba(255, 255, 255, 0.139);
+}
+
+#app {
+    display: flex;
+    flex-direction: column;
+}

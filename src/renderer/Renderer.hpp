@@ -4,24 +4,34 @@
 #include <common.hpp>
 #include "Geode/cocos/sprite_nodes/CCSpriteBatchNode.h"
 #include "ObjectBatch.hpp"
-#include "ObjectSorter.hpp"
 #include "ObjectUtils.hpp"
+#include "OverdrawView.hpp"
 #include "Shader.hpp"
-#include <unordered_map>
-
+#include "DebugText.hpp"
+#include "DifferenceMode.hpp"
+#include "FrameTiming.hpp"
 #include "GroupManager.hpp"
 #include "ObjectBatchNode.hpp"
-#include "../../resources/shaders/shared.h"
+#include <unordered_map>
 
 using namespace geode;
+
+PackedHSV packHSV(const cocos2d::ccHSVValue& hsv);
+
+struct TriggerStatistics {
+    usize moveTriggerApplyCount = 0;
+    usize rotateTriggerApplyCount = 0;
+    usize followTriggerApplyCount = 0;
+};
 
 class Renderer : public cocos2d::CCNode {
 private:
     inline Renderer()
-        : objectBatch(*this), groupManager(*this) {}
+        : objectBatch(*this), groupManager(*this), differenceMode(*this) {}
     ~Renderer() override;
 
-    bool init(PlayLayer* layer);
+    bool init(PlayLayer* layer, cocos2d::CCArray* objects);
+    bool initInternal(PlayLayer* layer, cocos2d::CCArray* objects);
 
     void generateBatchNodes();
 
@@ -31,37 +41,29 @@ private:
 
     void prepareColorChannelBuffer();
 
-    void generateStaticRenderingBuffer(ObjectSorter& sorter);
+    void generateObjectInfoBuffer(std::vector<GameObject*>& objects);
 
     void draw() override;
 
+    void finish();
+
     void updateDebugText();
 
-protected:
-    Shader* prepareDraw();
+    void bindCullingComputeShaderBuffers();
 
-    void finishDraw();
+    void fetchBlendingStates();
 
-    friend class GroupManager;
-    friend class ObjectBatchNode;
+    friend class FinishNode;
+    friend class ObjectBatch;
 
 public:
     void update(float dt) override;
 
-#ifdef GEODE_IS_IOS
-    static Ref<Renderer> forPlayLayer(PlayLayer* layer);
-
-    void suspendGPU();
-    void resumeGPU();
-    void beginGPUFrame();
-    void prepareGPUFrame();
-    void finishGPUFrame();
-    bool drawGPUBackground(cocos2d::CCSprite* sprite);
-#endif
-
-    bool isColorChannelBlending(i32 channel);
-
     cocos2d::CCSpriteBatchNode* getSpriteBatchNodeWithLayerId(LayerKey id);
+
+    inline bool isColorChannelBlending(i32 channel) {
+        return colorChannelsIsBlending[channel];
+    }
 
     inline cocos2d::CCTexture2D* getSpriteSheetTexture(SpriteSheet sheet) {
         if ((i32)sheet < 0 || (i32)sheet >= (i32)SpriteSheet::COUNT)
@@ -73,61 +75,69 @@ public:
         return layer;
     }
 
-    inline usize getObjectSRBIndex(GameObject* object) {
-        return objectSRBIndicies[object];
+    inline usize getObjectIndex(GameObject* object) {
+        auto it = objectIndicies.find(object);
+        if (it == objectIndicies.end())
+            return 0;
+        return it->second;
     }
 
     inline bool isEnabled() { return enabled; }
+
+    /*
+        Returns true if this renderer was created for the given game layer.
+        Renderers can outlive their layer for a frame, so every hook must
+        check this before touching the renderer's state.
+    */
+    inline bool isForLayer(GJBaseGameLayer* gameLayer) const {
+        return layer == gameLayer;
+    }
+
+    inline DifferenceMode* getDifferenceMode() {
+        if (!differenceModeEnabled) return nullptr;
+        return &differenceMode;
+    }
 
     inline void toggleDebugText() {
         debugTextEnabled = !debugTextEnabled;
     }
 
-    inline bool canEnableDisableIngame() const { return ingameEnableDisable; }
+    inline bool isDifferenceModeEnabled() const { return differenceModeEnabled; }
+    inline void setDifferenceModeEnabled(bool enabled) {    
+        if (!useOptimizations())
+            differenceModeEnabled = enabled;
+    }
+
+    inline bool isDebugToolsEnabled() const { return debugToolsEnabled; }
+
+    inline FrameTiming& getFrameTiming() { return frameTiming; }
 
     inline bool isPaused() {
         return layer->m_isPaused;
     }
 
-    inline bool isUseIndexCulling() const { return useIndexCulling; }
-
     inline ObjectBatch& getObjectBatch() { return objectBatch; }
 
+    inline Shader* getCullingComputeShader() const { return cullingComputeShader.get(); }
+    inline Shader* getDrawingShader() const { return shader.get(); }
+
     bool useOptimizations();
-
-    // iOS-only render handoff query for stock CCSpriteBatchNode children.
-    bool isGPUOwnedSprite(cocos2d::CCSprite* sprite) const;
-
-    // Skip expansion only while a validated atlas plan owns this exact slot.
-    bool prepareGPUOwnedSprite(cocos2d::CCSprite* sprite);
-
-    // Fast gate for the single CCSpriteBatchNode::draw hook. This only checks
-    // renderer-owned bookkeeping; it intentionally touches no atlas/GL state.
-    bool isGPUInterleavedBatch(cocos2d::CCSpriteBatchNode* batch) const;
-
-    // Validate the live atlas, update stock children, then emit ordered runs.
-    // A rejection occurs before visible output and leaves stock quads restorable.
-    bool drawGPUInterleavedBatch(cocos2d::CCSpriteBatchNode* batch);
-
-    // True when this live stock batch contains at least one decoration that
-    // Bismuth has marked as hard GPU-owned.
-    bool hasForcedDecorationInBatch(cocos2d::CCSpriteBatchNode* batch) const;
-
-    // True standalone ownership is queried at the GameObject root visit. The
-    // parentless-at-init objects that GD later inserts into sprite batch nodes do
-    // NOT use this path; they are handled by deferred atlas buffers instead.
-    bool isGPUOwnedStandaloneSprite(cocos2d::CCSprite* sprite) const;
 
     void setEnabled(bool enabled);
 
     inline GroupManager& getGroupManager() { return groupManager; }
+
+    inline const ColorChannelBlendStates& getColorChannelBlendStates() { return colorChannelsIsBlending; }
     
+    inline TriggerStatistics& getTriggerStatistics() {
+        if (!triggerStatistics) triggerStatistics = TriggerStatistics {};
+        return triggerStatistics.value();
+    }
+
     void reset();
 
-    void drawLine(const glm::vec2& p1, const glm::vec2& p2, const glm::vec4& color);
-
 public:
-    static Ref<Renderer> create(PlayLayer* layer);
+    static Ref<Renderer> create(PlayLayer* layer, cocos2d::CCArray* objects);
 
     /**
      * Returns the current renderer. If the game
@@ -140,47 +150,53 @@ private:
 
     bool enabled = false;
     bool debugTextEnabled = false;
-    bool ingameEnableDisable = false;
+    bool debugToolsEnabled = false;
+    bool disableObjectPulse = false;
 
-    bool useIndexCulling = false;
+    FrameTiming frameTiming;
 
     u64 rendererStartTime = 0;
 
-    usize spritesOnScreen = 0;
-
-    std::unordered_map<GameObject*, usize> objectSRBIndicies;
+    std::unordered_map<GameObject*, usize> objectIndicies;
 
     glm::vec2 cameraCenterPos;
 
+    std::set<cocos2d::CCSpriteBatchNode*> vanillaBatchNodes;
     std::vector<ObjectBatchNode*> batchNodes;
 
     cocos2d::CCTexture2D* spriteSheets[(i32)SpriteSheet::COUNT] = { nullptr };
 
-    Ref<cocos2d::CCLabelBMFont> debugText;
-    Ref<cocos2d::CCLabelBMFont> debugTextOutline1;
-    Ref<cocos2d::CCLabelBMFont> debugTextOutline2;
+    ColorChannelBlendStates colorChannelsIsBlending;
+
+    DebugText* debugText;
+
+    std::optional<TriggerStatistics> triggerStatistics;
+
+    GPUTimer renderingTimer { "Rendering time" };
 
     GroupManager groupManager;
 
     ObjectBatch objectBatch;
-    Shader* shader = nullptr;
-    Shader* basicShader = nullptr;
+    UPtr<Shader> shader = nullptr;
+    UPtr<Shader> basicShader = nullptr;
+    UPtr<Shader> cullingComputeShader = nullptr;
 
     ColorChannelBuffer* colorChannelBuffer;
-    Buffer* colorChannelBufferObject = nullptr;
+    UPtr<Buffer> colorChannelBufferObject = nullptr;
+    bool colorChannelBufferInitialized = false;
 
-    Buffer* srbBuffer = nullptr;
+    UPtr<Buffer> objectInfoBuffer = nullptr;
 
-    RendererUniformBuffer uniforms;
-    Buffer* uniformBuffer = nullptr;
+    GameStateBuffer gameState;
+    UPtr<Buffer> gameStateBuffer = nullptr;
+
+    bool differenceModeEnabled = false;
+    DifferenceMode differenceMode;
 
     float gameTimer = 0.0;
 
-    i64 groupStateCount;
+    // Set when the object layer starts drawing, cleared in finish().
+    u64 drawStartTime = 0;
+
     i64 renderedGameObjectCount;
-    i64 renderTime;
 };
-
-void storeGLStates();
-
-void restoreGLStates();

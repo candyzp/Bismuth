@@ -69,3 +69,4 @@ config.bat
 
 # Random stuff
 private/
+SpriteMeshEditor/node_modules

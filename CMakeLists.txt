@@ -1,19 +1,17 @@
 cmake_minimum_required(VERSION 3.21)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-
-# Bismuth is now an iOS-only renderer experiment. The desktop backend has been
-# retired so the GD-authoritative/GPU-assist architecture has one platform and
-# one set of rendering assumptions to maintain.
-if (NOT ("${CMAKE_SYSTEM_NAME}" STREQUAL "iOS" OR IOS))
-    message(FATAL_ERROR "Bismuth now targets iOS only")
+if ("${CMAKE_SYSTEM_NAME}" STREQUAL "iOS" OR IOS)
+    set(CMAKE_OSX_ARCHITECTURES "arm64")
+else()
+    set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64")
 endif()
-
-set(CMAKE_OSX_ARCHITECTURES "arm64")
 set(CMAKE_CXX_VISIBILITY_PRESET hidden)
 
-project(Bismuth VERSION 1.0.0)
+project(Kyanite VERSION 1.0.0)
 
+# I want to use `geode build` with clang but this is the only way to do it :(
+message(STATUS "Found Geode: $ENV{CMAKE_C_COMPILER}")
 if (DEFINED ENV{CMAKE_C_COMPILER})
     set(CMAKE_C_COMPILER $ENV{CMAKE_C_COMPILER})
 endif()
@@ -21,41 +19,61 @@ if (DEFINED ENV{CMAKE_CXX_COMPILER})
     set(CMAKE_CXX_COMPILER $ENV{CMAKE_CXX_COMPILER})
 endif()
 
+# Add all source files inside src (recursively)
 file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS src/*.cpp)
 
+# Set up the mod binary
 add_library(${PROJECT_NAME} SHARED ${SOURCES})
-set(CMAKE_BUILD_TYPE Release)
 
+# The default RelWithDebInfo profile inlines conservatively. The renderer is
+# split across small translation units that call each other every frame
+# (ObjectBatch -> GroupManager -> Buffer), so more aggressive inlining and
+# favouring speed over size is worth it for the per-frame CPU cost.
+if (MSVC)
+    target_compile_options(${PROJECT_NAME} PRIVATE /Ob3 /Oi /Ot /Gw /Gy /Zc:inline)
+endif()
+
+# Note: link time code generation (/GL + /LTCG) is intentionally not enabled.
+# It drops the inline assembly stubs the Geode bindings use to resolve game
+# functions, so the mod fails to link with unresolved LevelEditorLayer/
+# GJBaseGameLayer symbols.
+
+# Not sure about this...............
+set(CMAKE_BUILD_TYPE RelWithDebInfo)
+# set(CMAKE_CXX_FLAGS_RELEASE "-O3")
+
+# Libraries
 set(ENABLE_OPT 0)
 set(ENABLE_GLSLANG_BINARIES OFF)
 
 include(FetchContent)
+
 FetchContent_Declare(
-    glm
-    GIT_REPOSITORY https://github.com/g-truc/glm.git
-    GIT_TAG 0af55ccecd98d4e5a8d1fad7de25ba429d60e863
+	glm
+	GIT_REPOSITORY	https://github.com/g-truc/glm.git
+	GIT_TAG 	0af55ccecd98d4e5a8d1fad7de25ba429d60e863
 )
-FetchContent_MakeAvailable(glm)
-target_link_libraries(${PROJECT_NAME} glm::glm)
+FetchContent_Declare(glslang GIT_REPOSITORY https://github.com/KhronosGroup/glslang.git GIT_TAG vulkan-sdk-1.4.335)
+FetchContent_Declare(
+	OpenCL-Headers
+	GIT_REPOSITORY	https://github.com/KhronosGroup/OpenCL-Headers.git
+	GIT_TAG 	    v2026.05.29
+)
 
-# Some shared Bismuth headers still include Cocos' historical Win32 GL include
-# path. This shim maps that include surface directly to Apple's OpenGL ES 2 API;
-# it is not a Windows backend.
-target_include_directories(${PROJECT_NAME} BEFORE PRIVATE libs/ios-shims)
+FetchContent_MakeAvailable(glm glslang OpenCL-Headers)
 
-find_library(OPENGLES_FRAMEWORK OpenGLES)
-if (NOT OPENGLES_FRAMEWORK)
-    message(FATAL_ERROR "OpenGLES framework not found")
-endif()
-target_link_libraries(${PROJECT_NAME} ${OPENGLES_FRAMEWORK})
-
+target_link_libraries(${PROJECT_NAME} glm::glm glslang::glslang OpenCL::Headers)
 target_include_directories(${PROJECT_NAME} PRIVATE src)
+
+# Other Geode stuff
 
 if (NOT DEFINED ENV{GEODE_SDK})
     message(FATAL_ERROR "Unable to find Geode SDK! Please define GEODE_SDK environment variable to point to Geode")
 else()
-    message(STATUS "Found Geode SDK: $ENV{GEODE_SDK}")
+    message(STATUS "Found Geode: $ENV{GEODE_SDK}")
 endif()
 
 add_subdirectory($ENV{GEODE_SDK} ${CMAKE_CURRENT_BINARY_DIR}/geode)
+
+# Set up dependencies, resources, and link Geode.
 setup_geode_mod(${PROJECT_NAME})

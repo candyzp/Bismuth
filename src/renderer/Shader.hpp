@@ -11,29 +11,32 @@ struct ShaderSources {
 };
 
 class Shader {
-private:
+public:
     ~Shader();
 
-public:
-    static Shader* create(const ShaderSources& sources);
-
-    static Shader* create(
-        const fs::path& vertexPath,
-        const fs::path& fragmentPath,
+    static UPtr<Shader> create(
+        const kyanite::ResourcePath& vertexPath,
+        const kyanite::ResourcePath& fragmentPath,
         std::map<std::string, std::string> macroVariables = {}
     );
 
-    static inline void destroy(Shader* shader) {
-        delete shader;
+    static UPtr<Shader> createCompute(const kyanite::ResourcePath& path, std::map<std::string, std::string> macroVariables = {});
+
+    inline bool isInUse() const {
+        i32 boundProgram;
+        glGetIntegerv(GL_CURRENT_PROGRAM, &boundProgram);
+        return boundProgram == program;
     }
 
     inline void use() {
-        glUseProgram(program);
+        cocos2d::ccGLUseProgram(program);
     }
 
     inline u32 location(const char* name) {
         return glGetUniformLocation(program, name);
     }
+
+    u32 getBufferBinding(const char* name, bool ssbo);
 
     void setMatrix4(u32 location, const float* data);
     inline void setMatrix4(const char* name, const float* data) {
@@ -71,9 +74,6 @@ public:
     }
 
     void setTexture(u32 location, i32 id, u32 texture);
-    inline void setTexture(const char* name, i32 id, u32 texture) {
-        setTexture(location(name), id, texture);
-    }
     inline void setTexture(u32 location, i32 id, cocos2d::CCTexture2D* texture) {
         setTexture(location, id, texture->getName());
     }
@@ -88,5 +88,12 @@ public:
     }
 
 private:
+    struct BufferBinding {
+        u32 binding;
+        u32 index;
+    };
+
     u32 program = 0;
+    std::map<std::string, BufferBinding> bufferBindings;
+    u32 bufferBindingCounter = 0;
 };

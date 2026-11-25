@@ -2,6 +2,7 @@
 #include <Geode/Geode.hpp>
 #include <Geode/binding/EffectGameObject.hpp>
 #include "PlayLayer.hpp"
+#include <ObjectUtils.hpp>
 
 #include <algorithm>
 
@@ -12,7 +13,7 @@
 
 #define OBJECT_BREAKABLE_BLOCK 143
 
-using namespace cocos2d;
+using namespace geode::prelude;
 
 /*
 class changed_DynamicBitset {
@@ -26,12 +27,13 @@ public:
 #define DYNAMIC_BITSET_SET(D, B) ( (D).m_bits[B >> 5] |= ( 1 << (B & 0x1f) ) )
 
 void decomp_PlayLayer::virtual_updateVisibility(float delta) {
+    /*
     float someValue = m_gameState.m_cameraPosition2.x + m_cameraWidth;
 
     // Windows only
-#ifdef GEODE_IS_WINDOWS
-    *(float*)((char*)GetModuleHandle(NULL) + 0x6a304c) = someValue;
-#endif
+// #ifdef GEODE_IS_WINDOWS
+//     *(float*)((char*)GetModuleHandle(NULL) + 0x6a304c) = someValue;
+// #endif
 
     preUpdateVisibility(delta);
     m_effectManager->processColors();
@@ -167,9 +169,9 @@ void decomp_PlayLayer::virtual_updateVisibility(float delta) {
                 object->setRScale(customAudioScale);
             }
         }
-
-        if (object->m_glowColorIsLBG) {
-            if (!object->m_customGlowColor)
+    
+        if (object->m_customGlowColor) {
+            if (!object->m_glowColorIsLBG)
                 object->setGlowColor(m_lightBGColor);
             else
                 object->setGlowColor(colorLBG);
@@ -203,7 +205,7 @@ void decomp_PlayLayer::virtual_updateVisibility(float delta) {
             } else {
                 object->setOpacity(255);
             }
-            */
+            *
             if (
                 object->ignoreFade() || enterEffectType == -14 ||
                 (
@@ -288,11 +290,12 @@ void decomp_PlayLayer::virtual_updateVisibility(float delta) {
         CCSize winSize = CCDirector::sharedDirector()->getWinSize();
         CCPoint objectPos = object->getPosition();
 
-        float newObjectX = winSize.width / m_gameState.m_cameraZoom
-                            - (objectPos.x - m_gameState.m_cameraPosition.x) * 2.0
-                            + flip * objectPos.x;
+        float   zoom   = m_gameState.m_cameraZoom;
+        CCPoint camPos = m_gameState.m_cameraPosition;
+
+        float newObjectX = objectPos.x + (winSize.width / zoom - 2.0 * (objectPos.x - camPos.x)) * flip;
         
-        object->setPosition(CCPoint(newObjectX, objectPos.x));
+        object->setPosition(CCPoint(newObjectX, objectPos.y));
 
         float rotation = abs(object->getRotation());
 
@@ -330,33 +333,55 @@ void decomp_PlayLayer::virtual_updateVisibility(float delta) {
 
     m_resetActiveObjects = false;
     m_blendingColors.clear(); // This might be wrong, idk. But it makes sense to me.
+    
+    if (shouldDebugDraw())
+        updateDebugDraw();
+    */
 }
     
 void decomp_PlayLayer::optimized_updateVisibility(float delta) {
-    // Keep Bismuth's own visibility/culling path, but do not skip Geometry
-    // Dash's visual-effect simulation. updateEnterEffects drives the 2.2
-    // Area Move/Rotate/Scale style effects used by levels such as Dash, while
-    // processAreaVisualActions advances Area Fade/Tint. Rendering remains in
-    // Bismuth's GPU path; these calls only keep the live visual state current.
+    if (!m_effectManager || !m_player1)
+        return;
+
+    if (shouldDebugDraw())
+        preUpdateVisibility(delta);
     m_effectManager->processColors();
     m_effectManager->calculateLightBGColor(m_effectManager->activeColorForIndex(COLOR_P1));
 
-    float audioScale;
+    float audioScale = 0.5f;
     if (m_skipAudioStep)
         audioScale = FMODAudioEngine::sharedEngine()->getMeteringValue();
-    else
+    else if (m_audioEffectsLayer)
         audioScale = m_audioEffectsLayer->m_audioScale;
     
     if (m_isSilent || (m_isPracticeMode && !m_practiceMusicSync))
         audioScale = 0.5;
 
     m_player1->m_audioScale = audioScale;
-    m_player2->m_audioScale = audioScale;
+    if (m_player2)
+        m_player2->m_audioScale = audioScale;
 
-    updateEnterEffects(delta);
-    processAreaVisualActions(delta);
-    updateParticles(delta);
+    // TODO: Cull checkpoints and end portal!
 
-    m_resetActiveObjects = false;
-    m_blendingColors.clear();
+    if (m_checkpointArray) {
+        for (auto checkpoint : CCArrayExt<CheckpointObject*, false>(m_checkpointArray)) {
+            if (checkpoint && checkpoint->getObject())
+                checkpoint->getObject()->activateObject();
+        }
+    }
+
+    if (m_endPortal)
+        m_endPortal->activateObject();
+
+    if (shouldDebugDraw()) {
+        for (int index = 0; index < m_activeObjectsCount; index++) {
+            GameObject* object = m_activeObjects[index];
+            if (object && object->m_objectType != GameObjectType::Decoration) {
+                object->activateObject();
+                object->setOpacity(0);
+            }
+        }
+
+        updateDebugDraw();
+    }
 }

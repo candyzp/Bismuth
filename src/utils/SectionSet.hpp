@@ -2,7 +2,6 @@
 
 #include "VectorMap.hpp"
 #include "glm/fwd.hpp"
-#include "glm/common.hpp"
 #include <algorithm>
 #include <common.hpp>
 #include <unordered_map>
@@ -51,7 +50,7 @@ private:
     using Section = std::vector<_Object>;
 
     struct FastColumn {
-        _Object* array = nullptr;
+        _Object* array;
         VectorMap<_Object*> sections;
 
         inline ~FastColumn() { if (array) delete[] array; }
@@ -65,25 +64,9 @@ public:
         : fetchPositionFunction(func) {}
 
     inline void add(_Object& object) {
-        addAtSection(object, getSectionPosition(object));
-    }
-
-    // Register one object in every section touched by its visual bounds. The
-    // same object may appear in several sections; VisibilityManager's per-frame
-    // generation marker removes duplicate draw submission. This is intentional:
-    // a large sprite must remain discoverable even when its authored anchor is
-    // in a neighboring 100x100 section.
-    inline void addInRect(_Object& object, const Rect& rect) {
-        SectionPos minSection = getSectionPositionForPoint(rect.bottomLeft);
-        SectionPos maxSection = getSectionPositionForPoint(rect.topRight);
-
-        if (maxSection.x < minSection.x) std::swap(maxSection.x, minSection.x);
-        if (maxSection.y < minSection.y) std::swap(maxSection.y, minSection.y);
-
-        for (i32 y = minSection.y; y <= maxSection.y; ++y) {
-            for (i32 x = minSection.x; x <= maxSection.x; ++x)
-                addAtSection(object, { x, y });
-        }
+        auto sectionPos = getSectionPosition(object);
+        boundRect.include(sectionPos);
+        writeSections[sectionPos.y][sectionPos.x].push_back(object);
     }
 
     inline void generateFastStructure() {
@@ -96,21 +79,13 @@ public:
             generateFastColumn(fastMap[y], section);
     }
 
-    inline void forEachSectionInRect(const Rect& rect, std::function<void(const std::span<_Object>&)> callback) {
+    GEODE_INLINE void forEachSectionInRect(const Rect& rect, std::function<void(const std::span<_Object>&)> callback) {
         IRect srect = {
-            getSectionPositionForPoint(rect.bottomLeft),
-            getSectionPositionForPoint(rect.topRight) + glm::ivec2(1, 1)
+            glm::ivec2(rect.bottomLeft / _SectionSize),
+            glm::ivec2(rect.topRight   / _SectionSize) + glm::ivec2(1, 1)
         };
 
-        // IRect uses half-open [min, max) ranges, while boundRect is built from
-        // discrete occupied section coordinates. Expand the stored max by one
-        // so the highest occupied row/column is not accidentally treated as
-        // outside the set. Sparse transform groups can otherwise lose whole
-        // chunks of decoration at their section boundary.
-        IRect occupiedBounds = boundRect;
-        occupiedBounds.max += glm::ivec2(1, 1);
-
-        if (!srect.intersects(occupiedBounds))
+        if (!srect.intersects(boundRect))
             return;
 
         IRange rangeY = fastMap.getRange().intersection(srect.rangeY());
@@ -133,19 +108,10 @@ public:
     }
 
     inline SectionPos getSectionPosition(const _Object& object) const {
-        return getSectionPositionForPoint(fetchPositionFunction(object));
+        return fetchPositionFunction(object) / _SectionSize;
     }
     
 private:
-    inline SectionPos getSectionPositionForPoint(const glm::vec2& point) const {
-        return glm::ivec2(glm::floor(point / _SectionSize));
-    }
-
-    inline void addAtSection(_Object& object, const SectionPos& sectionPos) {
-        boundRect.include(sectionPos);
-        writeSections[sectionPos.y][sectionPos.x].push_back(object);
-    }
-
     inline void generateFastColumn(FastColumn& fastColumn, const std::unordered_map<i32, Section>& column) {
         usize columnObjectCount = 0;
 

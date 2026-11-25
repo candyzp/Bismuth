@@ -1,12 +1,7 @@
 #pragma once
 
-#include "Geode/cocos/platform/win32/CCGL.h"
 #include <common.hpp>
-#include <vector>
-
-#ifndef GEODE_IS_IOS
-#define GL_SHADER_STORAGE_BUFFER 0x90D2
-#endif
+#include "Shader.hpp"
 
 class Buffer {
 public:
@@ -16,103 +11,91 @@ public:
     inline u32 getId() const { return id; }
 
     void read(void* data, usize size, usize offset = 0);
+
     void write(void* data, usize size, usize offset = 0);
+
+    template <typename T>
+    void write(std::span<T> span) {
+        write(span.data(), span.size_bytes());
+    }
+
+    template <typename T>
+    void write(const std::vector<T>& vector) {
+        write(std::span<T>(vector));
+    }
 
     inline void bindAs(GLenum binding) {
         glBindBuffer(binding, id);
     }
 
     inline void bindAsUniformBuffer(u32 binding) {
-#ifdef GEODE_IS_IOS
-        (void)binding;
-#else
         glBindBufferBase(GL_UNIFORM_BUFFER, binding, id);
-#endif
     }
 
     inline void bindAsStorageBuffer(u32 binding) {
-#ifdef GEODE_IS_IOS
-        (void)binding;
-#else
+        // geode::log::info("SHADER STORAGE BUFFER, {}, {}", binding, byteSizeToString(size));
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, binding, id);
-#endif
     }
 
+    inline void bindAsStorageBuffer(u32 binding, u32 offset, u32 size) {
+        glBindBufferRange(GL_SHADER_STORAGE_BUFFER, binding, id, offset, size);
+    }
+
+    void* map(i32 type);
+
     inline void* mapWriteOnly() {
-#ifdef GEODE_IS_IOS
-        if (shadowData.empty())
-            shadowData.resize(size);
-        mapped = true;
-        return shadowData.data();
-#else
-        bindAs(GL_ARRAY_BUFFER);
-        return glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
-#endif
+        return map(GL_WRITE_ONLY);
     }
 
     inline void* mapReadWrite() {
-#ifdef GEODE_IS_IOS
-        // iOS ES2 has no portable glGetBufferSubData equivalent. Buffers that
-        // need CPU read/write mapping must opt into a shadow at creation time.
-        if (shadowData.empty())
-            shadowData.resize(size);
-        mapped = true;
-        return shadowData.data();
-#else
-        bindAs(GL_ARRAY_BUFFER);
-        return glMapBuffer(GL_ARRAY_BUFFER, GL_READ_WRITE);
-#endif
+        return map(GL_READ_WRITE);
     }
 
-    inline void unmap() {
-#ifdef GEODE_IS_IOS
-        if (mapped) {
-            uploadShadow();
-            mapped = false;
-        }
-#else
-        bindAs(GL_ARRAY_BUFFER);
-        glUnmapBuffer(GL_ARRAY_BUFFER);
-#endif
-    }
+    void unmap();
+
+    void flush(usize offset, usize size);
 
 public:
-    static Buffer* create(const char* name, usize size, GLenum usage, bool keepShadow = false);
+    static UPtr<Buffer> create(const char* name, usize size, GLenum usage);
 
-    inline static void destroy(Buffer* buffer) {
-        delete buffer;
-    }
-
-    inline static Buffer* createStaticDraw(const char* name, void* data, usize size) {
-        auto ret = create(name, size, GL_STATIC_DRAW, false);
-        if (!ret)
-            return nullptr;
-        ret->write(data, size);
+    /*
+        Buffer to be written to once by the CPU
+        and used by the GPU
+    */
+    inline static UPtr<Buffer> createStaticDraw(const char* name, void* data, usize size) {
+        auto ret = create(name, size, GL_STATIC_DRAW);
+        if (ret && data)
+            ret->write(data, size);
         return ret;
     }
 
-    inline static Buffer* createDynamicDraw(const char* name, usize size) {
-        return create(name, size, GL_DYNAMIC_DRAW, false);
+    /*
+        Buffer to be written to many times repeatedly by the CPU
+        and used by the GPU
+    */
+    inline static UPtr<Buffer> createDynamicDraw(const char* name, usize size) {
+        return create(name, size, GL_DYNAMIC_DRAW);
     }
 
-    inline static Buffer* createDynamicCopy(const char* name, usize size) {
-#ifdef GEODE_IS_IOS
-        return create(name, size, GL_DYNAMIC_DRAW, true);
-#else
-        return create(name, size, GL_DYNAMIC_COPY, false);
-#endif
+    /*
+        Buffer to be written to many times repeatedly by the GPU
+        and used by the CPU
+    */
+    inline static UPtr<Buffer> createDynamicCopy(const char* name, usize size) {
+        return create(name, size, GL_DYNAMIC_COPY);
     }
 
-#ifdef GEODE_IS_IOS
-    void uploadShadow();
-#endif
+    /*
+        Buffer to be written to and read from by the GPU exclusively
+    */
+    static UPtr<Buffer> createGPUExclusive(const char* name, usize size) {
+        return create(name, size, GL_DYNAMIC_DRAW); // GL_DYNAMIC_DRAW for now
+    }
 
 private:
+    const char* name;
     usize size = 0;
     u32 id = 0;
-
-#ifdef GEODE_IS_IOS
-    std::vector<u8> shadowData;
-    bool mapped = false;
-#endif
+    bool shouldMap = true;
+    u8* mappedData = nullptr;
 };

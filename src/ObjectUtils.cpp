@@ -1,22 +1,64 @@
 #include "ObjectUtils.hpp"
 #include "Geode/cocos/cocoa/CCAffineTransform.h"
 
-#include <unordered_set>
 #include <vector>
 
 using namespace geode::prelude;
 
-namespace {
-struct CollectedSprite {
-    cocos2d::CCSprite* sprite = nullptr;
-    GameObject* parentObject = nullptr;
-    SpriteType type = SpriteType::BASE;
-    cocos2d::CCAffineTransform transform = cocos2d::CCAffineTransformMakeIdentity();
-};
-} // namespace
+const char* zLayerAsString(ZLayer zLayer) {
+    switch (zLayer) {
+    case ZLayer::B5:      return "b5";
+    case ZLayer::B4:      return "b4";
+    case ZLayer::B3:      return "b3";
+    case ZLayer::B2:      return "b2";
+    case ZLayer::B1:      return "b1";
+    default:
+    case ZLayer::T1:      return "t1";
+    case ZLayer::T2:      return "t2";
+    case ZLayer::T3:      return "t3";
+    case ZLayer::T4:      return "t4";
+
+    case getSuperLayer(ZLayer::B5): return "super-b5";
+    case getSuperLayer(ZLayer::B4): return "super-b4";
+    case getSuperLayer(ZLayer::B3): return "super-b3";
+    case getSuperLayer(ZLayer::B2): return "super-b2";
+    case getSuperLayer(ZLayer::B1): return "super-b1";
+    case getSuperLayer(ZLayer::T1): return "super-t1";
+    case getSuperLayer(ZLayer::T2): return "super-t2";
+    case getSuperLayer(ZLayer::T3): return "super-t3";
+    case getSuperLayer(ZLayer::T4): return "super-t4";
+    }
+}
+
+const char* spriteSheetAsString(SpriteSheet spriteSheet) {
+    switch (spriteSheet) {
+    case SpriteSheet::GLOW:     return "glow";
+    case SpriteSheet::PARTICLE: return "particle";
+    case SpriteSheet::PIXEL:    return "pixel";
+    case SpriteSheet::GAME_2:   return "game2";
+    case SpriteSheet::FIRE:     return "fire";
+    case SpriteSheet::TEXT:     return "text";
+    case SpriteSheet::SPECIAL:  return "special";
+    default:
+    case SpriteSheet::_UNK:     return "unk"; 
+    case SpriteSheet::GAME_1:   return "game";
+    }
+}
+
+const char* spriteTypeAsString(SpriteType type) {
+    switch (type) {
+    case SpriteType::BASE:        return "BASE";
+    case SpriteType::DETAIL:      return "DETAIL";
+    case SpriteType::BLACK:       return "BLACK";
+    case SpriteType::GLOW:        return "GLOW";
+    case SpriteType::BLACK_CHILD: return "BLACK_CHILD";
+    default:
+        return "<unknown>";
+    }
+}
 
 u8 LayerKey::asNumber() const {
-    u8 zlayerKey = 0;
+    u8 zlayerKey = (u8)zlayer;
     switch (zlayer) {
     case ZLayer::B5:      zlayerKey = 0; break;
     case ZLayer::B4:      zlayerKey = 1; break;
@@ -33,43 +75,58 @@ u8 LayerKey::asNumber() const {
 
     u8 spriteSheetKey = 0;
     switch (spriteSheet) {
+    case SpriteSheet::GLOW:     spriteSheetKey = 0; break;
+    case SpriteSheet::PARTICLE: spriteSheetKey = 1; break;
+    case SpriteSheet::PIXEL:    spriteSheetKey = 2; break;
+    case SpriteSheet::GAME_2:   spriteSheetKey = 3; break;
+    case SpriteSheet::FIRE:     spriteSheetKey = 4; break;
+    case SpriteSheet::TEXT:     spriteSheetKey = 5; break;
+    case SpriteSheet::SPECIAL:  spriteSheetKey = 6; break;
     default:
-    case SpriteSheet::GAME_1:   spriteSheetKey = 0; break;
-    case SpriteSheet::GAME_2:   spriteSheetKey = 1; break;
-    case SpriteSheet::TEXT:     spriteSheetKey = 2; break;
-    case SpriteSheet::FIRE:     spriteSheetKey = 3; break;
-    case SpriteSheet::SPECIAL:  spriteSheetKey = 4; break;
-    case SpriteSheet::GLOW:     spriteSheetKey = 5; break;
-    case SpriteSheet::PIXEL:    spriteSheetKey = 6; break;
-    case SpriteSheet::PARTICLE: spriteSheetKey = 7; break;
+    case SpriteSheet::_UNK:
+    case SpriteSheet::GAME_1:   spriteSheetKey = 7; break;
     }
-
-    return zlayerKey | (spriteSheetKey << 4) | (blending ? LAYER_KEY_BLENDING : 0);
+    
+    return (zlayerKey << 4) | (spriteSheetKey << 1) | (blending ? 1 : 0);
 }
 
-bool ObjectUtils::unpackObjectIntoSprites(
-    GameObject* object,
-    ReceiveUnpackedSpriteFunc func,
-    SpriteUnpackStats* stats
-) {
-    if (!object || !func)
-        return false;
+LayerKey LayerKey::fromNumber(u8 num) {
+    u8 zlayerKey = num >> 4;
+    u8 spriteSheetKey = (num >> 1) & 0x7;
+    bool blending = num & 1;
 
-    // Collection is transactional. The public callback is only invoked after
-    // the complete visual tree has been proven to consist entirely of sprites.
-    // If one unsupported child exists anywhere, the whole object stays stock.
-    std::vector<CollectedSprite> collected;
-    collected.reserve(8);
+    ZLayer zlayer;
+    switch (zlayerKey) {
+    case 0: zlayer = ZLayer::B5; break;
+    case 1: zlayer = ZLayer::B4; break;
+    case 2: zlayer = ZLayer::B3; break;
+    case 3: zlayer = ZLayer::B2; break;
+    case 4: zlayer = ZLayer::B1; break;
+    default:
+    case 5: zlayer = ZLayer::Default; break;
+    case 6: zlayer = ZLayer::T1; break;
+    case 7: zlayer = ZLayer::T2; break;
+    case 8: zlayer = ZLayer::T3; break;
+    case 9: zlayer = ZLayer::T4; break;
+    }
 
-    auto collect = [&](const UnpackedSprite& unpacked) {
-        collected.push_back({
-            unpacked.sprite,
-            unpacked.parentObject,
-            unpacked.type,
-            unpacked.transform
-        });
-    };
+    SpriteSheet spriteSheet;
+    switch (spriteSheetKey) {
+    case 0: spriteSheet = SpriteSheet::GLOW; break;
+    case 1: spriteSheet = SpriteSheet::PARTICLE; break;
+    case 2: spriteSheet = SpriteSheet::PIXEL; break;
+    case 3: spriteSheet = SpriteSheet::GAME_2; break;
+    case 4: spriteSheet = SpriteSheet::FIRE; break;
+    case 5: spriteSheet = SpriteSheet::TEXT; break;
+    case 6: spriteSheet = SpriteSheet::SPECIAL; break;
+    default:
+    case 7: spriteSheet = SpriteSheet::GAME_1; break;
+    }
 
+    return { zlayer, spriteSheet, blending };
+}
+
+void ObjectUtils::unpackObjectIntoSprites(GameObject* object, ReceiveUnpackedSpriteFunc func) {
     CCSprite* colorSprite = object->m_colorSprite;
 
     bool shouldUnpackColorSprite = colorSprite && colorSprite->getParent() != object;
@@ -77,97 +134,68 @@ bool ObjectUtils::unpackObjectIntoSprites(
 
     auto transform = CCAffineTransformMakeIdentity();
 
-    if (object->m_glowSprite &&
-        !unpackSpriteRecursively(object, object->m_glowSprite, transform, collect, stats)) {
-        return false;
-    }
+    if (object->m_glowSprite)
+        unpackSpriteRecursively(object, object->m_glowSprite, transform, func);
 
-    if (shouldUnpackColorSprite && !isColorSpriteInFront &&
-        !unpackSpriteRecursively(object, colorSprite, transform, collect, stats)) {
-        return false;
-    }
+    if (shouldUnpackColorSprite && !isColorSpriteInFront)
+        unpackSpriteRecursively(object, colorSprite, transform, func);
 
-    if (!unpackSpriteRecursively(object, object, transform, collect, stats))
-        return false;
+    unpackSpriteRecursively(object, object, transform, func);
 
-    if (shouldUnpackColorSprite && isColorSpriteInFront &&
-        !unpackSpriteRecursively(object, colorSprite, transform, collect, stats)) {
-        return false;
-    }
-
-    // A visual sprite must map to one record for one object. Duplicate discovery
-    // can otherwise create two GPU records for the same Cocos node and makes
-    // all-or-nothing standalone suppression impossible to prove.
-    std::unordered_set<cocos2d::CCSprite*> uniqueSprites;
-    uniqueSprites.reserve(collected.size());
-    for (const auto& unpacked : collected) {
-        if (!unpacked.sprite || !uniqueSprites.insert(unpacked.sprite).second) {
-            if (stats)
-                ++stats->duplicateSprites;
-            return false;
-        }
-    }
-
-    for (const auto& unpacked : collected) {
-        func({
-            unpacked.sprite,
-            unpacked.parentObject,
-            unpacked.type,
-            unpacked.transform
-        });
-    }
-
-    return true;
+    if (shouldUnpackColorSprite && isColorSpriteInFront)
+        unpackSpriteRecursively(object, colorSprite, transform, func);
 }
 
-bool ObjectUtils::unpackSpriteRecursively(
+void ObjectUtils::unpackSpriteRecursively(
     GameObject* object,
     cocos2d::CCSprite* sprite,
     cocos2d::CCAffineTransform transform,
     ReceiveUnpackedSpriteFunc func,
-    SpriteUnpackStats* stats,
     SpriteType type
 ) {
-    if (!object || !sprite || !func)
-        return false;
+    float savedRotX = object->getRotationX();
+    float savedRotY = object->getRotationY();
+    object->setRotationX(object->m_startRotationX);
+    object->setRotationY(object->m_startRotationY);
 
     transform = CCAffineTransformConcat(sprite->nodeToParentTransform(), transform);
+    
+    object->setRotationX(savedRotX);
+    object->setRotationY(savedRotY);
+
+    bool isSpriteBlack = false;
 
     if (sprite == object->m_colorSprite) type = SpriteType::DETAIL;
     if (sprite == object->m_glowSprite)  type = SpriteType::GLOW;
 
-    // CCNode::getChildren() is heterogeneous. Never reinterpret every child as
-    // CCSprite: decoration-heavy objects can contain other CCNode subclasses.
+    auto parentType = type;
+
+    if (sprite == object) {
+        if (object->m_isObjectBlack)
+            parentType = SpriteType::BLACK;
+    } else if (type == SpriteType::BASE && object->m_isColorSpriteBlack && sprite->getTag() != 997)
+        parentType = SpriteType::BLACK_CHILD;
+
+    // Object children are normally sprites, but other node types can be
+    // attached to them. Skip anything that isn't a sprite instead of
+    // blindly casting it.
     std::vector<cocos2d::CCSprite*> spriteChildren;
-    if (auto children = sprite->getChildren()) {
-        spriteChildren.reserve(children->count());
-        for (auto childNode : CCArrayExt<cocos2d::CCNode*>(children)) {
-            auto childSprite = typeinfo_cast<cocos2d::CCSprite*>(childNode);
-            if (!childSprite) {
-                if (stats)
-                    ++stats->nonSpriteChildren;
-                return false;
-            }
-            spriteChildren.push_back(childSprite);
-        }
+
+    for (auto child : CCArrayExt<cocos2d::CCNode*, false>(sprite->getChildren())) {
+        if (auto spriteChild = typeinfo_cast<cocos2d::CCSprite*>(child))
+            spriteChildren.push_back(spriteChild);
     }
 
     for (auto child : spriteChildren) {
-        if (child->getZOrder() < 0 &&
-            !unpackSpriteRecursively(object, child, transform, func, stats, type)) {
-            return false;
-        }
+        if (child->getZOrder() < 0)
+            unpackSpriteRecursively(object, child, transform, func, type);
     }
-
+    
     if (!sprite->getDontDraw())
-        func({sprite, object, type, transform});
+        func({sprite, object, parentType, transform});
 
     for (auto child : spriteChildren) {
-        if (child->getZOrder() >= 0 &&
-            !unpackSpriteRecursively(object, child, transform, func, stats, type)) {
-            return false;
-        }
+        if (child->getZOrder() >= 0)
+            unpackSpriteRecursively(object, child, transform, func, type);
     }
-
-    return true;
 }

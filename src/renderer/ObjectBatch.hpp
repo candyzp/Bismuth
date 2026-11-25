@@ -3,64 +3,16 @@
 #include <Geode/binding/GameObject.hpp>
 #include <common.hpp>
 #include <Geode/Geode.hpp>
-#include <array>
-#include <cmath>
 #include <vector>
 
 #include "Buffer.hpp"
-#include "VisibilityManager.hpp"
 #include "glm/fwd.hpp"
 #include "math/ConvexList.hpp"
 #include "ObjectUtils.hpp"
+#include "WorkGroupScheduler.hpp"
+#include "../utils/GPUTimer.hpp"
 
 using namespace geode;
-
-/*
-    These are the vertex attributes of the object batch.
-    iOS/ES2 has no integer vertex attributes, so the lookup indices are stored
-    as floats there. They are exact for the ranges Geometry Dash uses.
-*/
-#ifdef GEODE_IS_IOS
-#define OBJECT_VERTEX_ATTRIBUTES(ATTRIB) \
-    ATTRIB(0, vec2,  positionOffset) \
-    ATTRIB(1, vec2,  texCoord) \
-    ATTRIB(2, float, srbIndex) \
-    ATTRIB(3, float, colorChannel) \
-
-#else
-#define OBJECT_VERTEX_ATTRIBUTES(ATTRIB) \
-    ATTRIB(0, vec2, positionOffset) \
-    ATTRIB(1, vec2, texCoord) \
-    ATTRIB(2, u32,  srbIndex) \
-    ATTRIB(3, u16, colorChannel) \
-
-#endif
-
-#define VERTEX_ATTRIBUTE_AS_STRUCT_MEMBER(ID, TYPE, NAME) \
-    TYPE NAME;
-
-#define VERTICIES_PER_QUAD 4
-#define INDICIES_PER_QUAD 6
-
-struct ObjectVertex {
-    OBJECT_VERTEX_ATTRIBUTES(VERTEX_ATTRIBUTE_AS_STRUCT_MEMBER);
-};
-
-struct ObjectQuad {
-    union {
-        ObjectVertex verticies[VERTICIES_PER_QUAD];
-        struct {
-            ObjectVertex bl;
-            ObjectVertex br;
-            ObjectVertex tl;
-            ObjectVertex tr;
-        };
-    };
-};
-
-struct ObjectIndicies {
-    u32 indicies[INDICIES_PER_QUAD];
-};
 
 class Renderer;
 
@@ -75,17 +27,8 @@ struct SpriteVertexTransforms {
 
 class ObjectBatch {
 public:
-    struct LayerDrawCall {
-        LayerKey id;
-        VisibilityManager::Layer layer;
-        u32 startIndex;
-        u32 indexCount;
-    };
-
-public:
     inline ObjectBatch(Renderer& renderer)
         : renderer(renderer) {}
-    ~ObjectBatch();
 
     SpriteVertexTransforms getSpriteVertexTransform(
         cocos2d::CCSprite* sprite,
@@ -93,7 +36,12 @@ public:
         SpriteSheet spriteSheet
     );
 
-    void prepareSpriteMeshWrite(
+    /*
+        Returns false if this sprite cannot be rendered by the batch (for
+        example, when its sprite sheet is not loaded). Callers must not write
+        any vertices in that case.
+    */
+    bool prepareSpriteMeshWrite(
         GameObject* parentObject,
         cocos2d::CCSprite* sprite,
         SpriteType type,
@@ -101,7 +49,7 @@ public:
     );
 
     void writeSpriteVertex(glm::vec2 pos);
-    void writeSpriteIndex(u32 index);
+    // void writeSpriteIndex(u32 index);
 
     void writeSpriteMeshFromConvexList(const ConvexList& list);
 
@@ -112,112 +60,93 @@ public:
         const cocos2d::CCAffineTransform& transform
     );
 
+    void addSpriteWithCustomVanillaMesh(cocos2d::CCSprite* sprite);
+
     void writeGameObject(GameObject* object);
 
     void finishWriting();
 
-    inline void bind() {
-        if (!vertexBuffer || !indexBuffer || vao == 0)
-            return;
-        glBindVertexArray(vao);
-        indexBuffer->bindAs(GL_ELEMENT_ARRAY_BUFFER);
+    void draw(const LayerKey& layer);
+
+    inline bool shouldDraw(const LayerKey& layer) const {
+        if (!sortedBatch) return false;
+        auto it = sortedBatch->workGroupRangePerLayerKey.find(layer);
+        return it != sortedBatch->workGroupRangePerLayerKey.end() &&
+               it->second.count > 0;
     }
 
-    inline usize getVertexBufferSize() const {
-        return vertexCount * sizeof(ObjectVertex);
-    }
+    inline usize getVertexBufferSize() { return vertexCount * sizeof(ObjectVertex); }
+    inline void setSpriteSheetFilter(SpriteSheet sheet) { spriteSheetFilter = sheet; }
+    inline const std::set<LayerKey>& getUsedLayerIds() { return usedLayerKeys; }
+    inline usize getSpriteCount() { return workGroupScheduler.getSpriteCount(); }
 
-    inline usize getIndexCount() const {
-        return indexCount;
-    }
+    void predraw();
 
-    inline bool isReady() const {
-        return vertexBuffer != nullptr && indexBuffer != nullptr && vao != 0;
-    }
-
-    inline void setSpriteSheetFilter(SpriteSheet sheet) {
-        spriteSheetFilter = sheet;
-    }
-
-    inline std::vector<LayerKey> getUsedLayerIds() {
-        return visibilityManager.getUsedLayerIds();
-    }
-
-    inline void trackRuntimeVisualObject(GameObject* object) {
-        if (!object)
-            return;
-
-        // Do not let stale stock Cocos opacity turn an otherwise static object
-        // into a permanently live-culling object. Bismuth intentionally skips
-        // GD's normal visibility loop, so displayed opacity is not authoritative
-        // for ordinary baked geometry. Only the dedicated 2.2 transform deltas
-        // qualify an object for the live-position culling path.
-        const bool hasRuntimeTransform =
-            std::abs(object->m_positionXOffset) > 0.001f ||
-            std::abs(object->m_positionYOffset) > 0.001f ||
-            std::abs(object->m_unk2A8) > 0.001f ||
-            std::abs(object->m_unk2B0) > 0.001f ||
-            std::abs(object->m_unk2BC) > 0.0001f ||
-            std::abs(object->m_unk2C0) > 0.0001f;
-
-        if (hasRuntimeTransform)
-            visibilityManager.trackRuntimeVisualObject(object);
-    }
-
-    void predraw(const CameraView& view);
-
-    LayerDrawCall* getDrawCall(const LayerKey& id);
-
-    void draw(LayerDrawCall* drawCall);
-
-    // Public only so the translation-unit live-state helper can inspect one
-    // record without duplicating the refresh logic. It remains an internal
-    // renderer implementation detail and is not part of the mod API.
-    struct LiveSpriteRecord {
-        GameObject* object = nullptr;
-        cocos2d::CCSprite* sprite = nullptr;
-        SpriteType type = SpriteType::BASE;
-        u32 vertexBegin = 0;
-        cocos2d::CCAffineTransform bakedTransform {};
-        cocos2d::CCAffineTransform bakedObjectTransform {};
-        // True when this sprite was actually inside the GameObject's child tree
-        // at bake time. If animation later detaches/replaces it, the old GPU quad
-        // must be hidden instead of continuing to draw as a stale ghost part.
-        bool bakedInObjectTree = false;
-        std::array<ObjectVertex, VERTICIES_PER_QUAD> vertices {};
-    };
-
-private:
-    void prepareVAO();
-    bool shouldTrackLiveSpriteObject(GameObject* object) const;
-    cocos2d::CCAffineTransform getLiveSpriteTransform(const LiveSpriteRecord& record) const;
-    void refreshLiveSpriteData();
+    void prepareCullingComputeShader();
 
 private:
     Renderer& renderer;
-    VisibilityManager visibilityManager;
+
     SpriteSheet spriteSheetFilter = (SpriteSheet)-1;
 
-    Buffer* vertexBuffer = nullptr;
-    Buffer* indexBuffer  = nullptr;
+    // Static buffers
+    UPtr<Buffer> vertexBuffer = nullptr;
+    UPtr<Buffer> indexBuffer = nullptr;
+    UPtr<Buffer> inputSpriteBuffer = nullptr;
 
-    u32 vao = 0;
+    /*
+        Start position and group combination per sprite. They don't depend on
+        the blend states, so every sorted batch shares this one buffer instead
+        of uploading its own copy.
+    */
+    UPtr<PreCulledSprite::Buffer> preCulledSpritesBuffer = nullptr;
+
+    // GPU buffers
+    UPtr<RawSprite::Buffer> rawSpriteBuffer = nullptr;
+    UPtr<Buffer> culledIndexBuffer = nullptr;
+
+    GPUTimer cullingComputeShaderTimer { "Culling compute shader time" };
+
+    /*
+        A blend state combination that only lasts for a frame or two is not
+        worth sorting the whole level for, and looking it up on every frame is
+        wasted work while nothing changes.
+    */
+    static constexpr u32 REGENERATE_AFTER_STABLE_FRAMES = 3;
+
+    WorkGroupScheduler workGroupScheduler;
+    SortedObjectBatch* sortedBatch = nullptr;
+
+    /*
+        The drawing program and the storage buffer bindings are global GL
+        state, so they only have to be set up once per batch instead of on
+        every layer draw.
+    */
+    bool drawStateIsBound = false;
+    const SortedObjectBatch* drawStateBoundBatch = nullptr;
+
+    ColorChannelBlendStates requestedBlendStates {};
+    ColorChannelBlendStates lastSeenBlendStates {};
+    u32 stableBlendStateFrames = 0;
+    bool haveBatchForRequestedStates = false;
+    bool blendStatesSeen = false;
+
+    usize spriteCount = 0;
 
     std::vector<ObjectVertex> verticies;
     u32 vertexCount = 0;
 
-    std::vector<u32> indicies;
-    u32 indexCount  = 0;
+    // std::vector<u32> indicies;
+    // u32 indexCount = 0;
 
-    std::vector<u32> culledIndicies;
-    u32 culledIndexCount = 0;
+    std::vector<InputSprite> inputSprites;
+    // std::vector<PreCulledSprite> preCulledSprites;
 
-    std::vector<LayerDrawCall> layerDrawCalls;
-    std::vector<LiveSpriteRecord> liveSprites;
+    std::set<LayerKey> usedLayerKeys;
 
     SpriteVertexTransforms currentSpriteVertexTransforms;
     glm::vec2 currentSpriteObjectStartPosition;
     u32 currentSpriteVertexIndex;
-    u32 currentSpriteSRBIndex;
-    u16 currentSpriteColorChannel;
+    u32 currentSpriteObjectIndex;
+    u32 currentSpriteIndex;
 };

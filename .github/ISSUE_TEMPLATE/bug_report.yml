@@ -1,0 +1,50 @@
+name: Bug report
+description: Something renders wrong, crashes, or is slower than vanilla
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Kyanite can only be fixed from logs and level names,
+        so please fill in as much as you can.
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU and driver version
+      placeholder: NVIDIA RTX 3070, driver 566.36
+    validations:
+      required: true
+  - type: input
+    id: level
+    attributes:
+      label: Level
+      description: Level name and ID, or "editor test level"
+      placeholder: Peaceful (ID 1111111)
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happens
+      description: What you see, and what you expected instead
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Geode log
+      description: |
+        Attach `geode/logs/geode.log` (or the latest file in `geode/logs`) from the
+        session where it happened. The `Frame timing:` line matters if the problem
+        is performance.
+      render: text
+    validations:
+      required: false
+  - type: checkboxes
+    id: settings
+    attributes:
+      label: Settings
+      options:
+        - label: Debug tools is off
+        - label: Persistently mapped buffers is off
+        - label: The old iliashdz.bismuth.geode is not installed

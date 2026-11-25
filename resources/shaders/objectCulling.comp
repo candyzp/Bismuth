@@ -1,0 +1,339 @@
+#extension GL_ARB_shading_language_include:require
+
+#include "shared.h"
+
+/*
+    One work group processes one contiguous range of sprites (a work group
+    from the work group buffer). Every invocation handles one sprite of that
+    range at a time and the group writes the culled triangle indices with a
+    shared memory prefix sum.
+
+    This used to be a single invocation per work group (local_size_x = 1)
+    looping over ~5000 sprites on its own, so only a few dozen GPU lanes did
+    all of the culling. That made this pass the most expensive part of a
+    frame. Spreading each range over 64 invocations keeps the written index
+    order identical while using the whole GPU.
+*/
+#define CULLING_GROUP_SIZE 64
+
+layout (local_size_x = CULLING_GROUP_SIZE, local_size_y = 1, local_size_z = 1) in;
+
+/*
+    This buffer contains indicies into the input sprite buffer
+    that are ordered by how they should be drawn on screen.
+    This buffer can change depending on the blending states.
+*/
+STORAGE_BUFFER(SPRITE_REMAP_BUFFER_BINDING) SpriteRemapBuffer {
+    uint u_spriteRemapIndicies[];
+};
+
+//// DRAW COMMANDS BUFFER ////
+
+STORAGE_BUFFER(DRAW_COMMAND_BUFFER_BINDING) DrawCommandBuffer {
+    DrawCommand u_drawCommands[];
+};
+
+//// SHARED MEMORY ////
+
+// Number of indices every invocation wants to write for the current chunk.
+// Holds the inclusive prefix sum after the scan.
+shared uint s_indexCounts[CULLING_GROUP_SIZE];
+
+//// GLOBALS ////
+uint objectFlags;
+uint objectIndex;
+uint spriteType;
+vec2 objectPosition;
+vec2 vertexOffset;
+
+// Set by processSprite() when a sprite is visible
+uint spriteIndexStart;
+uint spriteIndexCount;
+
+//// HELPER FUNCTION PREDECLARATIONS ////
+bool processSprite(uint preCulledSpriteIndex);
+bool isObjectOnScreen();
+float calculateAudioScale();
+vec4 calculateInvisibleBlockColorAndOpacity(vec4 color);
+
+//// PROCESS SPRITE FUNCTION ////
+bool processSprite(uint preCulledSpriteIndex) {
+    uint spriteIndex = u_spriteRemapIndicies[preCulledSpriteIndex];
+
+    // The pre culled data belongs to the sprite, not to the draw order, so one
+    // copy is shared by every sorted batch.
+    vec2 startPosition         = PreCulledSprite_startPosition[spriteIndex];
+    uint groupCombinationIndex = PreCulledSprite_groupCombinationIndex[spriteIndex];
+
+    //// APPLY GROUP COMBINATION STATE ////
+    GroupCombinationState state = u_groupCombinationStates[groupCombinationIndex];
+
+    objectPosition = state.positionalTransform * startPosition + state.offset;
+
+    if (!isObjectOnScreen())
+        return false;
+
+    InputSprite sprite = u_inputSprites[spriteIndex];
+    objectIndex = sprite.objectIndex;
+    
+    ObjectInfo object = u_objects[sprite.objectIndex];
+
+    objectFlags = object.flags;
+
+    //// APPLY LOCAL TRANSFORM ////
+    mat2 objectLocalTransform = mat2(1.0);
+
+    if ((objectFlags & OBJECT_FLAG_IS_STATIC_OBJECT) == 0)
+        objectLocalTransform = state.localTransform;
+
+    if (object.rotationSpeed != 0.0) // TODO: Just supply rotation speed in radians instead
+        objectLocalTransform = rotationMatrix(-object.rotationSpeed * u_timer / 180 * PI) * objectLocalTransform;
+
+    if ((objectFlags & OBJECT_FLAG_USES_AUDIO_SCALE) != 0)
+        objectLocalTransform = scaleMatrix(vec2(calculateAudioScale())) * objectLocalTransform;
+
+    if (u_levelFlipProgress != 0.0 && u_levelFlipProgress != 1.0) {
+        objectPosition.x += ((u_winSizeWidth / u_gameStateCameraZoom) - ((objectPosition.x - u_gameStateCameraPositionX) + (objectPosition.x - u_gameStateCameraPositionX))) * u_levelFlipProgress;
+
+        // FIXME: Make sure its same condition as 'pastSecondHalf' in https://github.com/StarryDawn72/open-source-gd-project/blob/main/versions/2.2091/PlayLayer/screenFlipObject.cpp
+        if (u_levelFlipProgress >= 0.5)
+            objectLocalTransform = scaleMatrix(vec2(-1, 1)) * objectLocalTransform;
+
+        // objectLocalTransform = scaleMatrix(vec2((1 - u_levelFlipProgress) * 2 - 1, 1)) * objectLocalTransform;
+    }
+
+    //// CALCULATE OBJECT COLOR ////
+    uint colorChannel;
+
+    spriteType = sprite.spriteType;
+
+    switch (spriteType) {
+    case SPRITE_TYPE_GLOW:
+    case SPRITE_TYPE_BLACK:
+    case SPRITE_TYPE_BLACK_CHILD:
+    case SPRITE_TYPE_BASE:   colorChannel = object.baseColorChannelId; break;
+    case SPRITE_TYPE_DETAIL: colorChannel = object.detailColorChannelId; break;
+    }
+
+    vec4 color;
+    if (colorChannel == COLOR_CHANNEL_LIGHTER) {
+        color = getColorChannelColor(object.baseColorChannelId);
+
+        HSVStruct hsv;
+        hsv.hue = 0.0;
+        hsv.sat = 0.65;
+        hsv.val = 0.15;
+        hsv.satAdd = false;
+        hsv.valAdd = true;
+
+        color = applyHSVStruct(hsv, color);
+    } else
+        color = getColorChannelColor(colorChannel);
+
+    if (state.pulseIndex != 0)
+        color = vec4(applyPulseEntries(color.rgb, state.pulseIndex, spriteType != SPRITE_TYPE_DETAIL), color.a);
+
+    vec4 opacityValues = unpackUnorm4x8(object.opacityValues);
+
+    float opacity           = opacityValues.x;
+    float blackChildOpacity = opacityValues.y;
+    float glowOpacity       = opacityValues.z;
+
+    if (spriteType == SPRITE_TYPE_GLOW) {
+        if ((objectFlags & OBJECT_FLAG_HAS_STATIC_GLOW_COLOR) != 0)
+            color = vec4(unpackUnorm4x8(object.staticGlowColor).rgb, color.a);
+        else if ((objectFlags & OBJECT_FLAG_SPECIAL_GLOW_COLOR) != 0)
+            color = vec4(u_specialLightBGColor, color.a);
+
+        color.a *= glowOpacity;
+    }
+
+    if (spriteType == SPRITE_TYPE_BASE && (objectFlags & OBJECT_FLAG_HAS_BASE_HSV) != 0) {
+        color = applyHSV(object.baseHSV, color);
+    } else if (spriteType == SPRITE_TYPE_DETAIL && (objectFlags & OBJECT_FLAG_HAS_DETAIL_HSV) != 0) {
+        color = applyHSV(object.detailHSV, color);
+    }
+    
+    if ((objectFlags & OBJECT_FLAG_IS_INVISIBLE_BLOCK) != 0)
+        color = calculateInvisibleBlockColorAndOpacity(color);
+
+    if (spriteType == SPRITE_TYPE_BLACK || spriteType == SPRITE_TYPE_BLACK_CHILD)
+        color.rgb = vec3(0, 0, 0);
+
+    color.a *= state.opacity * opacity;
+    color.rgb *= color.a;
+
+    if (spriteType == SPRITE_TYPE_BLACK_CHILD)
+        color.a *= blackChildOpacity;
+
+    if (color.a <= 0.0)
+        return false;
+
+    //// SAVE DATA INTO RAW SPRITE BUFFER ////
+    RawSprite_position[spriteIndex] = objectPosition;
+    RawSprite_localTransform[spriteIndex] = objectLocalTransform;
+    RawSprite_color[spriteIndex] = color;
+
+    spriteIndexStart = sprite.indexStart;
+    spriteIndexCount = sprite.indexCount;
+
+    return true;
+}
+
+//// MAIN FUNCTION ////
+void main() {
+    uint workGroupIndex = gl_WorkGroupID.x;
+    uint lane = gl_LocalInvocationID.x;
+
+    WorkGroup workGroup = u_workGroups[workGroupIndex];
+
+    uint outputIndex = workGroup.culledIndexBufferOutputIndex;
+
+    for (uint spriteBase = workGroup.inputSpriteStart; spriteBase < workGroup.inputSpriteEnd; spriteBase += CULLING_GROUP_SIZE) {
+        uint preCulledSpriteIndex = spriteBase + lane;
+
+        bool visible = false;
+        uint indexCount = 0;
+
+        if (preCulledSpriteIndex < workGroup.inputSpriteEnd) {
+            visible = processSprite(preCulledSpriteIndex);
+
+            if (visible)
+                indexCount = spriteIndexCount;
+        }
+
+        //// PREFIX SUM OF THE INDICES WRITTEN BY THIS CHUNK ////
+        s_indexCounts[lane] = indexCount;
+        barrier();
+
+        for (uint scanStep = 1u; scanStep < CULLING_GROUP_SIZE; scanStep *= 2u) {
+            uint value = lane >= scanStep ? s_indexCounts[lane - scanStep] : 0u;
+            barrier();
+            s_indexCounts[lane] += value;
+            barrier();
+        }
+
+        uint exclusiveIndexCount = s_indexCounts[lane] - indexCount;
+        uint chunkIndexCount     = s_indexCounts[CULLING_GROUP_SIZE - 1];
+
+        //// WRITE THE SPRITE INDICIES ////
+        if (visible) {
+            uint writeIndex = outputIndex + exclusiveIndexCount;
+
+            for (uint i = 0u; i < indexCount; i++)
+                u_culledTriIndicies[writeIndex + i] = spriteIndexStart + i;
+        }
+
+        outputIndex += chunkIndexCount;
+
+        // Make sure every invocation is done with the shared counts before
+        // the next chunk overwrites them.
+        barrier();
+    }
+
+    //// WRITE THE DRAW COMMAND ////
+    if (lane == 0u)
+        u_drawCommands[workGroupIndex].count = (outputIndex - workGroup.culledIndexBufferOutputIndex) * 3;
+}
+
+//// HELPER FUNCTIONS ////
+bool isObjectOnScreen() {
+    vec2 offset = objectPosition - u_cameraPosition;
+    // return dot(offset, offset) < 400;
+
+    vec2 screenPos = vec2(dot(u_cameraRight, offset), dot(u_cameraUp, offset));
+
+    const float threshold = 100.0;
+
+    return screenPos.x >= -threshold &&
+           screenPos.x <= u_cameraSize.x + threshold &&
+           screenPos.y >= -threshold &&
+           screenPos.y <= u_cameraSize.y + threshold;
+}
+
+float calculateAudioScale() {
+    float scale;
+    if ((objectFlags & OBJECT_FLAG_CUSTOM_AUDIO_SCALE) != 0) {
+        float minScale = u_objects[objectIndex].audioScaleMin;
+        float maxScale = u_objects[objectIndex].audioScaleMax;
+        scale = (u_audioScale - 0.1) * (maxScale - minScale) + minScale;
+    } else
+        scale = u_audioScale;
+
+    if ((objectFlags & OBJECT_FLAG_IS_ORB) != 0)
+        scale = min(scale + 0.3, 1.2);
+    return scale;
+}
+
+float getRelativeMod(float xPos, float left, float right, float offset) {
+    float result = u_cameraViewSize.x * 0.5;
+
+    if (xPos > result + u_cameraPosition.x)
+        result = (result - (xPos - offset - u_cameraPosition.x - result)) * right;
+    else
+        result = (result - (result + u_cameraPosition.x - xPos - offset)) * left;
+
+    return clamp(result, 0.0, 1.0);
+}
+
+vec2 calculateInvisibleBlockOpacity() {
+    float centerLeftX  = u_winSize.x * 0.5 - 75.0;
+    float centerRightX = centerLeftX + 110.0;
+    float someScreenLeft = u_screenRight - centerRightX - 90.0;
+
+    float fadePosX = objectPosition.x;
+    if (fadePosX <= u_cameraUnzoomedX)
+        fadePosX += u_objects[objectIndex].fadeMargin;
+    else
+        fadePosX -= u_objects[objectIndex].fadeMargin;
+    
+    float relMod = getRelativeMod(fadePosX, 0.02, 0.014285714, 0.0);
+
+    // INVISIBLE BLOCK OPACITY IS INACCURATE AND I CAN'T SEEM TO FIGURE IT OUT, I'M GOING CRAZY
+
+    float someWidth1;
+    if (fadePosX <= centerRightX + u_cameraPosition.x)
+        someWidth1 = (centerLeftX + u_cameraPosition.x - fadePosX) / max(centerLeftX - 30.0, 1.0);
+    else
+        someWidth1 = (fadePosX - u_cameraPosition.x - centerRightX) / max(someScreenLeft, 1.0);
+
+    someWidth1 = clamp(someWidth1, 0.0, 1.0);
+
+    return vec2(
+        min(someWidth1 * 0.95 + 0.05, relMod),
+        min(someWidth1 * 0.85 + 0.15, relMod)
+    );
+}
+
+vec4 calculateInvisibleBlockColorAndOpacity(vec4 color) {
+    if ((u_gameStateFlags & GAME_STATE_IS_PLAYER_DEAD) != 0) {
+        if (spriteType == SPRITE_TYPE_GLOW)
+            return vec4(u_specialLightBGColor, color.a);
+        return color;
+    }
+
+    vec2 opacity = calculateInvisibleBlockOpacity();
+
+    if (spriteType != SPRITE_TYPE_GLOW) {
+        color.a *= opacity.x;
+    } else {
+        // Might have to do some of these calculations on the cpu instead
+        vec3 colorBG  = getColorChannelColor(COLOR_CHANNEL_BG).rgb;
+        vec3 colorLBG = getColorChannelColor(COLOR_CHANNEL_LBG).rgb;
+
+        vec3 colorB;
+        if ((colorBG.r + colorBG.g + colorBG.b) >= (150.0 / 255.0))
+            colorB = vec3(1, 1, 1);
+        else
+            colorB = colorLBG;
+
+        vec3 glowColor;
+        if (opacity.x <= 0.8)
+            glowColor = u_specialLightBGColor;
+        else
+            glowColor = mix(colorB, u_specialLightBGColor, (1.0 - (opacity.x - 0.8) / 0.2) * 0.3 + 0.7);
+        color = vec4(glowColor, color.a * opacity.y);
+    }
+
+    return color;
+}

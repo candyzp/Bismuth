@@ -7,5 +7,5 @@ class SpriteMeshDictionary {
 public:
     static ConvexList* getSpriteMeshForSprite(cocos2d::CCSprite* sprite);
 
-    static void loadFromFile(const fs::path& path);
+    static void loadFromFile(const kyanite::ResourcePath& path);
 };

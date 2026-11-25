@@ -1,96 +1,134 @@
 #include "Geode/cocos/CCDirector.h"
 #include "Renderer.hpp"
-#include <decomp/PlayLayer.hpp>
-#include <BProfiler.hpp>
+#include <algorithm>
 
-#ifdef GEODE_IS_IOS
-#include "ios/ResolvedStateLayer.hpp"
-#include "ios/GPUTruth.hpp"
-#include "ios/AtlasInterleave.hpp"
-#endif
+#include <decomp/PlayLayer.hpp>
+#include <decomp/GJBaseGameLayer.hpp>
+#include "../cl.hpp"
+#include "OverdrawView.hpp"
+#include "../HotKey.hpp"
 
 using namespace geode::prelude;
 
-static bool newPlayLayer = false;
-
 #include <Geode/modify/PlayLayer.hpp>
-class $modify(RendererPlayLayer, PlayLayer) {
-    void setupHasCompleted() {
-        newPlayLayer = true;
-        PlayLayer::setupHasCompleted();
-        newPlayLayer = false;
-    }
+class $modify(MyPlayLayer, PlayLayer) {
+    void ensureRenderer() {
+        auto existing = Renderer::get();
+        if (existing && existing->isForLayer(this))
+            return;
 
-    void resetLevel() {
-#ifdef GEODE_IS_IOS
-        // A replacement PlayLayer can finish setup before the outgoing layer's
-        // destructor runs. Its renderer must not block this level's creation.
-        if (newPlayLayer) {
-            if (auto existing = Renderer::forPlayLayer(this))
-                existing->resumeGPU();
-            else if (auto previous = Renderer::get())
-                previous->suspendGPU();
-        }
-#endif
-        if (newPlayLayer && Renderer::get() == nullptr) {
-            PlayLayer::resetLevel();
-
-            auto batchLayer = this->m_objectLayer;
-            if (!batchLayer) {
-                log::error("failed to attach renderer: batch layer not found");
-                return;
-            }
-
-            auto renderer = Renderer::create(this);
-            if (renderer) {
-                batchLayer->addChild(renderer, -100000);
-                renderer->reset();
-#ifdef GEODE_IS_IOS
-                if (auto resolved = ResolvedStateLayer::getCurrent())
-                    resolved->reseedActiveFromStock();
-#endif
-            }
+        if (!m_objectLayer || !m_objects) {
+            log::error("failed to attach renderer: batch layer not found");
             return;
         }
 
-        PlayLayer::resetLevel();
-
-#ifdef GEODE_IS_IOS
-        // Menu restart may reuse this layer without another enter-transition
-        // callback. The active singleton is null while its renderer is suspended.
-        auto renderer = Renderer::forPlayLayer(this);
+        // Always retry when there is no renderer for this layer. If creation
+        // failed once (for example while the level was still loading) the mod
+        // would otherwise stay off and the level would run at vanilla speed.
+        auto renderer = Renderer::create(this, m_objects);
         if (renderer)
-            renderer->resumeGPU();
+            m_objectLayer->addChild(renderer, -100000);
+    }
+
+    void setupHasCompleted() {
+        PlayLayer::setupHasCompleted();
+        ensureRenderer();
+    }
+
+    void setupOverdrawView() {
+        if (!m_objectLayer)
+            return;
+
+        auto view = OverdrawView::create();
+        if (!view)
+            return;
+
+        m_objectLayer->addChild(view->getPreDrawNode(), -10000);
+        m_objectLayer->addChild(view, 10000);
+        addChild(view->getText(), 10000);
+    }
+
+#if GEODE_COMP_GD_VERSION >= 22091
+    bool init(GJGameLevel* level, bool dontCreateObjects) {
+        bool ret = PlayLayer::init(level, dontCreateObjects);
 #else
+    // 2.2081 passes whether a replay is being played before this flag.
+    bool init(GJGameLevel* level, bool useReplay, bool dontCreateObjects) {
+        bool ret = PlayLayer::init(level, useReplay, dontCreateObjects);
+#endif
+        if (ret)
+            setupOverdrawView();
+
+        return ret;
+    }
+
+    // This gets called from inside PlayLayer::setupHasCompleted()
+    void resetLevel() {
+        ensureRenderer();
+
         auto renderer = Renderer::get();
-#endif
-        if (renderer) {
+        if (renderer && renderer->isForLayer(this))
             renderer->reset();
-#ifdef GEODE_IS_IOS
-            if (auto resolved = ResolvedStateLayer::getCurrent())
-                resolved->reseedActiveFromStock();
-#endif
-        }
+
+        PlayLayer::resetLevel();
     }
 
     void updateVisibility(float dt) {
-#ifdef GEODE_IS_IOS
-        PlayLayer::updateVisibility(dt);
-#else
         auto renderer = Renderer::get();
-        if (renderer && renderer->useOptimizations()) {
+        if (renderer && renderer->isForLayer(this) && renderer->useOptimizations()) {
             ((decomp_PlayLayer*)this)->optimized_updateVisibility(dt);
             return;
         }
+
         PlayLayer::updateVisibility(dt);
-#endif
+    }
+
+    CheckpointObject* createCheckpoint() {
+        CheckpointObject* ret = PlayLayer::createCheckpoint();
+
+        auto renderer = Renderer::get();
+        if (renderer && renderer->isForLayer(this))
+            renderer->getGroupManager().storeCheckpoint(ret);
+        
+        return ret;
+    }
+
+    void loadFromCheckpoint(CheckpointObject* object) {
+        PlayLayer::loadFromCheckpoint(object);
+
+        auto renderer = Renderer::get();
+        if (renderer && renderer->isForLayer(this))
+            renderer->getGroupManager().restoreCheckpoint(object);
+    }
+
+    void checkForEnd() {
+        auto renderer = Renderer::get();
+        if (renderer && renderer->isForLayer(this) && renderer->useOptimizations() && m_endPortal)
+            m_endPortal->updateEndPos(false);
+
+        PlayLayer::checkForEnd();
+    }
+};
+
+#include <Geode/modify/CheckpointObject.hpp>
+class $modify(MyCheckpointObject, CheckpointObject) {
+    struct Fields {
+        CheckpointObject* checkpoint;
+        ~Fields() {
+            auto renderer = Renderer::get();
+            if (renderer)
+                renderer->getGroupManager().removeCheckpoint(checkpoint);
+        }
+    };
+
+    bool init() {
+        if (!CheckpointObject::init()) return false;
+        m_fields.self()->checkpoint = this;
+        return true;
     }
 };
 
 static void removeDecoObjects(CCArray* array) {
-    if (!array)
-        return;
-
     for (u32 i = 0; i < array->count();) {
         auto object = (GameObject*)array->objectAtIndex(i);
         if (object->m_objectType == GameObjectType::Decoration)
@@ -103,28 +141,18 @@ static void removeDecoObjects(CCArray* array) {
 #include <Geode/modify/GJBaseGameLayer.hpp>
 class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
     void update(float dt) {
-        auto timer = BProfiler::start("GJBaseGameLayer::update");
         GJBaseGameLayer::update(dt);
-        timer.end();
 
         auto renderer = Renderer::get();
-#ifdef GEODE_IS_IOS
-        if (renderer && static_cast<GJBaseGameLayer*>(renderer->getPlayLayer()) !=
-            static_cast<GJBaseGameLayer*>(this))
+        if (!renderer || !renderer->isForLayer(this))
             return;
-#endif
-        if (renderer) {
-            renderer->update(dt);
-        }
+
+        renderer->update(dt);
     }
 
     void processMoveActions() {
-#ifdef GEODE_IS_IOS
-        GJBaseGameLayer::processMoveActions();
-        return;
-#else
         auto renderer = Renderer::get();
-        if (renderer == nullptr) {
+        if (renderer == nullptr || !renderer->isForLayer(this)) {
             GJBaseGameLayer::processMoveActions();
             return;
         }
@@ -135,26 +163,47 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
                 continue;
 
             int groupId = node->getTag();
+
             renderer->getGroupManager().moveGroup(groupId, node->m_unk038, node->m_unk040);
 
-            CCArray* objects = getStaticGroup(groupId);
-            if (objects)
-                moveObjects(objects, node->m_unk038, node->m_unk040, 0);
+            if (renderer->useOptimizations()) {
+                auto objects = renderer->getGroupManager().getVanillaRotateGroup(groupId);
 
-            objects = getOptimizedGroup(groupId);
-            if (objects)
-                moveObjects(objects, node->m_unk090, node->m_unk098, 0);
+                float moveX = node->m_unk038;
+                float moveY = node->m_unk040;
+
+                for (auto object : objects) {
+                    if (!object->m_isDecoration2 && object->m_unk4C4 != m_gameState.m_commandIndex) {
+                        object->m_unk4C4 = m_gameState.m_commandIndex;
+
+                        object->m_lastPosition.x = object->m_positionX;
+                        object->m_lastPosition.y = object->m_positionY;
+                        object->dirtifyObjectRect();
+                    }
+
+                    if (moveX != 0.0 && !object->m_tempOffsetXRelated)
+                        object->m_positionX += moveX;
+                    if (moveY != 0.0)
+                        object->m_positionY += moveY;
+                        
+                    object->dirtifyObjectPos();
+                    updateObjectSection(object);
+                }
+            } else {
+                CCArray* objects = getStaticGroup(groupId);
+                if (objects)
+                    moveObjects(objects, node->m_unk038, node->m_unk040, 0);
+
+                objects = getOptimizedGroup(groupId);
+                if (objects)
+                    moveObjects(objects, node->m_unk090, node->m_unk098, 0);
+            }
         }
-#endif
     }
 
-    void processRotationActions() {
-#ifdef GEODE_IS_IOS
-        GJBaseGameLayer::processRotationActions();
-        return;
-#else
+    void siphon_processRotationActions() {
         auto renderer = Renderer::get();
-        if (renderer == nullptr) {
+        if (renderer == nullptr || !renderer->isForLayer(this)) {
             GJBaseGameLayer::processRotationActions();
             return;
         }
@@ -167,12 +216,11 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
             i32 targetId = cmdObj->m_targetGroupID;
             i32 centerId = cmdObj->m_centerGroupID;
 
-            auto mainObject = tryGetMainObject(centerId);
+            auto centerObject = tryGetMainObject(centerId);
             auto staticGroup = getStaticGroup(targetId);
-            const bool hasStaticGroup = staticGroup && staticGroup->count() != 0;
 
             float rotation;
-            if (hasStaticGroup)
+            if (staticGroup && staticGroup->count() != 0)
                 rotation = cmdObj->m_someInterpValue1RelatedOne - cmdObj->m_someInterpValue1RelatedZero;
             else
                 rotation = cmdObj->m_someInterpValue2RelatedOne - cmdObj->m_someInterpValue2RelatedZero;
@@ -180,42 +228,51 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
             if (rotation == 0.0 && !cmdObj->m_finishRelated)
                 continue;
 
-            if (eman->m_unkMap770.find({ targetId, centerId }) != eman->m_unkMap770.end()) {
-                for (auto obj : eman->m_unkMap770[{ targetId, centerId }]) {
-                    if (obj->m_someInterpValue1RelatedFalse)
-                        continue;
-                    if (hasStaticGroup)
-                        rotation += obj->m_someInterpValue1RelatedOne - obj->m_someInterpValue1RelatedZero;
-                    else
-                        rotation += obj->m_someInterpValue2RelatedOne - obj->m_someInterpValue2RelatedZero;
-                }
-            }
-
-            if (mainObject == nullptr)
+            if (centerObject == nullptr)
                 renderer->getGroupManager().rotateGroup(targetId, rotation, cmdObj->m_lockObjectRotation);
             else {
-                auto pos = mainObject->getUnmodifiedPosition();
+                auto pos = centerObject->getUnmodifiedPosition();
                 renderer->getGroupManager().rotateGroup(targetId, rotation, cmdObj->m_lockObjectRotation, ccPointToGLM(pos));
+
+                auto it = m_effectManager->m_unkMap618.find(targetId);
+                CCPoint extraMove = {0, 0};
+
+                if (it != m_effectManager->m_unkMap618.end()) {
+                    if (staticGroup && staticGroup->count() != 0)
+                        extraMove = ccp(it->second->m_unk090, it->second->m_unk098);
+                    else
+                        extraMove = ccp(it->second->m_unk038, it->second->m_unk040);
+                }
+
+                if (extraMove != ccp(0, 0))
+                    renderer->getGroupManager().moveGroup(targetId, extraMove.x, extraMove.y);
             }
         }
 
-        GJBaseGameLayer::processRotationActions();
-#endif
+        ((decomp_GJBaseGameLayer*)this)->processRotationActions();
     }
 
-    void processFollowActions() {
-#ifdef GEODE_IS_IOS
-        GJBaseGameLayer::processFollowActions();
-        return;
-#else
+    void processRotationActions() {
         auto renderer = Renderer::get();
-        if (renderer == nullptr) {
+        if (renderer == nullptr || !renderer->isForLayer(this)) {
+            GJBaseGameLayer::processRotationActions();
+            return;
+        }
+
+        if (renderer->useOptimizations())
+            ((decomp_GJBaseGameLayer*)this)->optimized_processRotationActions();
+        else
+            siphon_processRotationActions();
+    }
+
+    void siphon_processFollowActions() {
+        auto renderer = Renderer::get();
+        if (!renderer || !renderer->isForLayer(this)) {
             GJBaseGameLayer::processFollowActions();
             return;
         }
 
-        auto eman = m_effectManager;
-        for (auto node : eman->m_unkVector6d8) {
+        for (auto node : m_effectManager->m_unkVector6d8) {
             i32 targetGroupId = node->getTag();
             i32 followGroupId = node->m_unk074;
 
@@ -225,143 +282,54 @@ class $modify(RendererGJBaseGameLayer, GJBaseGameLayer) {
 
             double moveX = 0.0, moveY = 0.0;
             if (mainObject->m_unk4C4 == m_gameState.m_commandIndex) {
-                moveX = (mainObject->m_positionX - mainObject->m_lastPosition.x) * node->m_unk080;
-                moveY = (mainObject->m_positionY - mainObject->m_lastPosition.y) * node->m_unk088;
+                moveX = (mainObject->m_positionX - mainObject->m_lastPosition.x) * node->m_unk080; // followXMod
+                moveY = (mainObject->m_positionY - mainObject->m_lastPosition.y) * node->m_unk088; // followYMod
             }
 
             renderer->getGroupManager().moveGroup(targetGroupId, moveX, moveY);
         }
 
         GJBaseGameLayer::processFollowActions();
-#endif
+    }
+
+    void processFollowActions() {
+        auto renderer = Renderer::get();
+        if (!renderer || !renderer->isForLayer(this)) {
+            GJBaseGameLayer::processFollowActions();
+            return;
+        }
+
+        if (renderer->useOptimizations())
+            ((decomp_GJBaseGameLayer*)this)->optimized_processFollowActions();
+        else
+            siphon_processFollowActions();
     }
 
     void toggleGroup(int id, bool activate) {
         GJBaseGameLayer::toggleGroup(id, activate);
-#ifndef GEODE_IS_IOS
+
         auto renderer = Renderer::get();
-        if (renderer)
+        if (renderer && renderer->isForLayer(this))
             renderer->getGroupManager().toggleGroup(id, activate);
-#endif
     }
 
     void optimizeMoveGroups() {
         GJBaseGameLayer::optimizeMoveGroups();
 
-#ifdef GEODE_IS_IOS
-        return;
-#else
         auto renderer = Renderer::get();
-        if (!renderer || !renderer->useOptimizations())
+        if (!renderer || !renderer->isForLayer(this) || !renderer->useOptimizations())
             return;
 
-        for (auto array : m_optimizedGroups)
-            removeDecoObjects(array);
-        for (auto array : m_staticGroups)
-            removeDecoObjects(array);
-#endif
-    }
-};
-
-#ifdef GEODE_IS_IOS
-#include <Geode/modify/GameObject.hpp>
-class $modify(RendererTrackedGameObject, GameObject) {
-    void activateObject() {
-        GameObject::activateObject();
-
-        if (Renderer::get()) {
-            if (auto resolved = ResolvedStateLayer::getCurrent())
-                resolved->onObjectActivated(this);
+        for (auto array : m_optimizedGroups) {
+            if (array)
+                removeDecoObjects(array);
         }
-    }
-
-    void deactivateObject(bool value) {
-        GameObject::deactivateObject(value);
-
-        if (Renderer::get()) {
-            if (auto resolved = ResolvedStateLayer::getCurrent())
-                resolved->onObjectDeactivated(this);
+        for (auto array : m_staticGroups) {
+            if (array)
+                removeDecoObjects(array);
         }
     }
 };
-
-#include <Geode/modify/CCSprite.hpp>
-class $modify(RendererOwnedCCSprite, cocos2d::CCSprite) {
-    void updateTransform() {
-        auto renderer = Renderer::get();
-        if (!renderer || !renderer->prepareGPUOwnedSprite(this)) {
-            cocos2d::CCSprite::updateTransform();
-            return;
-        }
-
-        if (auto children = this->getChildren(); children && children->count()) {
-            // Stock children still need their parent's affine/visibility state,
-            // even though this owned quad is expanded by the GPU. Visit children
-            // so each keeps its own stock/GPU ownership and update order.
-            this->m_transformToBatch = this->nodeToParentTransform();
-            this->m_bShouldBeHidden = !this->isVisible();
-            if (auto parent = typeinfo_cast<cocos2d::CCSprite*>(this->getParent());
-                parent && this->getParent() != this->getBatchNode()) {
-                this->m_transformToBatch = cocos2d::CCAffineTransformConcat(
-                    this->m_transformToBatch, parent->m_transformToBatch);
-                this->m_bShouldBeHidden |= parent->m_bShouldBeHidden;
-            }
-            cocos2d::CCNode::updateTransform();
-        }
-        this->setDirty(true);
-    }
-};
-
-#include <Geode/modify/CCSpriteBatchNode.hpp>
-
-class $modify(RendererInterleavedSpriteBatchNode, cocos2d::CCSpriteBatchNode) {
-    void draw() {
-        auto renderer = Renderer::get();
-        if (!renderer || !renderer->isEnabled()) {
-            cocos2d::CCSpriteBatchNode::draw();
-            return;
-        }
-
-        if (!renderer->isGPUInterleavedBatch(this)) {
-            cocos2d::CCSpriteBatchNode::draw();
-            return;
-        }
-
-        // Delay resolved-state work until the atlas scheduler proves that this
-        // batch will actually submit GPU geometry. CPU-only hybrid frames should
-        // not pay the GPU preparation tax.
-        CC_NODE_DRAW_SETUP();
-        const auto blend = this->getBlendFunc();
-        ccGLBlendFunc(blend.src, blend.dst);
-
-        // drawGPUInterleavedBatch performs one complete live-atlas validation.
-        // Retrying the exact same batch inside one draw call can repeat expensive
-        // atlas synchronization and leaves less room for a clean next-frame
-        // recovery if GD mutates the batch during traversal.
-        const bool submitted = renderer->drawGPUInterleavedBatch(this);
-
-        if (submitted) {
-            // This is the truth signal: the live-atlas path actually completed a
-            // GPU submission for this batch. Merely owning a sprite is not enough.
-            GPUTruth::recordObjectBatch(renderer.data(), this);
-            return;
-        }
-
-        if (AtlasInterleaveRegistry::lastFailureCanUseStock()) {
-            // Hybrid CPU lane. drawGPUInterleavedBatch only allows this when it
-            // rejected the custom pass before submitting any stock/GPU prefix,
-            // so one normal Cocos draw cannot double-render anything.
-            cocos2d::CCSpriteBatchNode::draw();
-            return;
-        }
-
-        // Only late submission errors remain unrecoverable in-frame. Do not
-        // redraw the whole atlas after a partial custom pass.
-        GPUTruth::recordObjectFailure(renderer.data());
-        return;
-    }
-};
-#endif
 
 #include <Geode/modify/CCDisplayLinkDirector.hpp>
 class $modify(RendererCCDisplayLinkDirector, CCDisplayLinkDirector) {
@@ -372,10 +340,141 @@ class $modify(RendererCCDisplayLinkDirector, CCDisplayLinkDirector) {
             return;
         }
 
-        auto timer = BProfiler::start("Frame time");
         CCDisplayLinkDirector::mainLoop();
-        timer.end();
-
-        BProfiler::frameEnd();
     }
 };
+
+class OnMenuLoad;
+
+OnMenuLoad* menuLoad = nullptr;
+static bool hasAlreadyDoneMenuLoad = false;
+
+class OnMenuLoad : public CCNode {
+public:
+    void showLoadAlerts() {
+        if (!isOpenGLAtLeastVersion(4, 3)) {
+            std::string version = (const char*)glGetString(GL_VERSION);
+            std::transform(version.begin(), version.end(), version.begin(), [](char ch) { return std::tolower(ch); });
+
+            if (version.find("reviangle") != std::string::npos) {
+                FLAlertLayer::create(
+                    "Kyanite error!",
+                    "You are using ReviANGLE which does not supply the required OpenGL version 4.3\n"
+                    "Disable ReviANGLE and try again.",
+                    "Ok"
+                )->show();
+                return;
+            }
+
+            FLAlertLayer::create(
+                "Kyanite error!",
+                "Your GPU does not support the required OpenGL 4.3!\n"
+                "Make sure your GPU drivers are updated.",
+                "Ok"
+            )->show();
+            return;
+        }
+
+        if (getGPUCoreCount() == -1) {
+            FLAlertLayer::create(
+                "No core count!",
+                "Kyanite could not find the core count of your GPU!\n"
+                "This is likely due to your GPU being AMD which is a hassle to get the core count of.\n"
+                "Make sure you search up your *GPU* core count, go to Kyanite settings, and set it there.\n",
+                "Ok"
+            )->show();
+        }
+
+        if (isIntelGPU()) {
+            FLAlertLayer::create(
+                "Kyanite warning!",
+                "Kyanite is unstable and likely very slow on Intel integrated GPUs!\n",
+                "Ok"
+            )->show();
+        }
+    }
+
+    void onLoad() {
+        showLoadAlerts();
+        
+        this->release();
+        menuLoad = nullptr;
+    }
+};
+
+#include <Geode/modify/LoadingLayer.hpp>
+class $modify(MyLoadingLayer, LoadingLayer) {
+    void loadAssets() {
+        LoadingLayer::loadAssets();
+        if (m_loadStep == 14 && !m_fromRefresh && !hasAlreadyDoneMenuLoad) {
+            hasAlreadyDoneMenuLoad = true;
+            menuLoad = new OnMenuLoad;
+            menuLoad->retain();
+            CCDirector::get()->getActionManager()->addAction(
+                CCSequence::create(
+                    CCDelayTime::create(0.1f),
+                    CCCallFunc::create(menuLoad, callfunc_selector(OnMenuLoad::onLoad)),
+                    NULL
+                ),
+                menuLoad,
+                false
+            );
+        }
+    }
+};
+
+#include <Geode/modify/LevelEditorLayer.hpp>
+class $modify(MyLevelEditorLayer, LevelEditorLayer) {
+    bool init(GJGameLevel* level, bool noUI) {
+        bool ret = LevelEditorLayer::init(level, noUI);
+        if (ret) {
+            auto view = OverdrawView::create();
+            if (view) {
+                m_objectLayer->addChild(view->getPreDrawNode(), -10000);
+                m_objectLayer->addChild(view, 10000);
+
+                m_editorUI->addChild(view->getText(), 10000);
+                view->getText()->setPosition({44, 116});
+            }
+        }
+        return ret;
+    }
+};
+
+DECLARE_HOTKEY(KEY_F7, {
+    if (!Mod::get()->getSettingValue<bool>("debug_tools"))
+        return;
+
+    auto editor = GameManager::get()->m_levelEditorLayer;
+    if (!editor)
+        return;
+
+    float posX = editor->m_objectLayer->convertToNodeSpace(CCDirector::get()->getWinSize() / 2).x;
+
+    CCArray* deleteObjects = CCArray::create();
+
+    for (auto obj : CCArrayExt<GameObject*>(editor->m_objects)) {
+        if (obj->m_startPosition.x > posX)
+            deleteObjects->addObject(obj);
+    }
+
+    /*
+    for (auto obj : CCArrayExt<GameObject*>(deleteObjects))
+        editor->m_editorUI->deleteObject(obj, true);
+
+    editor->addToUndoList(UndoObject::createWithArray(deleteObjects, UndoCommand::DeleteMulti), false);
+    */
+
+    editor->m_editorUI->processSelectObjects(deleteObjects);
+    editor->m_editorUI->updateButtons();
+    editor->m_editorUI->deactivateRotationControl();
+    editor->m_editorUI->deactivateScaleControl();
+    editor->m_editorUI->deactivateTransformControl();
+    editor->m_editorUI->updateObjectInfoLabel();
+
+    Notification::create(
+        "Kyanite debug tools: Selected objects right of screen",
+        NotificationIcon::Info,
+        3.0f
+    )->show();
+});
