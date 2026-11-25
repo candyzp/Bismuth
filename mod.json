@@ -1,16 +1,17 @@
 {
-    "geode": "5.11.2",
+    "geode": "6.0.0",
     "gd": {
-        "win": "2.2081"
+        "ios": "2.2091"
     },
     "id": "iliashdz.kyanite",
-    "name": "Kyanite",
-    "version": "v0.4.1-alpha",
+    "name": "Kyanite (iOS Metal Port)",
+    "version": "v0.4.2-alpha.1",
     "developers": [
         "IliasHDZ",
-        "ELTXZU"
+        "ELTXZU",
+        "candyzp"
     ],
-    "description": "GPU-driven object renderer for Geometry Dash: triggers, culling and batching on the GPU",
+    "description": "Experimental iOS Metal port of Kyanite. Current stage verifies Metal compute and reports backend status; level rendering remains on Geometry Dash's renderer.",
     "dependencies": {
         "geode.node-ids": ">=v1.20.0"
     },
@@ -19,7 +20,7 @@
         "utility"
     ],
     "links": {
-        "source": "https://github.com/ELTXZU/Kyanite",
+        "source": "https://github.com/candyzp/Bismuth/tree/kyanite-port",
         "community": "https://discord.gg/B6H6ZVJx9C"
     },
     "resources": {
@@ -34,42 +35,22 @@
     },
     "settings": {
         "enabled": {
-            "name": "Kyanite enabled",
+            "name": "Metal diagnostics enabled",
             "type": "bool",
             "default": true,
-            "description": "Use Kyanite's renderer. Turn this off to draw levels with Geometry Dash's own renderer."
+            "description": "Enable Kyanite's experimental Metal diagnostics. This does not replace Geometry Dash's level renderer yet."
         },
-        "frame_timing": {
-            "name": "Log frame timing",
+        "diagnostics_overlay": {
+            "name": "Show Metal diagnostics overlay",
             "type": "bool",
             "default": true,
-            "description": "Log an average breakdown of the frame every 5 seconds: FPS, group state updates, culling, sorted batch regeneration and drawing."
+            "description": "Show live Metal device, compute self-test, and renderer fallback status while playing."
         },
-        "gpu_core_count": {
-            "name": "GPU core count",
-            "type": "int",
-            "default": 0,
-            "max": 20000,
-            "min": 0,
-            "description": "How many compute work groups the culling pass uses. 0 detects it automatically; set it by hand if detection fails. Higher values can help on large GPUs, lower values on small ones."
-        },
-        "debug_tools": {
-            "name": "Debug tools",
+        "run_metal_probe": {
+            "name": "Run Metal compute self-test",
             "type": "bool",
-            "default": false,
-            "description": "F8 toggles Kyanite while playing, F9 opens difference mode (very unstable), F7 selects every object right of the screen in the editor.\n\nTurns off the optimizations."
-        },
-        "use_mapped_buffers": {
-            "name": "Persistently mapped buffers",
-            "type": "bool",
-            "default": false,
-            "description": "Writes buffers through a persistent mapping instead of uploading them.\n\nBuggy on many drivers. Sometimes helps on integrated GPUs, usually hurts on dedicated ones."
-        },
-        "disable_object_pulse": {
-            "name": "Disable object pulse",
-            "type": "bool",
-            "default": false,
-            "description": "Objects no longer pulse to the song."
+            "default": true,
+            "description": "Submit a small one-time Metal compute dispatch to verify that the device, command queue, and compute pipeline work."
         }
     }
 }

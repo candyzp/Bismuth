@@ -1,0 +1,33 @@
+name: Build Kyanite iOS Port
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - kyanite-port
+    paths:
+      - 'src/ios/**'
+      - 'src/renderer/ios/**'
+      - 'CMakeLists.txt'
+      - 'mod.json'
+      - '.github/workflows/ios.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build-ios:
+    name: Geometry Dash 2.2091 / Geode 6.0.0 / iOS
+    runs-on: macos-26
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build iOS mod (validation only)
+        uses: geode-sdk/build-geode-mod@main
+        with:
+          target: iOS
+
+      # No binary artifact is published from this AI-modified branch.
+      # The upstream Kyanite license places a restriction on distributing
+      # binaries of AI-modified versions.

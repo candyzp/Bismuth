@@ -1,79 +1,83 @@
+
 cmake_minimum_required(VERSION 3.21)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-if ("${CMAKE_SYSTEM_NAME}" STREQUAL "iOS" OR IOS)
-    set(CMAKE_OSX_ARCHITECTURES "arm64")
-else()
-    set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64")
-endif()
 set(CMAKE_CXX_VISIBILITY_PRESET hidden)
 
 project(Kyanite VERSION 1.0.0)
 
-# I want to use `geode build` with clang but this is the only way to do it :(
-message(STATUS "Found Geode: $ENV{CMAKE_C_COMPILER}")
-if (DEFINED ENV{CMAKE_C_COMPILER})
-    set(CMAKE_C_COMPILER $ENV{CMAKE_C_COMPILER})
+if ("${CMAKE_SYSTEM_NAME}" STREQUAL "iOS" OR IOS)
+    # The iOS port is intentionally isolated from the desktop OpenGL 4.3
+    # renderer. Geometry Dash's stock renderer remains authoritative while
+    # the Metal object-rendering backend is brought up in stages.
+    enable_language(OBJCXX)
+    set(CMAKE_OSX_ARCHITECTURES "arm64")
+    set(CMAKE_OBJCXX_STANDARD 23)
+    set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
+    set(CMAKE_BUILD_TYPE Release)
+
+    set(SOURCES
+        src/ios/Main.cpp
+        src/renderer/ios/MetalBackend.mm
+        src/renderer/ios/MetalDiagnosticsOverlay.cpp
+        src/renderer/ios/hooks.cpp
+    )
+
+    add_library(${PROJECT_NAME} SHARED ${SOURCES})
+
+    set_source_files_properties(
+        src/renderer/ios/MetalBackend.mm
+        PROPERTIES COMPILE_FLAGS "-fobjc-arc"
+    )
+
+    find_library(METAL_FRAMEWORK Metal REQUIRED)
+    find_library(FOUNDATION_FRAMEWORK Foundation REQUIRED)
+    target_link_libraries(${PROJECT_NAME} PRIVATE
+        ${METAL_FRAMEWORK}
+        ${FOUNDATION_FRAMEWORK}
+    )
+    target_include_directories(${PROJECT_NAME} PRIVATE src)
+else()
+    set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64")
+    file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS src/*.cpp)
+    add_library(${PROJECT_NAME} SHARED ${SOURCES})
+
+    if (MSVC)
+        target_compile_options(${PROJECT_NAME} PRIVATE /Ob3 /Oi /Ot /Gw /Gy /Zc:inline)
+    endif()
+
+    # Link-time code generation is intentionally disabled: /GL can remove
+    # inline assembly stubs used by Geode bindings.
+    set(CMAKE_BUILD_TYPE RelWithDebInfo)
+    set(ENABLE_OPT 0)
+    set(ENABLE_GLSLANG_BINARIES OFF)
+
+    include(FetchContent)
+    FetchContent_Declare(
+        glm
+        GIT_REPOSITORY https://github.com/g-truc/glm.git
+        GIT_TAG 0af55ccecd98d4e5a8d1fad7de25ba429d60e863
+    )
+    FetchContent_Declare(
+        glslang
+        GIT_REPOSITORY https://github.com/KhronosGroup/glslang.git
+        GIT_TAG vulkan-sdk-1.4.335
+    )
+    FetchContent_Declare(
+        OpenCL-Headers
+        GIT_REPOSITORY https://github.com/KhronosGroup/OpenCL-Headers.git
+        GIT_TAG v2026.05.29
+    )
+    FetchContent_MakeAvailable(glm glslang OpenCL-Headers)
+    target_link_libraries(${PROJECT_NAME} glm::glm glslang::glslang OpenCL::Headers)
+    target_include_directories(${PROJECT_NAME} PRIVATE src)
 endif()
-if (DEFINED ENV{CMAKE_CXX_COMPILER})
-    set(CMAKE_CXX_COMPILER $ENV{CMAKE_CXX_COMPILER})
-endif()
-
-# Add all source files inside src (recursively)
-file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS src/*.cpp)
-
-# Set up the mod binary
-add_library(${PROJECT_NAME} SHARED ${SOURCES})
-
-# The default RelWithDebInfo profile inlines conservatively. The renderer is
-# split across small translation units that call each other every frame
-# (ObjectBatch -> GroupManager -> Buffer), so more aggressive inlining and
-# favouring speed over size is worth it for the per-frame CPU cost.
-if (MSVC)
-    target_compile_options(${PROJECT_NAME} PRIVATE /Ob3 /Oi /Ot /Gw /Gy /Zc:inline)
-endif()
-
-# Note: link time code generation (/GL + /LTCG) is intentionally not enabled.
-# It drops the inline assembly stubs the Geode bindings use to resolve game
-# functions, so the mod fails to link with unresolved LevelEditorLayer/
-# GJBaseGameLayer symbols.
-
-# Not sure about this...............
-set(CMAKE_BUILD_TYPE RelWithDebInfo)
-# set(CMAKE_CXX_FLAGS_RELEASE "-O3")
-
-# Libraries
-set(ENABLE_OPT 0)
-set(ENABLE_GLSLANG_BINARIES OFF)
-
-include(FetchContent)
-
-FetchContent_Declare(
-	glm
-	GIT_REPOSITORY	https://github.com/g-truc/glm.git
-	GIT_TAG 	0af55ccecd98d4e5a8d1fad7de25ba429d60e863
-)
-FetchContent_Declare(glslang GIT_REPOSITORY https://github.com/KhronosGroup/glslang.git GIT_TAG vulkan-sdk-1.4.335)
-FetchContent_Declare(
-	OpenCL-Headers
-	GIT_REPOSITORY	https://github.com/KhronosGroup/OpenCL-Headers.git
-	GIT_TAG 	    v2026.05.29
-)
-
-FetchContent_MakeAvailable(glm glslang OpenCL-Headers)
-
-target_link_libraries(${PROJECT_NAME} glm::glm glslang::glslang OpenCL::Headers)
-target_include_directories(${PROJECT_NAME} PRIVATE src)
-
-# Other Geode stuff
 
 if (NOT DEFINED ENV{GEODE_SDK})
     message(FATAL_ERROR "Unable to find Geode SDK! Please define GEODE_SDK environment variable to point to Geode")
 else()
-    message(STATUS "Found Geode: $ENV{GEODE_SDK}")
+    message(STATUS "Found Geode SDK: $ENV{GEODE_SDK}")
 endif()
 
 add_subdirectory($ENV{GEODE_SDK} ${CMAKE_CURRENT_BINARY_DIR}/geode)
-
-# Set up dependencies, resources, and link Geode.
 setup_geode_mod(${PROJECT_NAME})
