@@ -1,8 +1,27 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
+#include <vector>
+
+struct MetalObjectInput {
+    float x = 0.0f;
+    float y = 0.0f;
+    float halfWidth = 1.0f;
+    float halfHeight = 1.0f;
+    float rotationRadians = 0.0f;
+    std::uint32_t groupCount = 0;
+    std::array<std::uint32_t, 10> groupIds{};
+    std::uint32_t flags = 0;
+};
+
+struct MetalPoint {
+    float x = 0.0f;
+    float y = 0.0f;
+};
 
 struct MetalBackendSnapshot {
     bool deviceReady = false;
@@ -12,23 +31,42 @@ struct MetalBackendSnapshot {
     bool probeCompleted = false;
     bool probeFailed = false;
 
+    bool levelDataReady = false;
+    bool cullingPipelineReady = false;
+    bool cullingSubmitted = false;
+    bool cullingCompleted = false;
+    bool cullingFailed = false;
+
     std::uint32_t expectedProbeThreads = 0;
     std::uint32_t completedProbeThreads = 0;
     std::uint32_t submittedDispatches = 0;
 
+    std::uint32_t levelObjectCount = 0;
+    std::uint32_t visibleObjectCount = 0;
+    std::uint32_t culledObjectCount = 0;
+    std::uint32_t submittedCullingFrames = 0;
+    std::uint32_t completedCullingFrames = 0;
+    std::uint32_t skippedBusyFrames = 0;
+    std::uint32_t invalidVisibleIndices = 0;
+    std::uint32_t groupStateUpdates = 0;
+
     bool gpuTimeAvailable = false;
     double gpuTimeMilliseconds = 0.0;
+    bool cullingGpuTimeAvailable = false;
+    double cullingGpuTimeMilliseconds = 0.0;
 
     std::string deviceName;
     std::string error;
 };
 
 /*
- * Native iOS Metal capability and compute self-test.
+ * Native iOS Metal backend.
  *
- * This is deliberately not advertised as the Kyanite level renderer:
- * it verifies the Metal runtime and a real compute dispatch while the
- * object-buffer, culling, trigger-state, and draw integration is developed.
+ * The current port uploads immutable per-object metadata once, keeps compact
+ * per-group transform/toggle state, and performs a GPU visibility pass.
+ * It deliberately does not claim to draw Geometry Dash sprites: the stock
+ * renderer remains authoritative until a Metal sprite/atlas render pass can
+ * be composited safely with Cocos2d's iOS OpenGL ES frame.
  */
 class MetalBackend {
 public:
@@ -36,6 +74,26 @@ public:
 
     bool initialize();
     void submitComputeProbeOnce();
+
+    bool uploadLevelObjects(
+        const std::vector<MetalObjectInput>& objects,
+        std::uint32_t groupStateCount
+    );
+    void updateCameraBounds(float minX, float minY, float maxX, float maxY);
+    void submitCullingFrame();
+
+    void moveGroup(std::int32_t groupId, float deltaX, float deltaY);
+    void rotateGroup(
+        std::int32_t groupId,
+        float angleDegrees,
+        bool lockObjectRotation,
+        std::optional<MetalPoint> centerPoint = std::nullopt
+    );
+    void toggleGroup(std::int32_t groupId, bool visible);
+    void setGroupAlpha(std::int32_t groupId, float alpha);
+    std::vector<std::uint32_t> getUsedGroupIds() const;
+    void resetGroupStates();
+
     MetalBackendSnapshot snapshot() const;
 
     MetalBackend(const MetalBackend&) = delete;

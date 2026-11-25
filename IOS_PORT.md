@@ -9,56 +9,82 @@ upstream source attribution and license.
 - Geometry Dash: 2.2091
 - Geode: 6.0.0
 - Platform: iOS arm64
-- Graphics API for the planned backend: Apple Metal
+- Graphics API for the experimental backend: Apple Metal
 
-## Current implementation stage
+## Implemented on iOS
 
-The iOS build is intentionally isolated from Kyanite's desktop OpenGL 4.3
-renderer. It currently:
+The iOS target is isolated from Kyanite's desktop OpenGL 4.3 renderer. It now:
 
 - initializes the system Metal device and command queue;
-- compiles a native Metal compute kernel;
-- submits a one-time 256-thread compute self-test;
-- reports device, queue, pipeline, dispatch completion, verified thread count,
-  and GPU execution time when Metal exposes it;
-- displays an on-screen diagnostics overlay.
+- compiles separate Metal compute pipelines for the startup probe and object
+  visibility pass;
+- submits a one-time 256-thread Metal compute self-test;
+- reads level object metadata once after \`PlayLayer::setupHasCompleted\`;
+- uploads static object bounds, start transforms, and up to 10 group IDs per
+  object into a shared Metal buffer;
+- keeps compact per-group position/local transforms, visibility, and opacity
+  state in a separate Metal buffer;
+- mirrors move, rotate, follow, toggle, and alpha changes into those group
+  states without changing the game's own object positions or physics;
+- updates a camera-space rectangle and dispatches one compute thread per object;
+- computes transformed object bounds, rejects invisible/transparent groups,
+  culls objects outside the camera rectangle, and compacts visible object
+  indices into a GPU-written index buffer;
+- checks the visible-index output after the command buffer completes and
+  reports object, visible, culled, completed-frame, skipped-frame, and GPU-time
+  counters in the on-screen diagnostics.
 
-**This is not yet the Kyanite level renderer.** Geometry Dash's own renderer
-continues to draw all level objects. The overlay explicitly reports this safe
-fallback and reports object upload, culling, and object drawing as not connected.
-The probe's timing is not a level-rendering benchmark.
+The object list is uploaded once per level. Per-frame work copies only the
+compact group state and camera bounds, then dispatches the GPU visibility
+kernel. If a previous dispatch is still in flight, the next dispatch is
+skipped rather than writing buffers the GPU may still be reading.
 
-## Port milestones
+## Important renderer boundary
 
-1. Runtime and truthful diagnostics — current stage.
-2. Static object data — define Metal-compatible object, sprite, layer, and
-   group buffers; upload immutable level data once.
-3. GPU group state — move, rotate, follow, toggle, alpha, and pulse state
-   buffers with CPU trigger hooks that update compact state entries.
-4. Compute culling and ordering — compact visible sprite indices and build
-   per-layer indirect draw arguments on the GPU.
-5. Metal object rendering — integrate the Metal render pass with the
-   Geometry Dash object-layer order while leaving shaders, UI, particles,
-   physics, and hitbox calculations under the game's existing systems.
-6. Per-object transforms and compatibility — scale, area/enter effects,
-   advanced follow, keyframes, hitboxes, checkpoints, restart, and fallback
-   tests.
+**This is a real Metal object-metadata and GPU visibility workload, but it is
+not yet the complete Kyanite sprite renderer.** The visible-index list is
+currently diagnostic output; it is not consumed by a Metal sprite draw pass.
+Geometry Dash's stock renderer continues to draw every level sprite and owns
+the visible frame. The current GPU culling therefore does not yet reduce the
+game's actual draw calls or guarantee an FPS improvement.
 
-## Validation rules
+A complete renderer still needs:
 
-- No claim that Kyanite is active unless its Metal draw pass was submitted.
-- No claim that a frame's Metal work completed until a command-buffer completion
-  callback confirms it.
-- Keep device/queue/pipeline failures visible in the overlay and logs.
-- If Metal object rendering cannot initialize or a frame submission fails,
-  leave the stock Geometry Dash object renderer active.
-- GPU timing is marked unavailable when the platform does not provide a valid
-  command-buffer GPU start/end time.
-- Do not change game physics, hitboxes, object trigger semantics, or
-  player-facing gameplay behavior as part of renderer optimization.
+1. Convert Kyanite's per-sprite vertices, texture coordinates, atlas pages,
+   blending modes, z-layer ordering, color/pulse state, and object flags into
+   Metal-compatible buffers.
+2. Upload the required game sprite atlases to Metal textures.
+3. Add Metal render and indirect-command pipelines that consume the culling
+   output and preserve Kyanite's draw ordering and blending behavior.
+4. Composite the Metal output into the iOS Cocos2d/OpenGL ES frame without
+   breaking the game's other layers, particles, portals, checkpoints, or UI.
+5. Validate restart/checkpoint behavior, group transform semantics, audio
+   scale, color channels, unsupported sheets, and compatibility fallback.
+6. Add unsupported Scale, Area/Enter, Advanced Follow, and Keyframe trigger
+   behavior before claiming complete feature parity.
+
+## Safety and compatibility rules
+
+- The stock Geometry Dash renderer remains enabled as the safe fallback.
+- This port does not alter gameplay physics, hitboxes, collision checks, or the
+  game's authoritative object transforms.
+- A completed compute command buffer is required before the overlay reports a
+  culling frame as complete.
+- Visible-index output is range-checked before the diagnostics report it.
+- If Metal initialization or a compute dispatch fails, the overlay reports the
+  failure and the stock game renderer remains active.
+- GPU timings are marked unavailable when Metal does not provide valid GPU
+  start/end timestamps.
+- The camera-space object bounds are a broad-phase approximation. They are
+  not yet the exact sprite meshes used by Kyanite's desktop renderer.
+
+## Validation
+
+\`.github/workflows/ios.yml\` builds the iOS target for validation only. It does
+not upload or publish a binary.
 
 ## Upstream license notice
 
-See LICENSE. The upstream Kyanite license includes an additional restriction
+See \`LICENSE\`. The upstream Kyanite license includes an additional restriction
 on distributing binaries of AI-modified versions. This branch's workflow is
 for compilation validation only and does not upload or publish a binary.

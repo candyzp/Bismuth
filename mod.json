@@ -47,7 +47,7 @@
             "description": "Show live Metal device, compute self-test, and renderer fallback status while playing."
         },
         "run_metal_probe": {
-            "name": "Run Metal compute self-test",
+            "name": "Run Metal GPU visibility workload",
             "type": "bool",
             "default": true,
             "description": "Submit a small one-time Metal compute dispatch to verify that the device, command queue, and compute pipeline work."
