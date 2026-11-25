@@ -39,7 +39,9 @@ if ("${CMAKE_SYSTEM_NAME}" STREQUAL "iOS" OR IOS)
 
     find_library(METAL_FRAMEWORK Metal REQUIRED)
     find_library(FOUNDATION_FRAMEWORK Foundation REQUIRED)
-    target_link_libraries(${PROJECT_NAME} PRIVATE
+    # Keep the plain signature because setup_geode_mod() adds plain
+    # target_link_libraries() entries to this target as well.
+    target_link_libraries(${PROJECT_NAME}
         ${METAL_FRAMEWORK}
         ${FOUNDATION_FRAMEWORK}
     )
