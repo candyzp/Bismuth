@@ -4,6 +4,14 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_VISIBILITY_PRESET hidden)
 
+# CMake reads the target architecture while initializing the toolchain, so
+# choose the iOS slice before project() enables the C/C++ compilers.
+if ("${CMAKE_SYSTEM_NAME}" STREQUAL "iOS" OR IOS)
+    set(CMAKE_OSX_ARCHITECTURES "arm64")
+else()
+    set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64")
+endif()
+
 project(Kyanite VERSION 1.0.0)
 
 if ("${CMAKE_SYSTEM_NAME}" STREQUAL "iOS" OR IOS)
@@ -11,7 +19,6 @@ if ("${CMAKE_SYSTEM_NAME}" STREQUAL "iOS" OR IOS)
     # renderer. Geometry Dash's stock renderer remains authoritative while
     # the Metal object-rendering backend is brought up in stages.
     enable_language(OBJCXX)
-    set(CMAKE_OSX_ARCHITECTURES "arm64")
     set(CMAKE_OBJCXX_STANDARD 23)
     set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
     set(CMAKE_BUILD_TYPE Release)
@@ -38,7 +45,6 @@ if ("${CMAKE_SYSTEM_NAME}" STREQUAL "iOS" OR IOS)
     )
     target_include_directories(${PROJECT_NAME} PRIVATE src)
 else()
-    set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64")
     file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS src/*.cpp)
     add_library(${PROJECT_NAME} SHARED ${SOURCES})
 
