@@ -252,6 +252,86 @@ bool MetalBackend::initialize() {
                 float maxY;
             };
 
+            struct KyaniteSpriteVertex {
+                float offsetX;
+                float offsetY;
+                float u;
+                float v;
+                uint objectIndex;
+                float r;
+                float g;
+                float b;
+                float a;
+            };
+
+            struct KyaniteSpriteVarying {
+                float4 position [[position]];
+                float2 uv;
+                float4 color;
+            };
+
+            vertex KyaniteSpriteVarying kyanite_sprite_vertex(
+                const device KyaniteSpriteVertex* vertices [[buffer(0)]],
+                const device KyaniteObject* objects [[buffer(1)]],
+                const device KyaniteGroupState* combinations [[buffer(2)]],
+                const device uint* visibleMask [[buffer(3)]],
+                constant KyaniteCameraBounds& camera [[buffer(4)]],
+                uint vertexId [[vertex_id]]
+            ) {
+                const KyaniteSpriteVertex vertex = vertices[vertexId];
+                KyaniteSpriteVarying out;
+                if (visibleMask[vertex.objectIndex] == 0u) {
+                    out.position = float4(3.0, 3.0, 0.0, 1.0);
+                    out.uv = float2(vertex.u, vertex.v);
+                    out.color = float4(0.0);
+                    return out;
+                }
+
+                const KyaniteObject object = objects[vertex.objectIndex];
+                const KyaniteGroupState state =
+                    combinations[object.groupCombinationIndex];
+                const float c = cos(object.rotation);
+                const float s = sin(object.rotation);
+                const float2 localOffset = float2(
+                    c * vertex.offsetX - s * vertex.offsetY,
+                    s * vertex.offsetX + c * vertex.offsetY
+                );
+                const float2 transformedOffset = float2(
+                    state.localM00 * localOffset.x + state.localM01 * localOffset.y,
+                    state.localM10 * localOffset.x + state.localM11 * localOffset.y
+                );
+                const float2 center = float2(
+                    state.positionM00 * object.x +
+                        state.positionM01 * object.y + state.offsetX,
+                    state.positionM10 * object.x +
+                        state.positionM11 * object.y + state.offsetY
+                );
+                const float2 world = center + transformedOffset;
+                const float width = max(1.0, camera.maxX - camera.minX);
+                const float height = max(1.0, camera.maxY - camera.minY);
+                const float2 normalized = float2(
+                    (world.x - camera.minX) / width,
+                    (world.y - camera.minY) / height
+                );
+                out.position = float4(
+                    normalized.x * 2.0 - 1.0,
+                    normalized.y * 2.0 - 1.0,
+                    0.0,
+                    1.0
+                );
+                out.uv = float2(vertex.u, vertex.v);
+                out.color = float4(vertex.r, vertex.g, vertex.b, vertex.a);
+                return out;
+            }
+
+            fragment float4 kyanite_sprite_fragment(
+                KyaniteSpriteVarying in [[stage_in]],
+                texture2d<float> atlas [[texture(0)]],
+                sampler atlasSampler [[sampler(0)]]
+            ) {
+                return atlas.sample(atlasSampler, in.uv) * in.color;
+            }
+
             kernel void kyanite_probe(
                 device atomic_uint* counter [[buffer(0)]],
                 uint tid [[thread_position_in_grid]]
@@ -266,11 +346,13 @@ bool MetalBackend::initialize() {
                 device uint* visibleIndices [[buffer(3)]],
                 device atomic_uint* visibleCount [[buffer(4)]],
                 constant uint& objectCount [[buffer(5)]],
+                device uint* visibleMask [[buffer(6)]],
                 uint tid [[thread_position_in_grid]]
             ) {
                 if (tid >= objectCount)
                     return;
 
+                visibleMask[tid] = 0u;
                 const KyaniteObject object = objects[tid];
                 const KyaniteGroupState state =
                     combinations[object.groupCombinationIndex];
@@ -313,6 +395,7 @@ bool MetalBackend::initialize() {
                     center.y - extentY <= camera.maxY;
 
                 if (intersects) {
+                    visibleMask[tid] = 1u;
                     uint destination = atomic_fetch_add_explicit(
                         visibleCount, 1u, memory_order_relaxed
                     );
