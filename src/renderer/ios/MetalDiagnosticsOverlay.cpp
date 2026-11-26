@@ -379,13 +379,13 @@ bool MetalDiagnosticsOverlay::uploadSpriteAssets() {
         CCPoint texRight;
         CCPoint texUp;
         if (!item.sprite->isTextureRectRotated()) {
-            texBottomLeft = {crop.origin.x, crop.origin.y + crop.size.height};
-            texRight = {crop.size.width, 0.0f};
-            texUp = {0.0f, -crop.size.height};
+            texBottomLeft = ccp(crop.origin.x, crop.origin.y + crop.size.height);
+            texRight = ccp(crop.size.width, 0.0f);
+            texUp = ccp(0.0f, -crop.size.height);
         } else {
-            texBottomLeft = {crop.origin.x, crop.origin.y};
-            texRight = {0.0f, crop.size.width};
-            texUp = {crop.size.height, 0.0f};
+            texBottomLeft = ccp(crop.origin.x, crop.origin.y);
+            texRight = ccp(0.0f, crop.size.width);
+            texUp = ccp(crop.size.height, 0.0f);
         }
 
         if (item.sprite->isFlipX()) {
