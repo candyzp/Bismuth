@@ -52,14 +52,9 @@ bool MetalDiagnosticsOverlay::init(PlayLayer* layer) {
 
     const auto winSize = CCDirector::get()->getWinSize();
     setAnchorPoint({0, 1});
-    setPosition({8.0f, winSize.height - 8.0f});
+    // Keep diagnostic text below the built-in percentage/attempt HUD.
+    setPosition({8.0f, winSize.height - 132.0f});
     setZOrder(100000);
-
-    m_background = CCLayerColor::create({0, 0, 0, 190});
-    if (!m_background)
-        return false;
-    m_background->setAnchorPoint({0, 1});
-    addChild(m_background, 0);
 
     m_label = CCLabelBMFont::create("", "chatFont.fnt");
     if (!m_label)
@@ -290,14 +285,8 @@ void MetalDiagnosticsOverlay::refreshText() {
     if (!state.error.empty())
         text += fmt::format("Metal error: {}\n", state.error);
 
-    text += "Metal sprite draw pass: NOT CONNECTED\n";
-    text += "Active level renderer: STOCK GD (SAFE FALLBACK)\n";
+    text += "Metal sprite draw pass: NOT IMPLEMENTED\\n";
+    text += "Level renderer: Geometry Dash stock renderer\\n";
 
     m_label->setString(text.c_str());
-    const auto labelSize = m_label->getContentSize();
-    const float labelScale = m_label->getScale();
-    m_background->setContentSize({
-        labelSize.width * labelScale + 12.0f,
-        labelSize.height * labelScale + 10.0f
-    });
 }
