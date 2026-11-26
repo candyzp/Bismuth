@@ -1371,6 +1371,10 @@ MetalBackendSnapshot MetalBackend::snapshot() const {
     result.cullingSubmitted = m_impl->cullingSubmitted.load(std::memory_order_acquire);
     result.cullingCompleted = m_impl->cullingCompleted.load(std::memory_order_acquire);
     result.cullingFailed = m_impl->cullingFailed.load(std::memory_order_acquire);
+    result.spritePipelineReady = m_impl->spriteRenderPipeline != nil && m_impl->additiveSpriteRenderPipeline != nil;
+    result.spriteGeometryReady = m_impl->spriteVertexBuffer != nil && m_impl->spriteTextures.count > 0;
+    result.spriteViewAttached = m_impl->spriteView != nil;
+    result.renderedFrames = m_impl->renderedFrames.load(std::memory_order_acquire);
     result.levelObjectCount = m_impl->objectCount.load(std::memory_order_acquire);
     result.groupCombinationCount =
         static_cast<std::uint32_t>(m_impl->groupIdsPerCombination.size());
@@ -1403,3 +1407,16 @@ MetalBackendSnapshot MetalBackend::snapshot() const {
     result.error = m_impl->error;
     return result;
 }
+
+@implementation KyaniteMetalViewDelegate
+
+- (void)drawInMTKView:(MTKView*)view {
+    MetalBackend::get().renderFrame((__bridge void*)view);
+}
+
+- (void)mtkView:(MTKView*)view drawableSizeWillChange:(CGSize)size {
+    (void)view;
+    (void)size;
+}
+
+@end
