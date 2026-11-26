@@ -94,12 +94,15 @@ class $modify(KyaniteIOSDiagnosticsGameLayer, GJBaseGameLayer) {
                     cmdObj->m_lockObjectRotation
                 );
             } else {
-                const auto center = centerObject->getUnmodifiedPosition();
+                const MetalPoint center{
+                    centerObject->m_positionX,
+                    centerObject->m_positionY
+                };
                 MetalBackend::get().rotateGroup(
                     targetId,
                     rotation,
                     cmdObj->m_lockObjectRotation,
-                    MetalPoint{center.x, center.y}
+                    center
                 );
             }
         }

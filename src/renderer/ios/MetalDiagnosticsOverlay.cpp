@@ -23,7 +23,9 @@ bool shouldIncludeObject(PlayLayer* layer, GameObject* object) {
         return false;
     if (object == layer->m_anticheatSpike || object == layer->m_endPortal)
         return false;
-    if (object->isTrigger() || object->m_isHide)
+    // GameObject::isTrigger() is not exported by the iOS game binary.
+    // Trigger nodes have no renderable sprite in this metadata-only pass.
+    if (object->m_isHide)
         return false;
     if (object->m_objectID == IOS_GUIDE_OBJECT_ID ||
         object->m_objectID == IOS_KEYFRAME_OBJECT_ID)
@@ -157,14 +159,8 @@ void MetalDiagnosticsOverlay::submitVisibilityWork() {
     }
 
     auto& backend = MetalBackend::get();
-    if (m_layer->m_effectManager) {
-        for (const auto groupId : backend.getUsedGroupIds()) {
-            backend.setGroupAlpha(
-                static_cast<std::int32_t>(groupId),
-                m_layer->m_effectManager->opacityModForGroup(static_cast<int>(groupId))
-            );
-        }
-    }
+    // Group opacity is not queried here because the corresponding game
+    // method is not exported by the iOS binary. Keep the safe default alpha.
     backend.updateCameraBounds(minX, minY, maxX, maxY);
     backend.submitCullingFrame();
 }

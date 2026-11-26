@@ -23,10 +23,10 @@ The iOS target is isolated from Kyanite's desktop OpenGL 4.3 renderer. It now:
   initial position/rotation, and group IDs;
 - deduplicates objects into sorted group combinations, so objects sharing the
   same group set reference the same transform/visibility state;
-- stores one compact transform, visibility and alpha state per group
+- stores one compact transform, visibility state per group
   combination, following Kyanite's group-combination architecture rather than
   independently composing per-group transforms in the shader;
-- mirrors move, rotate, follow, toggle, and alpha updates into every affected
+- mirrors move, rotate, follow, and toggle updates into every affected
   group combination without taking ownership of the game's actual object
   positions or physics;
 - updates a camera-space rectangle and dispatches one compute thread per
@@ -39,7 +39,7 @@ The iOS target is isolated from Kyanite's desktop OpenGL 4.3 renderer. It now:
   skipped frames, group-state updates, and GPU timing in the on-screen overlay.
 
 Immutable object data is uploaded once per level. Group state is copied to the
-GPU only when a transform, visibility, or alpha state has changed. The camera
+GPU only when a transform or visibility state has changed. The camera
 bounds and output counter are prepared for each submitted frame. If a prior
 dispatch is still in flight, the next one is skipped rather than overwriting a
 buffer the GPU may still be reading.
