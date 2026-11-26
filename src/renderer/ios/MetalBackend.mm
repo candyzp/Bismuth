@@ -279,19 +279,19 @@ bool MetalBackend::initialize() {
                 constant KyaniteCameraBounds& camera [[buffer(4)]],
                 uint vertexId [[vertex_id]]
             ) {
-                const KyaniteSpriteVertex vertex = vertices[vertexId];
+                const KyaniteSpriteVertex spriteVertex = vertices[vertexId];
                 KyaniteSpriteVarying out;
-                if (visibleMask[vertex.objectIndex] == 0u) {
+                if (visibleMask[spriteVertex.objectIndex] == 0u) {
                     out.position = float4(3.0, 3.0, 0.0, 1.0);
-                    out.uv = float2(vertex.u, vertex.v);
+                    out.uv = float2(spriteVertex.u, spriteVertex.v);
                     out.color = float4(0.0);
                     return out;
                 }
 
-                const KyaniteObject object = objects[vertex.objectIndex];
+                const KyaniteObject object = objects[spriteVertex.objectIndex];
                 const KyaniteGroupState state =
                     combinations[object.groupCombinationIndex];
-                const float2 localOffset = float2(vertex.offsetX, vertex.offsetY);
+                const float2 localOffset = float2(spriteVertex.offsetX, spriteVertex.offsetY);
                 const float2 transformedOffset = float2(
                     state.localM00 * localOffset.x + state.localM01 * localOffset.y,
                     state.localM10 * localOffset.x + state.localM11 * localOffset.y
@@ -315,8 +315,8 @@ bool MetalBackend::initialize() {
                     0.0,
                     1.0
                 );
-                out.uv = float2(vertex.u, vertex.v);
-                out.color = float4(vertex.r, vertex.g, vertex.b, vertex.a * state.alpha);
+                out.uv = float2(spriteVertex.u, spriteVertex.v);
+                out.color = float4(spriteVertex.r, spriteVertex.g, spriteVertex.b, spriteVertex.a * state.alpha);
                 return out;
             }
 

@@ -185,7 +185,7 @@ bool MetalDiagnosticsOverlay::init(PlayLayer* layer) {
     const auto winSize = CCDirector::get()->getWinSize();
     setAnchorPoint({0, 1});
     // Keep diagnostic text below the built-in percentage/attempt HUD.
-    setPosition({8.0f, winSize.height - 132.0f});
+    setPosition({8.0f, winSize.height - 72.0f});
     setZOrder(100000);
 
     m_label = CCLabelBMFont::create("", "chatFont.fnt");
