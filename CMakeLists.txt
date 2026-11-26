@@ -39,11 +39,17 @@ if ("${CMAKE_SYSTEM_NAME}" STREQUAL "iOS" OR IOS)
 
     find_library(METAL_FRAMEWORK Metal REQUIRED)
     find_library(FOUNDATION_FRAMEWORK Foundation REQUIRED)
+    find_library(UIKIT_FRAMEWORK UIKit REQUIRED)
+    find_library(METAL_KIT_FRAMEWORK MetalKit REQUIRED)
+    find_library(OPENGLES_FRAMEWORK OpenGLES REQUIRED)
     # Keep the plain signature because setup_geode_mod() adds plain
     # target_link_libraries() entries to this target as well.
     target_link_libraries(${PROJECT_NAME}
         ${METAL_FRAMEWORK}
         ${FOUNDATION_FRAMEWORK}
+        ${UIKIT_FRAMEWORK}
+        ${METAL_KIT_FRAMEWORK}
+        ${OPENGLES_FRAMEWORK}
     )
     target_include_directories(${PROJECT_NAME} PRIVATE src)
 else()
