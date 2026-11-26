@@ -1,5 +1,7 @@
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
+#import <MetalKit/MetalKit.h>
+#import <UIKit/UIKit.h>
 
 #include "MetalBackend.hpp"
 
@@ -13,6 +15,9 @@
 #include <mutex>
 #include <set>
 #include <vector>
+
+@interface KyaniteMetalViewDelegate : NSObject <MTKViewDelegate>
+@end
 
 namespace {
 constexpr std::uint32_t PROBE_THREAD_COUNT = 256;
@@ -61,6 +66,8 @@ struct MetalCameraBounds {
     float maxY = 100000.0f;
 };
 
+static_assert(sizeof(MetalSpriteVertex) == 36,
+              "MetalSpriteVertex layout must match the MSL vertex layout");
 static_assert(sizeof(MetalObjectInput) == 68,
               "MetalObjectInput layout must match the CPU metadata layout");
 static_assert(sizeof(MetalGpuObject) == 28,
@@ -92,6 +99,16 @@ struct MetalBackend::Impl {
     __strong id<MTLCommandQueue> commandQueue = nil;
     __strong id<MTLComputePipelineState> probePipeline = nil;
     __strong id<MTLComputePipelineState> cullingPipeline = nil;
+    __strong id<MTLRenderPipelineState> spriteRenderPipeline = nil;
+    __strong id<MTLRenderPipelineState> additiveSpriteRenderPipeline = nil;
+    __strong id<MTLSamplerState> spriteSampler = nil;
+    __strong id<MTLBuffer> spriteVertexBuffer = nil;
+    __strong id<MTLBuffer> visibleMaskBuffer = nil;
+    __strong NSMutableArray<id<MTLTexture>>* spriteTextures = nil;
+    __strong MTKView* spriteView = nil;
+    __strong KyaniteMetalViewDelegate* spriteViewDelegate = nil;
+    std::vector<MetalSpriteBatch> spriteBatches;
+    std::atomic<std::uint32_t> renderedFrames{0};
 
     __strong id<MTLBuffer> probeCounter = nil;
     __strong id<MTLBuffer> objectBuffer = nil;
