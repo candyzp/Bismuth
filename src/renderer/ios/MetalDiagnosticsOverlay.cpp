@@ -113,22 +113,35 @@ void unpackGameObject(GameObject* object, const SpriteReceiver& receive) {
         unpackSpriteTree(object, colorSprite, identity, 1, receive);
 }
 
-bool readTexturePixels(cocos2d::CCTexture2D* texture, MetalTextureInput& output) {
-    if (!texture || !texture->getName())
+bool readTexturePixels(
+    cocos2d::CCTexture2D* texture,
+    MetalTextureInput& output,
+    std::string& failure
+) {
+    failure.clear();
+    if (!texture || !texture->getName()) {
+        failure = "sprite texture or OpenGL texture name is missing";
         return false;
+    }
 
     const auto width = static_cast<std::uint32_t>(texture->getPixelsWide());
     const auto height = static_cast<std::uint32_t>(texture->getPixelsHigh());
-    if (width == 0 || height == 0)
+    if (width == 0 || height == 0) {
+        failure = "sprite atlas has zero dimensions";
         return false;
+    }
 
     GLint previousFramebuffer = 0;
+    GLint previousPackAlignment = 4;
     glGetIntegerv(GL_FRAMEBUFFER_BINDING, &previousFramebuffer);
+    glGetIntegerv(GL_PACK_ALIGNMENT, &previousPackAlignment);
 
     GLuint framebuffer = 0;
     glGenFramebuffers(1, &framebuffer);
-    if (framebuffer == 0)
+    if (framebuffer == 0) {
+        failure = "glGenFramebuffers returned framebuffer 0";
         return false;
+    }
 
     glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
     glFramebufferTexture2D(
@@ -142,6 +155,10 @@ bool readTexturePixels(cocos2d::CCTexture2D* texture, MetalTextureInput& output)
     if (status != GL_FRAMEBUFFER_COMPLETE) {
         glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(previousFramebuffer));
         glDeleteFramebuffers(1, &framebuffer);
+        failure = fmt::format(
+            "OpenGL atlas framebuffer is incomplete (status 0x{:04X})",
+            static_cast<unsigned int>(status)
+        );
         return false;
     }
 
@@ -159,10 +176,19 @@ bool readTexturePixels(cocos2d::CCTexture2D* texture, MetalTextureInput& output)
     );
     const GLenum readError = glGetError();
 
+    glPixelStorei(GL_PACK_ALIGNMENT, previousPackAlignment);
     glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(previousFramebuffer));
     glDeleteFramebuffers(1, &framebuffer);
 
-    return readError == GL_NO_ERROR;
+    if (readError != GL_NO_ERROR) {
+        failure = fmt::format(
+            "glReadPixels failed with OpenGL error 0x{:04X}",
+            static_cast<unsigned int>(readError)
+        );
+        output.rgba.clear();
+        return false;
+    }
+    return true;
 }
 } // namespace
 
@@ -199,8 +225,7 @@ bool MetalDiagnosticsOverlay::init(PlayLayer* layer) {
     scheduleUpdate();
     MetalBackend::get().initialize();
     uploadLevelObjects();
-    if (m_levelUploaded)
-        uploadSpriteAssets();
+    m_spriteUploadStatus = "WAITING FOR FIRST PLAY-LAYER UPDATE";
     refreshText();
     return true;
 }
@@ -264,9 +289,15 @@ bool MetalDiagnosticsOverlay::uploadLevelObjects() {
 
 
 bool MetalDiagnosticsOverlay::uploadSpriteAssets() {
-    m_spriteUploadAttempted = true;
-    if (!m_layer || !m_layer->m_objects || !m_levelUploaded)
+    auto fail = [this](std::string reason) {
+        m_spriteUploadStatus = std::move(reason);
+        log::error("Kyanite iOS: sprite upload failed: {}", m_spriteUploadStatus);
         return false;
+    };
+    if (!m_layer || !m_layer->m_objects || !m_levelUploaded)
+        return fail("level sprite source or uploaded object data is unavailable");
+
+    m_spriteUploadStatus = "COLLECTING LEVEL SPRITES";
 
     std::unordered_map<GameObject*, std::uint32_t> objectIndices;
     std::uint32_t nextObjectIndex = 0;
@@ -278,12 +309,11 @@ bool MetalDiagnosticsOverlay::uploadSpriteAssets() {
 
     const auto backendState = MetalBackend::get().snapshot();
     if (nextObjectIndex != backendState.levelObjectCount) {
-        log::error(
-            "Kyanite iOS: sprite extraction object order mismatch ({} vs {})",
+        return fail(fmt::format(
+            "sprite extraction object order mismatch ({} vs {})",
             nextObjectIndex,
             backendState.levelObjectCount
-        );
-        return false;
+        ));
     }
 
     std::vector<ExtractedSprite> extracted;
@@ -319,8 +349,7 @@ bool MetalDiagnosticsOverlay::uploadSpriteAssets() {
     }
 
     if (extracted.empty()) {
-        log::error("Kyanite iOS: no renderable sprites were extracted from this level");
-        return false;
+        return fail("no renderable sprites were extracted from this level");
     }
 
     std::stable_sort(extracted.begin(), extracted.end(),
@@ -331,6 +360,11 @@ bool MetalDiagnosticsOverlay::uploadSpriteAssets() {
                 return lhs.zOrder < rhs.zOrder;
             return lhs.sequence < rhs.sequence;
         });
+
+    m_spriteUploadStatus = fmt::format(
+        "EXTRACTED {} SPRITES; READING ATLAS TEXTURES",
+        extracted.size()
+    );
 
     std::unordered_map<GLuint, std::uint32_t> textureIndices;
     std::vector<MetalTextureInput> textures;
@@ -350,13 +384,14 @@ bool MetalDiagnosticsOverlay::uploadSpriteAssets() {
         std::uint32_t textureIndex = 0;
         if (textureIt == textureIndices.end()) {
             MetalTextureInput textureInput;
-            if (!readTexturePixels(texture, textureInput)) {
-                log::error(
-                    "Kyanite iOS: failed to read sprite atlas {}x{} from OpenGL",
+            std::string readbackFailure;
+            if (!readTexturePixels(texture, textureInput, readbackFailure)) {
+                return fail(fmt::format(
+                    "OpenGL atlas {}x{} readback failed: {}",
                     texture->getPixelsWide(),
-                    texture->getPixelsHigh()
-                );
-                return false;
+                    texture->getPixelsHigh(),
+                    readbackFailure
+                ));
             }
             textureIndex = static_cast<std::uint32_t>(textures.size());
             textures.push_back(std::move(textureInput));
@@ -460,15 +495,27 @@ bool MetalDiagnosticsOverlay::uploadSpriteAssets() {
     }
 
     if (vertices.empty() || textures.empty() || batches.empty()) {
-        log::error("Kyanite iOS: sprite geometry or texture atlas upload produced no data");
-        return false;
+        return fail(fmt::format(
+            "sprite extraction produced no upload data ({} vertices, {} atlases, {} batches)",
+            vertices.size(),
+            textures.size(),
+            batches.size()
+        ));
     }
 
     auto& backend = MetalBackend::get();
-    if (!backend.uploadSpriteGeometry(vertices, batches, textures))
-        return false;
-    if (!backend.attachSpriteView())
-        return false;
+    if (!backend.uploadSpriteGeometry(vertices, batches, textures)) {
+        const auto state = backend.snapshot();
+        return fail(state.error.empty()
+            ? "Metal rejected sprite geometry or atlas textures"
+            : state.error);
+    }
+    if (!backend.attachSpriteView()) {
+        const auto state = backend.snapshot();
+        return fail(state.error.empty()
+            ? "Metal composition view could not attach"
+            : state.error);
+    }
 
     if (m_layer->m_objectLayer && m_layer->m_objectLayer->isVisible()) {
         m_originalObjectLayerVisible = true;
@@ -477,6 +524,12 @@ bool MetalDiagnosticsOverlay::uploadSpriteAssets() {
     }
 
     m_spritesUploaded = true;
+    m_spriteUploadStatus = fmt::format(
+        "READY: {} SPRITES / {} ATLASES / {} BATCHES",
+        extracted.size(),
+        textures.size(),
+        batches.size()
+    );
     log::info(
         "Kyanite iOS: Metal sprite renderer attached ({} sprites, {} vertices, {} atlases, {} draw batches)",
         extracted.size(),
@@ -533,8 +586,25 @@ void MetalDiagnosticsOverlay::update(float dt) {
 
         if (!m_levelUploadAttempted)
             uploadLevelObjects();
-        if (m_levelUploaded && !m_spriteUploadAttempted)
-            uploadSpriteAssets();
+        if (m_levelUploaded && !m_spritesUploaded &&
+            m_spriteUploadAttempts < 3u) {
+            m_spriteUploadRetryElapsed += std::max(0.0f, dt);
+            if (m_spriteUploadAttempts == 0u ||
+                m_spriteUploadRetryElapsed >= 1.0f) {
+                m_spriteUploadRetryElapsed = 0.0f;
+                ++m_spriteUploadAttempts;
+                const bool uploaded = uploadSpriteAssets();
+                if (!uploaded) {
+                    m_spriteUploadStatus = fmt::format(
+                        "{}: {}",
+                        m_spriteUploadAttempts >= 3u
+                            ? "FAILED AFTER 3 ATTEMPTS"
+                            : fmt::format("RETRY {}/3", m_spriteUploadAttempts),
+                        m_spriteUploadStatus
+                    );
+                }
+            }
+        }
 
         auto& backend = MetalBackend::get();
         if (m_spritesUploaded && !backend.snapshot().spriteViewAttached) {
@@ -668,6 +738,11 @@ void MetalDiagnosticsOverlay::refreshText() {
         "Metal view: {} | rendered frames: {}\n",
         state.spriteViewAttached ? "ATTACHED" : "NOT ATTACHED",
         state.renderedFrames
+    );
+    text += fmt::format(
+        "Sprite upload: {}/3 | {}\\n",
+        m_spriteUploadAttempts,
+        m_spriteUploadStatus
     );
     text += m_stockLayerHidden
         ? "Active level renderer: METAL SPRITE PASS\n"

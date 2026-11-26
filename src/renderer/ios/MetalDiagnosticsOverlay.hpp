@@ -2,6 +2,8 @@
 
 #include <Geode/Geode.hpp>
 #include <Geode/binding/PlayLayer.hpp>
+#include <cstdint>
+#include <string>
 
 class MetalDiagnosticsOverlay : public cocos2d::CCNode {
 public:
@@ -23,8 +25,10 @@ private:
     bool m_probeRequested = false;
     bool m_levelUploadAttempted = false;
     bool m_levelUploaded = false;
-    bool m_spriteUploadAttempted = false;
     bool m_spritesUploaded = false;
+    std::uint32_t m_spriteUploadAttempts = 0;
+    float m_spriteUploadRetryElapsed = 0.0f;
+    std::string m_spriteUploadStatus = "WAITING";
     bool m_stockLayerHidden = false;
     bool m_originalObjectLayerVisible = true;
 };
