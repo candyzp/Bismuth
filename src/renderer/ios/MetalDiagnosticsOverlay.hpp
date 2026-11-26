@@ -17,7 +17,6 @@ private:
     void refreshText();
 
     PlayLayer* m_layer = nullptr;
-    cocos2d::CCLayerColor* m_background = nullptr;
     cocos2d::CCLabelBMFont* m_label = nullptr;
     float m_refreshElapsed = 0.0f;
     bool m_probeRequested = false;
