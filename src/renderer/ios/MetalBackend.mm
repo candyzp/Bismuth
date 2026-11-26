@@ -267,8 +267,8 @@ bool MetalBackend::initialize() {
 
             struct KyaniteSpriteVarying {
                 float4 position [[position]];
-                float2 uv;
-                float4 color;
+                float2 uv [[user(locn0)]];
+                float4 color [[user(locn1)]];
             };
 
             vertex KyaniteSpriteVarying kyanite_sprite_vertex(
