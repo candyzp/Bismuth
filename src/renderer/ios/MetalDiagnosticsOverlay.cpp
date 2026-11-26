@@ -306,8 +306,12 @@ bool MetalDiagnosticsOverlay::uploadSpriteAssets() {
                 object,
                 transform,
                 foundIndex->second,
-                static_cast<std::int32_t>(object->getObjectZLayer()),
-                object->getObjectZOrder(),
+                static_cast<std::int32_t>(
+                    object->m_zLayer != ZLayer::Default
+                        ? object->m_zLayer
+                        : object->m_defaultZLayer
+                ),
+                object->m_zOrder != 0 ? object->m_zOrder : object->m_defaultZOrder,
                 sequence++,
                 spriteType == 3 || object->m_baseOrDetailBlending
             });
