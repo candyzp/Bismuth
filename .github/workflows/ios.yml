@@ -23,11 +23,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build iOS mod (validation only)
+      - name: Build iOS mod
+        id: build
         uses: geode-sdk/build-geode-mod@main
         with:
           target: iOS
 
-      # No binary artifact is published from this AI-modified branch.
-      # The upstream Kyanite license places a restriction on distributing
-      # binaries of AI-modified versions.
+      - name: Upload iOS .geode artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kyanite-iOS-Geode
+          path: ${{ steps.build.outputs.build-output }}/*.geode
+          if-no-files-found: error
+          retention-days: 30
