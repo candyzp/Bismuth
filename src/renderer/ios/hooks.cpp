@@ -95,8 +95,8 @@ class $modify(KyaniteIOSDiagnosticsGameLayer, GJBaseGameLayer) {
                 );
             } else {
                 const MetalPoint center{
-                    centerObject->m_positionX,
-                    centerObject->m_positionY
+                    static_cast<float>(centerObject->m_positionX),
+                    static_cast<float>(centerObject->m_positionY)
                 };
                 MetalBackend::get().rotateGroup(
                     targetId,
