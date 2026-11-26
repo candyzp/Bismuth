@@ -458,6 +458,72 @@ bool MetalBackend::initialize() {
             return false;
         }
 
+        id<MTLFunction> spriteVertexFunction =
+            [library newFunctionWithName:@"kyanite_sprite_vertex"];
+        id<MTLFunction> spriteFragmentFunction =
+            [library newFunctionWithName:@"kyanite_sprite_fragment"];
+        if (!spriteVertexFunction || !spriteFragmentFunction) {
+            std::lock_guard<std::mutex> lock(m_impl->textMutex);
+            m_impl->error = "Metal sprite vertex/fragment shader functions were not found";
+            return false;
+        }
+
+        MTLRenderPipelineDescriptor* renderDescriptor =
+            [[MTLRenderPipelineDescriptor alloc] init];
+        renderDescriptor.vertexFunction = spriteVertexFunction;
+        renderDescriptor.fragmentFunction = spriteFragmentFunction;
+        renderDescriptor.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+        auto* normalBlend = renderDescriptor.colorAttachments[0];
+        normalBlend.blendingEnabled = YES;
+        normalBlend.rgbBlendOperation = MTLBlendOperationAdd;
+        normalBlend.alphaBlendOperation = MTLBlendOperationAdd;
+        normalBlend.sourceRGBBlendFactor = MTLBlendFactorOne;
+        normalBlend.destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+        normalBlend.sourceAlphaBlendFactor = MTLBlendFactorOne;
+        normalBlend.destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+
+        NSError* renderPipelineError = nil;
+        m_impl->spriteRenderPipeline =
+            [m_impl->device newRenderPipelineStateWithDescriptor:renderDescriptor
+                                                            error:&renderPipelineError];
+        if (!m_impl->spriteRenderPipeline) {
+            std::lock_guard<std::mutex> lock(m_impl->textMutex);
+            m_impl->error = renderPipelineError
+                ? toStdString(renderPipelineError.localizedDescription)
+                : "Metal sprite render pipeline creation failed";
+            return false;
+        }
+
+        normalBlend.sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
+        normalBlend.destinationRGBBlendFactor = MTLBlendFactorOne;
+        normalBlend.sourceAlphaBlendFactor = MTLBlendFactorOne;
+        normalBlend.destinationAlphaBlendFactor = MTLBlendFactorOne;
+        NSError* additivePipelineError = nil;
+        m_impl->additiveSpriteRenderPipeline =
+            [m_impl->device newRenderPipelineStateWithDescriptor:renderDescriptor
+                                                            error:&additivePipelineError];
+        if (!m_impl->additiveSpriteRenderPipeline) {
+            std::lock_guard<std::mutex> lock(m_impl->textMutex);
+            m_impl->error = additivePipelineError
+                ? toStdString(additivePipelineError.localizedDescription)
+                : "Metal additive sprite pipeline creation failed";
+            return false;
+        }
+
+        MTLSamplerDescriptor* samplerDescriptor =
+            [[MTLSamplerDescriptor alloc] init];
+        samplerDescriptor.minFilter = MTLSamplerMinMagFilterLinear;
+        samplerDescriptor.magFilter = MTLSamplerMinMagFilterLinear;
+        samplerDescriptor.sAddressMode = MTLSamplerAddressModeClampToEdge;
+        samplerDescriptor.tAddressMode = MTLSamplerAddressModeClampToEdge;
+        m_impl->spriteSampler =
+            [m_impl->device newSamplerStateWithDescriptor:samplerDescriptor];
+        if (!m_impl->spriteSampler) {
+            std::lock_guard<std::mutex> lock(m_impl->textMutex);
+            m_impl->error = "Metal sprite sampler creation failed";
+            return false;
+        }
+
         m_impl->probeCounter =
             [m_impl->device newBufferWithLength:sizeof(std::uint32_t)
                                         options:MTLResourceStorageModeShared];
@@ -660,9 +726,13 @@ bool MetalBackend::uploadLevelObjects(
         id<MTLBuffer> newVisibleCountBuffer =
             [m_impl->device newBufferWithLength:sizeof(std::uint32_t)
                                         options:MTLResourceStorageModeShared];
+        id<MTLBuffer> newVisibleMaskBuffer =
+            [m_impl->device newBufferWithLength:
+                sizeof(std::uint32_t) * std::max<std::size_t>(1, gpuObjects.size())
+                                        options:MTLResourceStorageModeShared];
 
         if (!newObjectBuffer || !newGroupBuffer || !newCameraBuffer ||
-            !newVisibleBuffer || !newVisibleCountBuffer) {
+            !newVisibleBuffer || !newVisibleCountBuffer || !newVisibleMaskBuffer) {
             std::lock_guard<std::mutex> lock(m_impl->textMutex);
             m_impl->error = "Failed to allocate one or more Metal level/culling buffers";
             m_impl->levelDataReady.store(false, std::memory_order_release);
@@ -680,6 +750,9 @@ bool MetalBackend::uploadLevelObjects(
         m_impl->cameraBuffer = newCameraBuffer;
         m_impl->visibleIndexBuffer = newVisibleBuffer;
         m_impl->visibleCountBuffer = newVisibleCountBuffer;
+        m_impl->visibleMaskBuffer = newVisibleMaskBuffer;
+        std::memset(newVisibleMaskBuffer.contents, 0,
+                    sizeof(std::uint32_t) * std::max<std::size_t>(1, gpuObjects.size()));
 
         m_impl->groupStates = std::move(groupStates);
         m_impl->groupIdsPerCombination = std::move(groupIdsPerCombination);
