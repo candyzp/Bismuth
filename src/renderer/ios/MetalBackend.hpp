@@ -62,6 +62,10 @@ struct MetalBackendSnapshot {
     bool cullingSubmitted = false;
     bool cullingCompleted = false;
     bool cullingFailed = false;
+    bool spritePipelineReady = false;
+    bool spriteGeometryReady = false;
+    bool spriteViewAttached = false;
+    std::uint32_t renderedFrames = 0;
 
     std::uint32_t expectedProbeThreads = 0;
     std::uint32_t completedProbeThreads = 0;
