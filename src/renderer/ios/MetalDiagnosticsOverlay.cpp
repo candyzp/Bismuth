@@ -285,8 +285,8 @@ void MetalDiagnosticsOverlay::refreshText() {
     if (!state.error.empty())
         text += fmt::format("Metal error: {}\n", state.error);
 
-    text += "Metal sprite draw pass: NOT IMPLEMENTED\\n";
-    text += "Level renderer: Geometry Dash stock renderer\\n";
+    text += "Metal sprite draw pass: NOT IMPLEMENTED\n";
+    text += "Level renderer: Geometry Dash stock renderer\n";
 
     m_label->setString(text.c_str());
 }
