@@ -11,6 +11,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <functional>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 using namespace geode::prelude;
@@ -196,6 +199,8 @@ bool MetalDiagnosticsOverlay::init(PlayLayer* layer) {
     scheduleUpdate();
     MetalBackend::get().initialize();
     uploadLevelObjects();
+    if (m_levelUploaded)
+        uploadSpriteAssets();
     refreshText();
     return true;
 }
@@ -506,7 +511,6 @@ void MetalDiagnosticsOverlay::submitVisibilityWork() {
     // Group opacity is not queried here because the corresponding game
     // method is not exported by the iOS binary. Keep the safe default alpha.
     backend.updateCameraBounds(minX, minY, maxX, maxY);
-    backend.submitCullingFrame();
 }
 
 void MetalDiagnosticsOverlay::update(float dt) {
@@ -524,8 +528,16 @@ void MetalDiagnosticsOverlay::update(float dt) {
 
         if (!m_levelUploadAttempted)
             uploadLevelObjects();
+        if (m_levelUploaded && !m_spriteUploadAttempted)
+            uploadSpriteAssets();
 
         submitVisibilityWork();
+    } else {
+        if (m_stockLayerHidden && m_layer && m_layer->m_objectLayer) {
+            m_layer->m_objectLayer->setVisible(true);
+            m_stockLayerHidden = false;
+        }
+        MetalBackend::get().detachSpriteView();
     }
 
     m_refreshElapsed += dt;
@@ -634,8 +646,19 @@ void MetalDiagnosticsOverlay::refreshText() {
     if (!state.error.empty())
         text += fmt::format("Metal error: {}\n", state.error);
 
-    text += "Metal sprite draw pass: NOT IMPLEMENTED\n";
-    text += "Level renderer: Geometry Dash stock renderer\n";
+    text += fmt::format(
+        "Metal sprite pipeline: {} | geometry: {}\\n",
+        state.spritePipelineReady ? "READY" : "NOT READY",
+        state.spriteGeometryReady ? "READY" : "NOT READY"
+    );
+    text += fmt::format(
+        "Metal view: {} | rendered frames: {}\\n",
+        state.spriteViewAttached ? "ATTACHED" : "NOT ATTACHED",
+        state.renderedFrames
+    );
+    text += m_stockLayerHidden
+        ? "Active level renderer: METAL SPRITE PASS\\n"
+        : "Active level renderer: STOCK GD (fallback)\\n";
 
     m_label->setString(text.c_str());
 }
