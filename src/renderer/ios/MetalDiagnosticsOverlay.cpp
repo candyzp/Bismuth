@@ -133,8 +133,16 @@ bool readTexturePixels(
 
     GLint previousFramebuffer = 0;
     GLint previousPackAlignment = 4;
+    GLint previousPackRowLength = 0;
+    GLint previousPackSkipPixels = 0;
+    GLint previousPackSkipRows = 0;
+    GLint previousPixelPackBuffer = 0;
     glGetIntegerv(GL_FRAMEBUFFER_BINDING, &previousFramebuffer);
     glGetIntegerv(GL_PACK_ALIGNMENT, &previousPackAlignment);
+    glGetIntegerv(GL_PACK_ROW_LENGTH, &previousPackRowLength);
+    glGetIntegerv(GL_PACK_SKIP_PIXELS, &previousPackSkipPixels);
+    glGetIntegerv(GL_PACK_SKIP_ROWS, &previousPackSkipRows);
+    glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &previousPixelPackBuffer);
 
     GLuint framebuffer = 0;
     glGenFramebuffers(1, &framebuffer);
@@ -165,7 +173,11 @@ bool readTexturePixels(
     output.width = width;
     output.height = height;
     output.rgba.resize(static_cast<std::size_t>(width) * height * 4u);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
     glPixelStorei(GL_PACK_ALIGNMENT, 4);
+    glPixelStorei(GL_PACK_ROW_LENGTH, 0);
+    glPixelStorei(GL_PACK_SKIP_PIXELS, 0);
+    glPixelStorei(GL_PACK_SKIP_ROWS, 0);
     glReadPixels(
         0, 0,
         static_cast<GLsizei>(width),
@@ -177,6 +189,10 @@ bool readTexturePixels(
     const GLenum readError = glGetError();
 
     glPixelStorei(GL_PACK_ALIGNMENT, previousPackAlignment);
+    glPixelStorei(GL_PACK_ROW_LENGTH, previousPackRowLength);
+    glPixelStorei(GL_PACK_SKIP_PIXELS, previousPackSkipPixels);
+    glPixelStorei(GL_PACK_SKIP_ROWS, previousPackSkipRows);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, static_cast<GLuint>(previousPixelPackBuffer));
     glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(previousFramebuffer));
     glDeleteFramebuffers(1, &framebuffer);
 
@@ -595,13 +611,12 @@ void MetalDiagnosticsOverlay::update(float dt) {
                 ++m_spriteUploadAttempts;
                 const bool uploaded = uploadSpriteAssets();
                 if (!uploaded) {
-                    m_spriteUploadStatus = fmt::format(
-                        "{}: {}",
-                        m_spriteUploadAttempts >= 3u
-                            ? "FAILED AFTER 3 ATTEMPTS"
-                            : fmt::format("RETRY {}/3", m_spriteUploadAttempts),
-                        m_spriteUploadStatus
-                    );
+                    if (m_spriteUploadAttempts >= 3u) {
+                        m_spriteUploadStatus = fmt::format(
+                            "FAILED AFTER 3 ATTEMPTS: {}",
+                            m_spriteUploadStatus
+                        );
+                    }
                 }
             }
         }
@@ -740,7 +755,7 @@ void MetalDiagnosticsOverlay::refreshText() {
         state.renderedFrames
     );
     text += fmt::format(
-        "Sprite upload: {}/3 | {}\\n",
+        "Sprite upload: {}/3 | {}\n",
         m_spriteUploadAttempts,
         m_spriteUploadStatus
     );
