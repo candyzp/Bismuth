@@ -13,6 +13,7 @@ protected:
 
 private:
     bool uploadLevelObjects();
+    bool uploadSpriteAssets();
     void submitVisibilityWork();
     void refreshText();
 
@@ -22,4 +23,7 @@ private:
     bool m_probeRequested = false;
     bool m_levelUploadAttempted = false;
     bool m_levelUploaded = false;
+    bool m_spriteUploadAttempted = false;
+    bool m_spritesUploaded = false;
+    bool m_stockLayerHidden = false;
 };
