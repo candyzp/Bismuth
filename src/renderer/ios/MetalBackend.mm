@@ -784,6 +784,304 @@ bool MetalBackend::uploadLevelObjects(
     }
 }
 
+
+bool MetalBackend::uploadSpriteGeometry(
+    const std::vector<MetalSpriteVertex>& vertices,
+    const std::vector<MetalSpriteBatch>& batches,
+    const std::vector<MetalTextureInput>& textures
+) {
+    @autoreleasepool {
+        if (!initialize() || vertices.empty() || batches.empty() || textures.empty())
+            return false;
+        if (m_impl->frameInFlight.load(std::memory_order_acquire))
+            return false;
+
+        id<MTLBuffer> newVertexBuffer =
+            [m_impl->device newBufferWithBytes:vertices.data()
+                                         length:vertices.size() * sizeof(MetalSpriteVertex)
+                                        options:MTLResourceStorageModeShared];
+        if (!newVertexBuffer) {
+            std::lock_guard<std::mutex> lock(m_impl->textMutex);
+            m_impl->error = "Failed to allocate Metal sprite vertex buffer";
+            return false;
+        }
+
+        NSMutableArray<id<MTLTexture>>* newTextures =
+            [NSMutableArray arrayWithCapacity:textures.size()];
+        for (const auto& input : textures) {
+            if (input.width == 0 || input.height == 0 ||
+                input.rgba.size() != static_cast<std::size_t>(input.width) * input.height * 4u) {
+                std::lock_guard<std::mutex> lock(m_impl->textMutex);
+                m_impl->error = "Invalid sprite atlas pixel data";
+                return false;
+            }
+
+            MTLTextureDescriptor* descriptor =
+                [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+                                                                   width:input.width
+                                                                  height:input.height
+                                                               mipmapped:NO];
+            descriptor.usage = MTLTextureUsageShaderRead;
+            id<MTLTexture> texture =
+                [m_impl->device newTextureWithDescriptor:descriptor];
+            if (!texture) {
+                std::lock_guard<std::mutex> lock(m_impl->textMutex);
+                m_impl->error = "Failed to create Metal sprite atlas texture";
+                return false;
+            }
+            [texture replaceRegion:MTLRegionMake2D(0, 0, input.width, input.height)
+                        mipmapLevel:0
+                          withBytes:input.rgba.data()
+                        bytesPerRow:static_cast<NSUInteger>(input.width) * 4u];
+            [newTextures addObject:texture];
+        }
+
+        for (const auto& batch : batches) {
+            if (batch.vertexCount == 0 ||
+                static_cast<std::size_t>(batch.firstVertex) + batch.vertexCount > vertices.size() ||
+                batch.textureIndex >= newTextures.count) {
+                std::lock_guard<std::mutex> lock(m_impl->textMutex);
+                m_impl->error = "Sprite batch references invalid vertex or texture data";
+                return false;
+            }
+        }
+
+        m_impl->spriteVertexBuffer = newVertexBuffer;
+        m_impl->spriteTextures = newTextures;
+        m_impl->spriteBatches = batches;
+        {
+            std::lock_guard<std::mutex> lock(m_impl->textMutex);
+            m_impl->error.clear();
+        }
+        return true;
+    }
+}
+
+bool MetalBackend::attachSpriteView() {
+    @autoreleasepool {
+        if (!m_impl->device || !m_impl->spriteRenderPipeline ||
+            !m_impl->spriteVertexBuffer || !m_impl->spriteTextures ||
+            m_impl->spriteTextures.count == 0) {
+            std::lock_guard<std::mutex> lock(m_impl->textMutex);
+            m_impl->error = "Metal sprite view cannot attach before sprite geometry is ready";
+            return false;
+        }
+
+        UIApplication* application = [UIApplication sharedApplication];
+        UIWindow* window = application.keyWindow;
+        if (!window) {
+            for (UIWindow* candidate in application.windows) {
+                if (candidate.isKeyWindow) {
+                    window = candidate;
+                    break;
+                }
+            }
+        }
+        if (!window) {
+            std::lock_guard<std::mutex> lock(m_impl->textMutex);
+            m_impl->error = "Unable to locate the Geometry Dash window for Metal composition";
+            return false;
+        }
+
+        if (m_impl->spriteView) {
+            [m_impl->spriteView removeFromSuperview];
+            m_impl->spriteView.delegate = nil;
+            m_impl->spriteView = nil;
+        }
+
+        UIView* hostView = window.rootViewController.view;
+        if (!hostView)
+            hostView = window;
+
+        MTKView* view = [[MTKView alloc] initWithFrame:hostView.bounds
+                                               device:m_impl->device];
+        if (!view) {
+            std::lock_guard<std::mutex> lock(m_impl->textMutex);
+            m_impl->error = "Failed to create the Metal composition view";
+            return false;
+        }
+
+        m_impl->spriteViewDelegate = [[KyaniteMetalViewDelegate alloc] init];
+        view.delegate = m_impl->spriteViewDelegate;
+        view.frame = hostView.bounds;
+        view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        view.userInteractionEnabled = NO;
+        view.opaque = NO;
+        view.backgroundColor = [UIColor clearColor];
+        view.layer.opaque = NO;
+        view.clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 0.0);
+        view.colorPixelFormat = MTLPixelFormatBGRA8Unorm;
+        view.enableSetNeedsDisplay = NO;
+        view.paused = NO;
+        view.preferredFramesPerSecond = 60;
+        view.framebufferOnly = YES;
+
+        [hostView addSubview:view];
+        [hostView bringSubviewToFront:view];
+        m_impl->spriteView = view;
+        return true;
+    }
+}
+
+void MetalBackend::detachSpriteView() {
+    @autoreleasepool {
+        if (m_impl->spriteView) {
+            m_impl->spriteView.paused = YES;
+            m_impl->spriteView.delegate = nil;
+            [m_impl->spriteView removeFromSuperview];
+            m_impl->spriteView = nil;
+        }
+        m_impl->spriteViewDelegate = nil;
+    }
+}
+
+void MetalBackend::renderFrame(void* rawView) {
+    @autoreleasepool {
+        MTKView* view = (__bridge MTKView*)rawView;
+        if (!view || !m_impl->levelDataReady.load(std::memory_order_acquire) ||
+            !m_impl->spriteVertexBuffer || !m_impl->spriteTextures ||
+            m_impl->spriteBatches.empty() || !m_impl->visibleMaskBuffer)
+            return;
+
+        id<CAMetalDrawable> drawable = view.currentDrawable;
+        MTLRenderPassDescriptor* renderPass = view.currentRenderPassDescriptor;
+        if (!drawable || !renderPass)
+            return;
+
+        if (m_impl->frameInFlight.exchange(true, std::memory_order_acq_rel)) {
+            m_impl->skippedBusyFrames.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+
+        const std::uint32_t count =
+            m_impl->objectCount.load(std::memory_order_acquire);
+        id<MTLCommandBuffer> commandBuffer = [m_impl->commandQueue commandBuffer];
+        if (!commandBuffer) {
+            std::lock_guard<std::mutex> lock(m_impl->textMutex);
+            m_impl->error = "Metal render command buffer creation failed";
+            m_impl->cullingFailed.store(true, std::memory_order_release);
+            m_impl->frameInFlight.store(false, std::memory_order_release);
+            return;
+        }
+
+        if (m_impl->groupStateDirty.exchange(false, std::memory_order_acq_rel)) {
+            std::memcpy(m_impl->groupStateBuffer.contents,
+                        m_impl->groupStates.data(),
+                        sizeof(MetalGroupState) * m_impl->groupStates.size());
+        }
+        std::memcpy(m_impl->cameraBuffer.contents,
+                    &m_impl->cameraBounds,
+                    sizeof(MetalCameraBounds));
+        *static_cast<std::uint32_t*>(m_impl->visibleCountBuffer.contents) = 0u;
+
+        id<MTLComputeCommandEncoder> compute =
+            [commandBuffer computeCommandEncoder];
+        if (!compute) {
+            std::lock_guard<std::mutex> lock(m_impl->textMutex);
+            m_impl->error = "Metal render culling encoder creation failed";
+            m_impl->cullingFailed.store(true, std::memory_order_release);
+            m_impl->frameInFlight.store(false, std::memory_order_release);
+            return;
+        }
+
+        if (count > 0) {
+            [compute setComputePipelineState:m_impl->cullingPipeline];
+            [compute setBuffer:m_impl->objectBuffer offset:0 atIndex:0];
+            [compute setBuffer:m_impl->groupStateBuffer offset:0 atIndex:1];
+            [compute setBuffer:m_impl->cameraBuffer offset:0 atIndex:2];
+            [compute setBuffer:m_impl->visibleIndexBuffer offset:0 atIndex:3];
+            [compute setBuffer:m_impl->visibleCountBuffer offset:0 atIndex:4];
+            [compute setBytes:&count length:sizeof(count) atIndex:5];
+            [compute setBuffer:m_impl->visibleMaskBuffer offset:0 atIndex:6];
+            const std::uint32_t groups =
+                (count + THREADS_PER_GROUP - 1u) / THREADS_PER_GROUP;
+            [compute dispatchThreadgroups:MTLSizeMake(groups, 1, 1)
+                    threadsPerThreadgroup:MTLSizeMake(THREADS_PER_GROUP, 1, 1)];
+        }
+        [compute endEncoding];
+
+        id<MTLRenderCommandEncoder> render =
+            [commandBuffer renderCommandEncoderWithDescriptor:renderPass];
+        if (!render) {
+            std::lock_guard<std::mutex> lock(m_impl->textMutex);
+            m_impl->error = "Metal sprite render encoder creation failed";
+            m_impl->cullingFailed.store(true, std::memory_order_release);
+            m_impl->frameInFlight.store(false, std::memory_order_release);
+            return;
+        }
+
+        [render setVertexBuffer:m_impl->spriteVertexBuffer offset:0 atIndex:0];
+        [render setVertexBuffer:m_impl->objectBuffer offset:0 atIndex:1];
+        [render setVertexBuffer:m_impl->groupStateBuffer offset:0 atIndex:2];
+        [render setVertexBuffer:m_impl->visibleMaskBuffer offset:0 atIndex:3];
+        [render setVertexBuffer:m_impl->cameraBuffer offset:0 atIndex:4];
+        [render setFragmentSamplerState:m_impl->spriteSampler atIndex:0];
+
+        for (const auto& batch : m_impl->spriteBatches) {
+            if (batch.textureIndex >= m_impl->spriteTextures.count)
+                continue;
+            id<MTLRenderPipelineState> pipeline = batch.additive
+                ? m_impl->additiveSpriteRenderPipeline
+                : m_impl->spriteRenderPipeline;
+            [render setRenderPipelineState:pipeline];
+            [render setFragmentTexture:m_impl->spriteTextures[batch.textureIndex]
+                               atIndex:0];
+            [render drawPrimitives:MTLPrimitiveTypeTriangle
+                       vertexStart:batch.firstVertex
+                       vertexCount:batch.vertexCount];
+        }
+        [render endEncoding];
+        [commandBuffer presentDrawable:drawable];
+
+        Impl* state = m_impl.get();
+        const std::uint64_t submittedGeneration =
+            m_impl->generation.load(std::memory_order_acquire);
+        id<MTLBuffer> resultCountBuffer = m_impl->visibleCountBuffer;
+        [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> completedBuffer) {
+            if (completedBuffer.status != MTLCommandBufferStatusCompleted) {
+                if (state->generation.load(std::memory_order_acquire) == submittedGeneration) {
+                    std::lock_guard<std::mutex> lock(state->textMutex);
+                    state->error = completedBuffer.error
+                        ? toStdString(completedBuffer.error.localizedDescription)
+                        : "Metal sprite render command buffer did not complete";
+                    state->cullingFailed.store(true, std::memory_order_release);
+                }
+                state->frameInFlight.store(false, std::memory_order_release);
+                return;
+            }
+
+            const auto* countResult =
+                static_cast<const std::uint32_t*>(resultCountBuffer.contents);
+            const std::uint32_t visible =
+                std::min(countResult ? *countResult : 0u, count);
+            if (state->generation.load(std::memory_order_acquire) == submittedGeneration) {
+                state->visibleObjectCount.store(visible, std::memory_order_release);
+                state->culledObjectCount.store(count - visible, std::memory_order_release);
+                state->completedCullingFrames.fetch_add(1, std::memory_order_relaxed);
+                state->renderedFrames.fetch_add(1, std::memory_order_relaxed);
+
+                const double gpuStart = completedBuffer.GPUStartTime;
+                const double gpuEnd = completedBuffer.GPUEndTime;
+                if (gpuStart > 0.0 && gpuEnd >= gpuStart) {
+                    state->cullingGpuTimeMilliseconds.store(
+                        (gpuEnd - gpuStart) * 1000.0,
+                        std::memory_order_release
+                    );
+                    state->cullingGpuTimeAvailable.store(true, std::memory_order_release);
+                }
+                state->cullingCompleted.store(true, std::memory_order_release);
+            }
+            state->frameInFlight.store(false, std::memory_order_release);
+        }];
+
+        m_impl->cullingSubmitted.store(true, std::memory_order_release);
+        m_impl->cullingCompleted.store(false, std::memory_order_release);
+        m_impl->cullingFailed.store(false, std::memory_order_release);
+        m_impl->submittedCullingFrames.fetch_add(1, std::memory_order_relaxed);
+        [commandBuffer commit];
+    }
+}
+
 void MetalBackend::updateCameraBounds(
     float minX, float minY, float maxX, float maxY
 ) {
