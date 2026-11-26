@@ -260,16 +260,3 @@ game is most of the frame. Kyanite reports its own cost separately on purpose.
   and [OpenCL-Headers](https://github.com/KhronosGroup/OpenCL-Headers): the
   libraries the renderer builds on.
 - [Geode SDK](https://github.com/geode-sdk/geode): the mod loader.
-
-## License
-
-Kyanite - GPU-driven renderer for Geometry Dash
-Copyright (C) 2026 IliasHDZ
-
-If the program has been modified using AI, you CANNOT DISTRIBUTE a binary of
-the modified program.
-
-This project also CANNOT BE USED UNDER ANY CIRCUMSTANCES TO FACILITATE OR
-ADVANCE GEOMETRY DASH LEVEL GENERATION OR MODIFICATION USING GENERATIVE AI.
-
-Except for the above clauses, the GPL v3 license applies. See [LICENSE](LICENSE).
