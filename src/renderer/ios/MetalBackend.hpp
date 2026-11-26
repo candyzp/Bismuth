@@ -18,6 +18,32 @@ struct MetalObjectInput {
     std::uint32_t flags = 0;
 };
 
+
+struct MetalSpriteVertex {
+    float offsetX = 0.0f;
+    float offsetY = 0.0f;
+    float u = 0.0f;
+    float v = 0.0f;
+    std::uint32_t objectIndex = 0;
+    float r = 1.0f;
+    float g = 1.0f;
+    float b = 1.0f;
+    float a = 1.0f;
+};
+
+struct MetalSpriteBatch {
+    std::uint32_t firstVertex = 0;
+    std::uint32_t vertexCount = 0;
+    std::uint32_t textureIndex = 0;
+    bool additive = false;
+};
+
+struct MetalTextureInput {
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    std::vector<std::uint8_t> rgba;
+};
+
 struct MetalPoint {
     float x = 0.0f;
     float y = 0.0f;
@@ -76,6 +102,14 @@ public:
     void submitComputeProbeOnce();
 
     bool uploadLevelObjects(const std::vector<MetalObjectInput>& objects);
+    bool uploadSpriteGeometry(
+        const std::vector<MetalSpriteVertex>& vertices,
+        const std::vector<MetalSpriteBatch>& batches,
+        const std::vector<MetalTextureInput>& textures
+    );
+    bool attachSpriteView();
+    void detachSpriteView();
+    void renderFrame(void* metalView);
     void updateCameraBounds(float minX, float minY, float maxX, float maxY);
     void submitCullingFrame();
 
