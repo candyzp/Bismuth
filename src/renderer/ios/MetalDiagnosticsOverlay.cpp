@@ -4,6 +4,10 @@
 #include <Geode/Enums.hpp>
 #include <Geode/binding/GameObject.hpp>
 #include <Geode/cocos/CCDirector.h>
+#include <Geode/cocos/cocoa/CCAffineTransform.h>
+#include <Geode/cocos/sprite_nodes/CCSprite.h>
+#import <OpenGLES/ES3/gl.h>
+#import <OpenGLES/ES3/glext.h>
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -11,10 +15,10 @@
 
 using namespace geode::prelude;
 
+
 namespace {
 constexpr float DEG_TO_RAD = 0.01745329251994329577f;
 constexpr std::uint32_t MAX_GROUP_ID = 9999;
-// Kyanite's common.hpp constants: these IDs are excluded from render batches.
 constexpr int IOS_GUIDE_OBJECT_ID = 2016;
 constexpr int IOS_KEYFRAME_OBJECT_ID = 3032;
 
@@ -23,14 +27,139 @@ bool shouldIncludeObject(PlayLayer* layer, GameObject* object) {
         return false;
     if (object == layer->m_anticheatSpike || object == layer->m_endPortal)
         return false;
-    // GameObject::isTrigger() is not exported by the iOS game binary.
-    // Trigger nodes have no renderable sprite in this metadata-only pass.
     if (object->m_isHide)
         return false;
     if (object->m_objectID == IOS_GUIDE_OBJECT_ID ||
         object->m_objectID == IOS_KEYFRAME_OBJECT_ID)
         return false;
     return true;
+}
+
+struct ExtractedSprite {
+    cocos2d::CCSprite* sprite = nullptr;
+    GameObject* object = nullptr;
+    cocos2d::CCAffineTransform transform{};
+    std::uint32_t objectIndex = 0;
+    std::int32_t zLayer = 0;
+    std::int32_t zOrder = 0;
+    std::uint64_t sequence = 0;
+    bool additive = false;
+};
+
+using SpriteReceiver = std::function<void(cocos2d::CCSprite*, const cocos2d::CCAffineTransform&, int)>;
+
+void unpackSpriteTree(
+    GameObject* object,
+    cocos2d::CCSprite* sprite,
+    cocos2d::CCAffineTransform transform,
+    int type,
+    const SpriteReceiver& receive
+) {
+    if (!object || !sprite)
+        return;
+
+    const float savedRotationX = object->getRotationX();
+    const float savedRotationY = object->getRotationY();
+    object->setRotationX(object->m_startRotationX);
+    object->setRotationY(object->m_startRotationY);
+    transform = CCAffineTransformConcat(sprite->nodeToParentTransform(), transform);
+    object->setRotationX(savedRotationX);
+    object->setRotationY(savedRotationY);
+
+    if (sprite == object->m_colorSprite)
+        type = 1;
+    if (sprite == object->m_glowSprite)
+        type = 3;
+
+    std::vector<cocos2d::CCSprite*> spriteChildren;
+    for (auto child : CCArrayExt<cocos2d::CCNode*, false>(sprite->getChildren())) {
+        if (auto childSprite = typeinfo_cast<cocos2d::CCSprite*>(child))
+            spriteChildren.push_back(childSprite);
+    }
+
+    for (auto child : spriteChildren) {
+        if (child->getZOrder() < 0)
+            unpackSpriteTree(object, child, transform, type, receive);
+    }
+
+    if (!sprite->getDontDraw())
+        receive(sprite, transform, type);
+
+    for (auto child : spriteChildren) {
+        if (child->getZOrder() >= 0)
+            unpackSpriteTree(object, child, transform, type, receive);
+    }
+}
+
+void unpackGameObject(GameObject* object, const SpriteReceiver& receive) {
+    if (!object)
+        return;
+
+    const auto identity = CCAffineTransformMakeIdentity();
+    auto* colorSprite = object->m_colorSprite;
+    const bool separateColorSprite =
+        colorSprite && colorSprite->getParent() != object;
+    const bool colorSpriteInFront = object->m_colorZLayerRelated;
+
+    if (object->m_glowSprite)
+        unpackSpriteTree(object, object->m_glowSprite, identity, 3, receive);
+    if (separateColorSprite && !colorSpriteInFront)
+        unpackSpriteTree(object, colorSprite, identity, 1, receive);
+    unpackSpriteTree(object, object, identity, 0, receive);
+    if (separateColorSprite && colorSpriteInFront)
+        unpackSpriteTree(object, colorSprite, identity, 1, receive);
+}
+
+bool readTexturePixels(cocos2d::CCTexture2D* texture, MetalTextureInput& output) {
+    if (!texture || !texture->getName())
+        return false;
+
+    const auto width = static_cast<std::uint32_t>(texture->getPixelsWide());
+    const auto height = static_cast<std::uint32_t>(texture->getPixelsHigh());
+    if (width == 0 || height == 0)
+        return false;
+
+    GLint previousFramebuffer = 0;
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &previousFramebuffer);
+
+    GLuint framebuffer = 0;
+    glGenFramebuffers(1, &framebuffer);
+    if (framebuffer == 0)
+        return false;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+    glFramebufferTexture2D(
+        GL_FRAMEBUFFER,
+        GL_COLOR_ATTACHMENT0,
+        GL_TEXTURE_2D,
+        texture->getName(),
+        0
+    );
+    const GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    if (status != GL_FRAMEBUFFER_COMPLETE) {
+        glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(previousFramebuffer));
+        glDeleteFramebuffers(1, &framebuffer);
+        return false;
+    }
+
+    output.width = width;
+    output.height = height;
+    output.rgba.resize(static_cast<std::size_t>(width) * height * 4u);
+    glPixelStorei(GL_PACK_ALIGNMENT, 4);
+    glReadPixels(
+        0, 0,
+        static_cast<GLsizei>(width),
+        static_cast<GLsizei>(height),
+        GL_RGBA,
+        GL_UNSIGNED_BYTE,
+        output.rgba.data()
+    );
+    const GLenum readError = glGetError();
+
+    glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(previousFramebuffer));
+    glDeleteFramebuffers(1, &framebuffer);
+
+    return readError == GL_NO_ERROR;
 }
 } // namespace
 
