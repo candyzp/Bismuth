@@ -24,6 +24,11 @@ class $modify(KyaniteIOSDiagnosticsPlayLayer, PlayLayer) {
         );
     }
 
+    void onExit() {
+        MetalBackend::get().detachSpriteView();
+        PlayLayer::onExit();
+    }
+
     void resetLevel() {
         PlayLayer::resetLevel();
         MetalBackend::get().resetGroupStates();

@@ -95,8 +95,9 @@ struct MetalBackendSnapshot {
  *
  * Immutable object metadata is uploaded once per level. Each object points
  * to one shared group-combination state, matching Kyanite's core data model.
- * A Metal compute pass creates a GPU-visible object-index list; it does not
- * draw sprites yet, so Geometry Dash remains the authoritative renderer.
+ * Metal compute culls level objects and a Metal render pass draws extracted
+ * sprite quads into a transparent MTKView over the game. The iOS path is an
+ * experimental renderer and currently has limited dynamic color/effect parity.
  */
 class MetalBackend {
 public:

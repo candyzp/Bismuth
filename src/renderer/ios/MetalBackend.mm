@@ -193,7 +193,8 @@ bool MetalBackend::initialize() {
     @autoreleasepool {
         if (m_impl->device && m_impl->commandQueue &&
             m_impl->probePipeline && m_impl->cullingPipeline &&
-            m_impl->probeCounter)
+            m_impl->spriteRenderPipeline && m_impl->additiveSpriteRenderPipeline &&
+            m_impl->spriteSampler && m_impl->probeCounter)
             return true;
 
         m_impl->device = MTLCreateSystemDefaultDevice();
@@ -290,12 +291,7 @@ bool MetalBackend::initialize() {
                 const KyaniteObject object = objects[vertex.objectIndex];
                 const KyaniteGroupState state =
                     combinations[object.groupCombinationIndex];
-                const float c = cos(object.rotation);
-                const float s = sin(object.rotation);
-                const float2 localOffset = float2(
-                    c * vertex.offsetX - s * vertex.offsetY,
-                    s * vertex.offsetX + c * vertex.offsetY
-                );
+                const float2 localOffset = float2(vertex.offsetX, vertex.offsetY);
                 const float2 transformedOffset = float2(
                     state.localM00 * localOffset.x + state.localM01 * localOffset.y,
                     state.localM10 * localOffset.x + state.localM11 * localOffset.y
@@ -320,7 +316,7 @@ bool MetalBackend::initialize() {
                     1.0
                 );
                 out.uv = float2(vertex.u, vertex.v);
-                out.color = float4(vertex.r, vertex.g, vertex.b, vertex.a);
+                out.color = float4(vertex.r, vertex.g, vertex.b, vertex.a * state.alpha);
                 return out;
             }
 
@@ -1151,6 +1147,7 @@ void MetalBackend::submitCullingFrame() {
         [encoder setBuffer:m_impl->visibleIndexBuffer offset:0 atIndex:3];
         [encoder setBuffer:m_impl->visibleCountBuffer offset:0 atIndex:4];
         [encoder setBytes:&count length:sizeof(count) atIndex:5];
+        [encoder setBuffer:m_impl->visibleMaskBuffer offset:0 atIndex:6];
 
         const std::uint32_t groupCount =
             (count + THREADS_PER_GROUP - 1u) / THREADS_PER_GROUP;

@@ -44,28 +44,28 @@ bounds and output counter are prepared for each submitted frame. If a prior
 dispatch is still in flight, the next one is skipped rather than overwriting a
 buffer the GPU may still be reading.
 
-## Important renderer boundary
+## iOS Metal renderer status
 
-**This is not yet the complete Kyanite sprite renderer.** The visible-index list
-is diagnostic output and is not consumed by a Metal sprite draw pass. Geometry
-Dash's stock renderer continues to draw every level sprite and owns the visible
-frame. This GPU visibility workload therefore does not yet reduce the game's
-actual draw calls or guarantee an FPS improvement.
+The iOS branch now extracts level sprite quads and reads their current
+OpenGL-backed atlas textures at level setup. It uploads sprite vertices and
+atlas textures to Metal, runs the object visibility compute pass, and consumes
+the GPU-written visibility mask in the Metal vertex shader. A transparent
+MTKView composites the Metal sprite pass over the game; the original object
+layer is hidden only after sprite geometry, textures, and the Metal view attach
+successfully.
 
-A complete renderer still needs:
+This is an experimental first rendering path, not full feature parity. The
+current extraction uses quad geometry, snapshots sprite tint/opacity at level
+setup, and groups consecutive draw batches by texture and additive blending.
+It does not yet reproduce every Kyanite convex sprite mesh, dynamic color
+channel/HSV/pulse update, every blend-state transition, particles, special
+sheets, or all per-object trigger effects. The stock object layer is restored
+if the Metal workload is disabled or the Metal view is detached.
 
-1. Convert Kyanite's per-sprite vertices, texture coordinates, atlas pages,
-   blending modes, z-layer ordering, color/pulse state, and object flags into
-   Metal-compatible buffers.
-2. Upload the required game sprite atlases to Metal textures.
-3. Add Metal render and indirect-command pipelines that consume the culling
-   output while preserving Kyanite's draw ordering and blending behavior.
-4. Composite Metal output into the iOS Cocos2d/OpenGL ES frame without breaking
-   the game's other layers, particles, portals, checkpoints, or UI.
-5. Validate restart/checkpoint behavior, transform semantics, audio scale,
-   color channels, unsupported sheets, and safe fallback.
-6. Add Scale, Area/Enter, Advanced Follow, and Keyframe trigger behavior before
-   claiming full feature parity.
+Before claiming parity, validate layer ordering, rotated atlas frames, UV
+orientation, premultiplied-alpha behavior, group transforms, restart/checkpoint
+behavior, camera transforms, and memory/performance on device. Scale,
+Area/Enter, Advanced Follow, and Keyframe trigger behavior remain outstanding.
 
 ## Safety and compatibility rules
 

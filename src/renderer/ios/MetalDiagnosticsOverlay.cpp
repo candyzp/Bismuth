@@ -467,6 +467,7 @@ bool MetalDiagnosticsOverlay::uploadSpriteAssets() {
         return false;
 
     if (m_layer->m_objectLayer && m_layer->m_objectLayer->isVisible()) {
+        m_originalObjectLayerVisible = true;
         m_layer->m_objectLayer->setVisible(false);
         m_stockLayerHidden = true;
     }
@@ -483,7 +484,7 @@ bool MetalDiagnosticsOverlay::uploadSpriteAssets() {
 }
 
 void MetalDiagnosticsOverlay::submitVisibilityWork() {
-    if (!m_layer || !m_layer->m_objectLayer || !m_levelUploaded)
+    if (!m_layer || !m_layer->m_objectLayer || !m_levelUploaded || !m_spritesUploaded)
         return;
 
     const auto winSize = CCDirector::get()->getWinSize();
@@ -531,10 +532,18 @@ void MetalDiagnosticsOverlay::update(float dt) {
         if (m_levelUploaded && !m_spriteUploadAttempted)
             uploadSpriteAssets();
 
+        auto& backend = MetalBackend::get();
+        if (m_spritesUploaded && !backend.snapshot().spriteViewAttached) {
+            if (backend.attachSpriteView() && m_layer && m_layer->m_objectLayer) {
+                m_originalObjectLayerVisible = m_layer->m_objectLayer->isVisible();
+                m_layer->m_objectLayer->setVisible(false);
+                m_stockLayerHidden = true;
+            }
+        }
         submitVisibilityWork();
     } else {
         if (m_stockLayerHidden && m_layer && m_layer->m_objectLayer) {
-            m_layer->m_objectLayer->setVisible(true);
+            m_layer->m_objectLayer->setVisible(m_originalObjectLayerVisible);
             m_stockLayerHidden = false;
         }
         MetalBackend::get().detachSpriteView();
@@ -647,18 +656,18 @@ void MetalDiagnosticsOverlay::refreshText() {
         text += fmt::format("Metal error: {}\n", state.error);
 
     text += fmt::format(
-        "Metal sprite pipeline: {} | geometry: {}\\n",
+        "Metal sprite pipeline: {} | geometry: {}\n",
         state.spritePipelineReady ? "READY" : "NOT READY",
         state.spriteGeometryReady ? "READY" : "NOT READY"
     );
     text += fmt::format(
-        "Metal view: {} | rendered frames: {}\\n",
+        "Metal view: {} | rendered frames: {}\n",
         state.spriteViewAttached ? "ATTACHED" : "NOT ATTACHED",
         state.renderedFrames
     );
     text += m_stockLayerHidden
-        ? "Active level renderer: METAL SPRITE PASS\\n"
-        : "Active level renderer: STOCK GD (fallback)\\n";
+        ? "Active level renderer: METAL SPRITE PASS\n"
+        : "Active level renderer: STOCK GD (fallback)\n";
 
     m_label->setString(text.c_str());
 }

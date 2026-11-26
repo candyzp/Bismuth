@@ -26,4 +26,5 @@ private:
     bool m_spriteUploadAttempted = false;
     bool m_spritesUploaded = false;
     bool m_stockLayerHidden = false;
+    bool m_originalObjectLayerVisible = true;
 };
