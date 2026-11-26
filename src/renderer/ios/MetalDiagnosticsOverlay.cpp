@@ -257,6 +257,226 @@ bool MetalDiagnosticsOverlay::uploadLevelObjects() {
     return m_levelUploaded;
 }
 
+
+bool MetalDiagnosticsOverlay::uploadSpriteAssets() {
+    m_spriteUploadAttempted = true;
+    if (!m_layer || !m_layer->m_objects || !m_levelUploaded)
+        return false;
+
+    std::unordered_map<GameObject*, std::uint32_t> objectIndices;
+    std::uint32_t nextObjectIndex = 0;
+    for (auto object : CCArrayExt<GameObject*, false>(m_layer->m_objects)) {
+        if (!shouldIncludeObject(m_layer, object))
+            continue;
+        objectIndices.emplace(object, nextObjectIndex++);
+    }
+
+    const auto backendState = MetalBackend::get().snapshot();
+    if (nextObjectIndex != backendState.levelObjectCount) {
+        log::error(
+            "Kyanite iOS: sprite extraction object order mismatch ({} vs {})",
+            nextObjectIndex,
+            backendState.levelObjectCount
+        );
+        return false;
+    }
+
+    std::vector<ExtractedSprite> extracted;
+    std::uint64_t sequence = 0;
+    for (auto object : CCArrayExt<GameObject*, false>(m_layer->m_objects)) {
+        auto foundIndex = objectIndices.find(object);
+        if (foundIndex == objectIndices.end())
+            continue;
+
+        unpackGameObject(object, [&](CCSprite* sprite,
+                                     const CCAffineTransform& transform,
+                                     int spriteType) {
+            if (!sprite || !sprite->getTexture())
+                return;
+            if (spriteType == 3 && object->m_hasNoGlow)
+                return;
+
+            extracted.push_back({
+                sprite,
+                object,
+                transform,
+                foundIndex->second,
+                static_cast<std::int32_t>(object->getObjectZLayer()),
+                object->getObjectZOrder(),
+                sequence++,
+                spriteType == 3 || object->m_baseOrDetailBlending
+            });
+        });
+    }
+
+    if (extracted.empty()) {
+        log::error("Kyanite iOS: no renderable sprites were extracted from this level");
+        return false;
+    }
+
+    std::stable_sort(extracted.begin(), extracted.end(),
+        [](const ExtractedSprite& lhs, const ExtractedSprite& rhs) {
+            if (lhs.zLayer != rhs.zLayer)
+                return lhs.zLayer < rhs.zLayer;
+            if (lhs.zOrder != rhs.zOrder)
+                return lhs.zOrder < rhs.zOrder;
+            return lhs.sequence < rhs.sequence;
+        });
+
+    std::unordered_map<GLuint, std::uint32_t> textureIndices;
+    std::vector<MetalTextureInput> textures;
+    std::vector<MetalSpriteVertex> vertices;
+    std::vector<MetalSpriteBatch> batches;
+    vertices.reserve(extracted.size() * 6u);
+    textures.reserve(8);
+
+    const float contentScaleFactor = CCDirector::get()->getContentScaleFactor();
+    for (const auto& item : extracted) {
+        auto* texture = item.sprite->getTexture();
+        const GLuint textureName = texture ? texture->getName() : 0;
+        if (!texture || textureName == 0)
+            continue;
+
+        auto textureIt = textureIndices.find(textureName);
+        std::uint32_t textureIndex = 0;
+        if (textureIt == textureIndices.end()) {
+            MetalTextureInput textureInput;
+            if (!readTexturePixels(texture, textureInput)) {
+                log::error(
+                    "Kyanite iOS: failed to read sprite atlas {}x{} from OpenGL",
+                    texture->getPixelsWide(),
+                    texture->getPixelsHigh()
+                );
+                return false;
+            }
+            textureIndex = static_cast<std::uint32_t>(textures.size());
+            textures.push_back(std::move(textureInput));
+            textureIndices.emplace(textureName, textureIndex);
+        } else {
+            textureIndex = textureIt->second;
+        }
+
+        const CCRect crop = item.sprite->getTextureRect();
+        const auto& transform = item.transform;
+
+        CCPoint positionBottomLeft =
+            CCPointApplyAffineTransform(item.sprite->getOffsetPosition(), transform);
+        CCPoint positionRight(
+            transform.a * crop.size.width,
+            transform.b * crop.size.width
+        );
+        CCPoint positionUp(
+            transform.c * crop.size.height,
+            transform.d * crop.size.height
+        );
+
+        CCPoint texBottomLeft;
+        CCPoint texRight;
+        CCPoint texUp;
+        if (!item.sprite->isTextureRectRotated()) {
+            texBottomLeft = {crop.origin.x, crop.origin.y + crop.size.height};
+            texRight = {crop.size.width, 0.0f};
+            texUp = {0.0f, -crop.size.height};
+        } else {
+            texBottomLeft = {crop.origin.x, crop.origin.y};
+            texRight = {0.0f, crop.size.width};
+            texUp = {crop.size.height, 0.0f};
+        }
+
+        if (item.sprite->isFlipX()) {
+            positionBottomLeft += positionRight;
+            positionRight = ccp(-positionRight.x, -positionRight.y);
+        }
+        if (item.sprite->isFlipY()) {
+            positionBottomLeft += positionUp;
+            positionUp = ccp(-positionUp.x, -positionUp.y);
+        }
+
+        const float texScaleX =
+            contentScaleFactor / static_cast<float>(texture->getPixelsWide());
+        const float texScaleY =
+            contentScaleFactor / static_cast<float>(texture->getPixelsHigh());
+        texBottomLeft = ccp(texBottomLeft.x * texScaleX, texBottomLeft.y * texScaleY);
+        texRight = ccp(texRight.x * texScaleX, texRight.y * texScaleY);
+        texUp = ccp(texUp.x * texScaleX, texUp.y * texScaleY);
+
+        const auto spriteColor = item.sprite->getColor();
+        const float red = spriteColor.r / 255.0f;
+        const float green = spriteColor.g / 255.0f;
+        const float blue = spriteColor.b / 255.0f;
+        const float alpha = item.sprite->getOpacity() / 255.0f;
+
+        const CCPoint quad[] = {
+            {0.0f, 0.0f}, {1.0f, 0.0f}, {1.0f, 1.0f},
+            {1.0f, 1.0f}, {0.0f, 1.0f}, {0.0f, 0.0f}
+        };
+
+        const bool newBatch = batches.empty() ||
+            batches.back().textureIndex != textureIndex ||
+            batches.back().additive != item.additive;
+        if (newBatch) {
+            batches.push_back({
+                static_cast<std::uint32_t>(vertices.size()),
+                0u,
+                textureIndex,
+                item.additive
+            });
+        }
+
+        for (const auto& point : quad) {
+            const float worldOffsetX =
+                positionBottomLeft.x + positionRight.x * point.x +
+                positionUp.x * point.y - item.object->m_startPosition.x;
+            const float worldOffsetY =
+                positionBottomLeft.y + positionRight.y * point.x +
+                positionUp.y * point.y - item.object->m_startPosition.y;
+            const float u =
+                texBottomLeft.x + texRight.x * point.x + texUp.x * point.y;
+            const float v =
+                texBottomLeft.y + texRight.y * point.x + texUp.y * point.y;
+
+            vertices.push_back({
+                worldOffsetX,
+                worldOffsetY,
+                u,
+                v,
+                item.objectIndex,
+                red,
+                green,
+                blue,
+                alpha
+            });
+            batches.back().vertexCount++;
+        }
+    }
+
+    if (vertices.empty() || textures.empty() || batches.empty()) {
+        log::error("Kyanite iOS: sprite geometry or texture atlas upload produced no data");
+        return false;
+    }
+
+    auto& backend = MetalBackend::get();
+    if (!backend.uploadSpriteGeometry(vertices, batches, textures))
+        return false;
+    if (!backend.attachSpriteView())
+        return false;
+
+    if (m_layer->m_objectLayer && m_layer->m_objectLayer->isVisible()) {
+        m_layer->m_objectLayer->setVisible(false);
+        m_stockLayerHidden = true;
+    }
+
+    m_spritesUploaded = true;
+    log::info(
+        "Kyanite iOS: Metal sprite renderer attached ({} sprites, {} vertices, {} atlases, {} draw batches)",
+        extracted.size(),
+        vertices.size(),
+        textures.size(),
+        batches.size()
+    );
+    return true;
+}
+
 void MetalDiagnosticsOverlay::submitVisibilityWork() {
     if (!m_layer || !m_layer->m_objectLayer || !m_levelUploaded)
         return;
